@@ -23,6 +23,7 @@ import { decodeStore } from "../store/storage.ts";
 import { resolvePins } from "../store/selector.ts";
 import { createSeatProviderAdapters } from "./oauth.ts";
 import { SeatRuntimeAuthCoordinator, getSeatRuntime } from "./runtime-auth.ts";
+import { SEAT_COMMAND_DESCRIPTION, runSeatCommand } from "./seat-command.ts";
 
 const PI_VERSION_NOTICE =
 	"seat: this Pi version does not expose the runtime auth overlay (ModelRuntime.setRuntimeApiKey); " +
@@ -66,6 +67,11 @@ export default function seatExtension(pi: ExtensionAPI): void {
 		startupError = `seat: PI_SEAT is invalid — ${message(error)}. All seat-managed provider turns are aborted; fix PI_SEAT and restart.`;
 		startupNotices.push(startupError);
 	}
+
+	pi.registerCommand("seat", {
+		description: SEAT_COMMAND_DESCRIPTION,
+		handler: async (args, ctx) => runSeatCommand(args, ctx, { backend, adapters, pins }),
+	});
 
 	let coordinator: SeatRuntimeAuthCoordinator | undefined;
 	let noticesFlushed = false;

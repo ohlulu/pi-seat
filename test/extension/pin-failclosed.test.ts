@@ -57,6 +57,7 @@ function loadExtension(piSeat: string, seedProfiles: Record<string, SeatCredenti
 		on: (event: string, handler: (event: unknown, ctx: unknown) => Promise<void>) => {
 			handlers.set(event, handler);
 		},
+		registerCommand: () => undefined,
 	} as unknown as ExtensionAPI;
 
 	const runtime = new FakeRuntime();
