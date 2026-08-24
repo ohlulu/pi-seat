@@ -1,122 +1,17 @@
 import { beforeEach, describe, expect, test } from "bun:test";
-import { emptyStore, type SeatCredential } from "../../src/store/schema.ts";
-import { InMemorySeatStorageBackend, decodeStore, encodeStore } from "../../src/store/storage.ts";
-import type { SeatProviderAdapter } from "../../src/extension/oauth.ts";
-import {
-	SEAT_SENTINEL_API_KEY,
-	SeatRuntimeAuthCoordinator,
-	type SeatRuntime,
-} from "../../src/extension/runtime-auth.ts";
+import type { SeatCredential } from "../../src/store/schema.ts";
+import { decodeStore } from "../../src/store/storage.ts";
+import { SEAT_SENTINEL_API_KEY } from "../../src/extension/runtime-auth.ts";
+import { cred, makeHarness as makeSharedHarness, mutateStore, runTurn, type AdapterBehavior, type Harness } from "./harness.ts";
 
 const FRESH_EXPIRES = Date.now() + 3_600_000;
 const EXPIRED_EXPIRES = Date.now() - 60_000;
 
-function cred(refresh: string, expires: number): SeatCredential {
-	return { type: "oauth", refresh, access: `at-${refresh}`, expires };
-}
-
-function seedBackend(credential: SeatCredential, label = "work"): InMemorySeatStorageBackend {
-	const backend = new InMemorySeatStorageBackend();
-	const store = emptyStore();
-	store.providers.anthropic = {
-		default: label,
-		profiles: Object.assign(Object.create(null), { [label]: credential }),
-		aliases: Object.assign(Object.create(null)),
-	};
-	backend.withLock(() => ({ result: undefined, next: encodeStore(store) }));
-	return backend;
-}
-
-/**
- * Fake implementing the same structural runtime interface, plus a `stream`
- * call counter standing in for the provider request (AC-008: abort ⇒ zero).
- */
-class FakeRuntime implements SeatRuntime {
-	readonly events: string[] = [];
-	readonly keys = new Map<string, string>();
-	streamCalls = 0;
-	failSetFor: Set<string> = new Set(); // api keys whose set should throw
-	verifyReturnsWrongValue = false;
-
-	setRuntimeApiKey(provider: string, apiKey: string): void {
-		this.events.push(`set:${provider}:${apiKey}`);
-		if (this.failSetFor.has(apiKey) || this.failSetFor.has("*")) {
-			throw new Error(`injected setRuntimeApiKey failure for ${apiKey}`);
-		}
-		this.keys.set(provider, apiKey);
-	}
-
-	removeRuntimeApiKey(provider: string): void {
-		this.events.push(`remove:${provider}`);
-		this.keys.delete(provider);
-	}
-
-	getApiKeyForProvider(provider: string): string | undefined {
-		return this.verifyReturnsWrongValue ? "someone-elses-key" : this.keys.get(provider);
-	}
-
-	stream(): void {
-		this.streamCalls += 1;
-	}
-}
-
-interface AdapterBehavior {
-	refresh?: (cred: SeatCredential) => Promise<SeatCredential> | SeatCredential;
-	toAuth?: (cred: SeatCredential) => Promise<{ apiKey: string }> | { apiKey: string };
-}
-
-function fakeAdapters(behavior: AdapterBehavior, counters: { refresh: number; toAuth: number }): SeatProviderAdapter[] {
-	const make = (id: "anthropic" | "openai-codex", displayName: string): SeatProviderAdapter => ({
-		id,
-		displayName,
-		oauth: {
-			login: () => Promise.reject(new Error("login not under test")),
-			refresh: async (credential) => {
-				counters.refresh += 1;
-				if (!behavior.refresh) throw new Error("unexpected refresh");
-				return (await behavior.refresh(credential as SeatCredential)) as never;
-			},
-			toAuth: async (credential) => {
-				counters.toAuth += 1;
-				const impl = behavior.toAuth ?? ((c: SeatCredential) => ({ apiKey: c.access }));
-				return (await impl(credential as SeatCredential)) as never;
-			},
-		},
-	});
-	return [make("anthropic", "Anthropic"), make("openai-codex", "OpenAI Codex")];
-}
-
-interface Harness {
-	runtime: FakeRuntime;
-	backend: InMemorySeatStorageBackend;
-	coordinator: SeatRuntimeAuthCoordinator;
-	counters: { refresh: number; toAuth: number };
-	aborts: string[];
-}
-
 function makeHarness(credential: SeatCredential, behavior: AdapterBehavior): Harness {
-	const runtime = new FakeRuntime();
-	const backend = seedBackend(credential);
-	const counters = { refresh: 0, toAuth: 0 };
-	const coordinator = new SeatRuntimeAuthCoordinator({
-		runtime,
-		backend,
-		adapters: fakeAdapters(behavior, counters),
-		pins: {},
-		invalidateCodex: () => undefined,
-		refreshTimeoutMs: 500,
+	return makeSharedHarness({
+		sections: { anthropic: { default: "work", profiles: { work: credential } } },
+		behavior,
 	});
-	return { runtime, backend, coordinator, counters, aborts: [] };
-}
-
-/** One simulated turn: sync, then stream only if nothing aborted. */
-async function runTurn(h: Harness): Promise<void> {
-	const before = h.aborts.length;
-	await h.coordinator.syncTurn((reason) => {
-		h.aborts.push(reason);
-		h.runtime.events.push("abort");
-	});
-	if (h.aborts.length === before) h.runtime.stream();
 }
 
 function storedRefresh(h: Harness): string | undefined {
@@ -148,10 +43,8 @@ describe("AC-007: invalid_grant is persistent fail-closed", () => {
 		expect(h.runtime.streamCalls).toBe(0);
 
 		// Replacement login rotates the stored grant → block clears, turn applies.
-		h.backend.withLock((current) => {
-			const store = decodeStore(current);
+		mutateStore(h.backend, (store) => {
 			store.providers.anthropic!.profiles["work"] = cred("rt-new", FRESH_EXPIRES);
-			return { result: undefined, next: encodeStore(store) };
 		});
 		await runTurn(h);
 		expect(h.aborts).toHaveLength(2); // no new abort
