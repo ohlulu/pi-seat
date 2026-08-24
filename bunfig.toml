@@ -1,0 +1,2 @@
+[test]
+preload = ["./test/helpers/integration-preload.ts"]

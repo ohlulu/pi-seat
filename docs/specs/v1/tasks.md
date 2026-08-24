@@ -15,8 +15,8 @@ Sandbox rule: any task that loads the extension or exercises migration runs unde
 
 - [x] T001 [DEC-006] Scaffold repo: `package.json` (bun scripts `test`/`typecheck`, `pi.extensions: ["./src/extension/index.ts"]`), `tsconfig.json`, `bun.lock`. Verify: `bun install && grep -q pi.extensions package.json && grep -q typecheck package.json` → exit 0
 - [x] T002 [NFR-002] Add `LICENSE` and `NOTICE` with pi-accounts MIT attribution. Verify: `test -f LICENSE && test -f NOTICE && grep -q pi-accounts NOTICE` → exit 0
-- [ ] T003 [REQ-001] Create `src/store/schema.ts`: store v1 types, parse/validate with own-property access, label/alias charset validation (reject `:` and `,`), with tests. Verify: `bun run typecheck && bun test test/store/schema.test.ts` → clean + GREEN
-- [ ] T004 [REQ-001] Create `test/helpers/auth-snapshot.ts` (AC-001 teardown assertion) plus `test/helpers/auth-snapshot.test.ts` self-testing byte-change detection, and a bunfig preload that auto-registers the teardown for every `test/integration/**` file. Verify: `bun test test/helpers/auth-snapshot.test.ts` → GREEN
+- [x] T003 [REQ-001] Create `src/store/schema.ts`: store v1 types, parse/validate with own-property access, label/alias charset validation (reject `:` and `,`), with tests. Verify: `bun run typecheck && bun test test/store/schema.test.ts` → clean + GREEN
+- [x] T004 [REQ-001] Create `test/helpers/auth-snapshot.ts` (AC-001 teardown assertion) plus `test/helpers/auth-snapshot.test.ts` self-testing byte-change detection, and a bunfig preload that auto-registers the teardown for every `test/integration/**` file. Verify: `bun test test/helpers/auth-snapshot.test.ts` → GREEN
 
 ## Phase 2: REQ-001 / REQ-005 — store, lock, refresh
 
