@@ -1,0 +1,247 @@
+/**
+ * Usage rendering (REQ-006) — direct port of the Python seat's emit /
+ * print_account / print_meter / print_detail / print_hint / fmt_reset and the
+ * Claude/Codex block renderers. Pure: every function returns lines; the CLI
+ * owns stdout. Behavior parity is pinned by the T025 golden tests.
+ */
+
+import { cellClip, cellWidth, fit } from "./cells.ts";
+import { GAP, INDENT, LABEL_W, RESET_W_LONG, type Layout } from "./layout.ts";
+
+export const BAR_FULL = "█";
+export const BAR_EMPTY = "░";
+export const DOT_LIVE = "●";
+export const DOT_DORMANT = "○";
+
+export const BOLD = "\x1b[1m";
+export const DIM = "\x1b[2m";
+export const RED = "\x1b[31m";
+export const YELLOW = "\x1b[33m";
+export const GREEN = "\x1b[32m";
+export const RESET = "\x1b[0m";
+
+export const SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
+export const SPINNER_INTERVAL_MS = 80;
+export const SPINNER_DELAY_MS = 150;
+
+export interface RenderOptions {
+	color: boolean;
+	/** Frozen in tests; Date.now in production. */
+	now: () => Date;
+	/** IANA timezone for the reset wall clock; system zone when omitted. */
+	timeZone?: string;
+}
+
+type Segment = readonly [text: string, code: string | undefined];
+
+function colorize(code: string | undefined, text: string, color: boolean): string {
+	return code !== undefined && color ? `${code}${text}${RESET}` : text;
+}
+
+/** One line of (text, color) segments, clipped so it cannot wrap. Color is
+ * applied after clipping: escapes have no display width. */
+export function emitLine(segments: readonly Segment[], width: number, color: boolean): string {
+	const parts: string[] = [];
+	let used = 0;
+	for (const [text, code] of segments) {
+		const room = width - used;
+		if (room <= 0) break;
+		const clipped = cellClip(text, room);
+		parts.push(colorize(code, clipped, color));
+		used += cellWidth(clipped);
+	}
+	return parts.join("").trimEnd();
+}
+
+/** Python's round(): half rounds to the nearest EVEN integer. */
+export function roundHalfEven(value: number): number {
+	const floor = Math.floor(value);
+	const diff = value - floor;
+	if (diff < 0.5) return floor;
+	if (diff > 0.5) return floor + 1;
+	return floor % 2 === 0 ? floor : floor + 1;
+}
+
+/** Time to reset: countdown, plus the wall clock when there is room. */
+export function fmtReset(dt: Date, long: boolean, options: RenderOptions): string {
+	const secs = Math.trunc((dt.getTime() - options.now().getTime()) / 1000);
+	if (secs <= 0) return "resetting";
+	const days = Math.trunc(secs / 86_400);
+	let rem = secs % 86_400;
+	const hours = Math.trunc(rem / 3600);
+	rem %= 3600;
+	const mins = Math.trunc(rem / 60);
+	let countdown: string;
+	if (days) countdown = `${days}d${hours}h`;
+	else if (hours) countdown = `${hours}h${String(mins).padStart(2, "0")}m`;
+	else countdown = `${mins}m`;
+	if (!long) return `in ${countdown}`;
+	const clock = formatClock(dt, secs >= 86_400, options.timeZone);
+	return `in ${countdown} · ${clock}`;
+}
+
+/** %H:%M or %a %H:%M in the target zone, C-locale weekday names. */
+function formatClock(dt: Date, withWeekday: boolean, timeZone: string | undefined): string {
+	const parts = new Intl.DateTimeFormat("en-US", {
+		...(timeZone !== undefined ? { timeZone } : {}),
+		hour: "2-digit",
+		minute: "2-digit",
+		hourCycle: "h23",
+		weekday: "short",
+	}).formatToParts(dt);
+	const get = (type: string) => parts.find((p) => p.type === type)?.value ?? "";
+	const hhmm = `${get("hour")}:${get("minute")}`;
+	return withWeekday ? `${get("weekday")} ${hhmm}` : hhmm;
+}
+
+/** One account header: liveness dot, label, aliases, optional state word. */
+export function accountLine(
+	layout: Layout,
+	name: string,
+	aliases: readonly string[],
+	live: boolean,
+	note: string,
+	options: RenderOptions,
+): string {
+	const segments: Segment[] = [
+		[live ? DOT_LIVE : DOT_DORMANT, live ? GREEN : DIM],
+		[" ", undefined],
+		[name, live ? BOLD : undefined],
+	];
+	if (aliases.length > 0) segments.push([` (${aliases.join(", ")})`, DIM]);
+	if (note) segments.push([` · ${note}`, DIM]);
+	return emitLine(segments, layout.width - 1, options.color);
+}
+
+export function meterLine(
+	layout: Layout,
+	label: string,
+	percent: number,
+	resetDt: Date | null,
+	options: RenderOptions,
+): string {
+	const color = percent < 70 ? GREEN : percent < 90 ? YELLOW : RED;
+	const filled = Math.max(0, Math.min(layout.barW, roundHalfEven((percent / 100) * layout.barW)));
+	const segments: Segment[] = [
+		[" ".repeat(INDENT), undefined],
+		[fit(label, layout.labelW), undefined],
+		[" ".repeat(GAP), undefined],
+		[BAR_FULL.repeat(filled), color],
+		[BAR_EMPTY.repeat(layout.barW - filled), DIM],
+		[" ".repeat(GAP), undefined],
+		[`${formatPercent(percent)}%`, color],
+	];
+	if (layout.resetW && resetDt !== null) {
+		segments.push([" ".repeat(GAP), undefined], [fmtReset(resetDt, layout.resetW >= RESET_W_LONG, options), DIM]);
+	}
+	return emitLine(segments, layout.width - 1, options.color);
+}
+
+/** Python f"{percent:>3.0f}" — half-even rounding, right-aligned to 3. */
+function formatPercent(percent: number): string {
+	return String(roundHalfEven(percent)).padStart(3, " ");
+}
+
+/** A row with no meter (dollar spend, credits), on the same columns. */
+export function detailLine(layout: Layout, label: string, value: string, options: RenderOptions): string {
+	return emitLine(
+		[
+			[" ".repeat(INDENT), undefined],
+			[fit(label, layout.labelW), undefined],
+			[" ".repeat(GAP), undefined],
+			[value, DIM],
+		],
+		layout.width - 1,
+		options.color,
+	);
+}
+
+export function hintLine(layout: Layout, text: string, options: RenderOptions): string {
+	return emitLine(
+		[
+			[" ".repeat(INDENT), undefined],
+			[text, DIM],
+		],
+		layout.width - 1,
+		options.color,
+	);
+}
+
+// --- Claude block -----------------------------------------------------------
+
+export const CLAUDE_ROW_LABELS: Record<string, string> = { session: "5h", weekly_all: "weekly" };
+
+export interface ClaudeLimit {
+	kind?: string;
+	group?: string;
+	scope?: { model?: { display_name?: string } };
+	percent?: number | null;
+	resets_at?: string;
+}
+
+export interface ClaudeUsage {
+	limits?: ClaudeLimit[];
+	extra_usage?: {
+		is_enabled?: boolean;
+		used_credits?: number;
+		monthly_limit?: number;
+		decimal_places?: number;
+	};
+}
+
+export function renderClaudeUsage(layout: Layout, data: ClaudeUsage, options: RenderOptions): string[] {
+	const lines: string[] = [];
+	for (const lim of data.limits ?? []) {
+		const kind = lim.kind ?? "?";
+		let label = CLAUDE_ROW_LABELS[kind];
+		if (label === undefined) {
+			const model = lim.scope?.model?.display_name ?? kind;
+			// On a slim label column the model name is the half that carries
+			// information (see Python source for the full rationale).
+			label = lim.group === "weekly" && layout.labelW >= LABEL_W ? `weekly ${model}` : model;
+		}
+		const resetDt = lim.resets_at ? new Date(lim.resets_at) : null;
+		lines.push(meterLine(layout, label, lim.percent ?? 0, resetDt, options));
+	}
+	const extra = data.extra_usage;
+	if (extra?.is_enabled) {
+		const scale = 10 ** (extra.decimal_places ?? 2);
+		const used = (extra.used_credits ?? 0) / scale;
+		const limit = (extra.monthly_limit ?? 0) / scale;
+		lines.push(detailLine(layout, "extra", `$${used.toFixed(2)} / $${limit.toFixed(2)}`, options));
+	}
+	return lines;
+}
+
+// --- Codex block ------------------------------------------------------------
+
+export interface CodexWindow {
+	limit_window_seconds?: number;
+	used_percent?: number | null;
+	reset_at?: number;
+}
+
+export interface CodexUsage {
+	plan_type?: string;
+	rate_limit?: { primary_window?: CodexWindow; secondary_window?: CodexWindow };
+	rate_limit_reset_credits?: { available_count?: number };
+}
+
+export function windowLabel(seconds: number): string {
+	if (seconds >= 6 * 86_400) return "weekly";
+	return `${Math.trunc(seconds / 3600)}h`;
+}
+
+export function renderCodexUsage(layout: Layout, data: CodexUsage, options: RenderOptions): string[] {
+	const lines: string[] = [];
+	const rl = data.rate_limit ?? {};
+	for (const key of ["primary_window", "secondary_window"] as const) {
+		const win = rl[key];
+		if (!win) continue;
+		const resetDt = win.reset_at ? new Date(win.reset_at * 1000) : null;
+		lines.push(meterLine(layout, windowLabel(win.limit_window_seconds ?? 0), win.used_percent ?? 0, resetDt, options));
+	}
+	const credits = data.rate_limit_reset_credits?.available_count;
+	if (credits) lines.push(detailLine(layout, "credits", String(credits), options));
+	return lines;
+}
