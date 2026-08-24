@@ -75,6 +75,7 @@ read_when:
 | `src/store/storage.ts` | create — 改作 pi-accounts storage.ts：lock protocol（DEC-003）、0600、O_NOFOLLOW、atomic write | REQ-001, REQ-005 |
 | `src/store/refresh.ts` | create — locked single-flight refresh（extension 與 CLI 共用） | REQ-005 |
 | `src/store/migrate.ts` | create — claude-profiles.json 匯入（REQ-008 排除規則，lock 內 re-check） | REQ-008 |
+| `src/store/selector.ts` | create — selector grammar parse + resolution（pin > default > built-in）；extension 與 CLI 共用的純模組 | REQ-002, REQ-003 |
 | `src/extension/index.ts` | create — extension 入口：pin 解析、per-turn sync、`/seat` 指令、runtime feature detection | REQ-002, REQ-003 |
 | `src/extension/runtime-auth.ts` | create — 改作 pi-accounts：coordinator、overlay、abort-first fail-closed、verify、`closeOpenAICodexWebSocketSessions(sessionId)` invalidation | REQ-004, REQ-009 |
 | `src/extension/oauth.ts` | create — 改作 pi-accounts：anthropic + openai-codex adapters（重用 Pi 內建 OAuth） | REQ-007 |
