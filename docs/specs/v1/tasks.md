@@ -29,11 +29,11 @@ Sandbox rule: any task that loads the extension or exercises migration runs unde
 ## Phase 3: REQ-008 — migration
 
 - [x] T010 [REQ-008] Create `src/store/migrate.ts`: import with the three exclusion rules (unconditional legacy `active`, refresh-token match vs auth.json, fail-closed on missing/dangling/ambiguous `active`), executed inside the lock with re-check, legacy file untouched. Verify: `bun run typecheck` → clean. Depends: T005
-- [ ] T011 [REQ-008] AC-014 tests: fixture where legacy `active` pointer and byte-equality disagree → both rules fire independently; ambiguous fixture → fail-closed with `/seat login` message; existing `seat.json` → migration is a no-op; legacy file absent → no-op; successful import emits the built-in-login notice; legacy file byte-identical throughout. Verify: `bun test test/store/migrate.test.ts` → GREEN. Depends: T010
+- [x] T011 [REQ-008] AC-014 tests: fixture where legacy `active` pointer and byte-equality disagree → both rules fire independently; ambiguous fixture → fail-closed with `/seat login` message; existing `seat.json` → migration is a no-op; legacy file absent → no-op; successful import emits the built-in-login notice; legacy file byte-identical throughout. Verify: `bun test test/store/migrate.test.ts` → GREEN. Depends: T010
 
 ## Phase 4: REQ-002 / REQ-003 — selection resolution
 
-- [ ] T012 [REQ-002, REQ-003] Create `src/store/selector.ts`: grammar parse (`[provider:]label-or-alias`, bare = anthropic, recognized prefixes only, `PI_SEAT` multi-value rules) and resolution (`pin > store default > built-in`, alias resolved once at init). Verify: `bun run typecheck` → clean. Depends: T003
+- [x] T012 [REQ-002, REQ-003] Create `src/store/selector.ts`: grammar parse (`[provider:]label-or-alias`, bare = anthropic, recognized prefixes only, `PI_SEAT` multi-value rules) and resolution (`pin > store default > built-in`, alias resolved once at init). Verify: `bun run typecheck` → clean. Depends: T003
 - [ ] T013 [REQ-002] Selector unit tests: full grammar matrix (unknown label, malformed, duplicate provider → parse error) and resolution matrix (pin/default/builtin per provider). AC-004's startup fail-closed behavior is integration-tested in T030, not here. Verify: `bun test test/store/selector.test.ts` → GREEN. Depends: T012
 
 ## Phase 5: REQ-004 / REQ-009 — runtime auth
