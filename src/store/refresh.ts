@@ -124,14 +124,15 @@ async function callWithTimeout(
 	const controller = new AbortController();
 	const timer = setTimeout(() => controller.abort(), timeoutMs);
 	try {
-		return await Promise.race([
-			refresh(credential, controller.signal),
-			new Promise<never>((_, reject) => {
-				controller.signal.addEventListener("abort", () =>
-					reject(new RefreshTimeoutError(`refresh timed out after ${timeoutMs}ms; response treated as lost`)),
-				);
-			}),
-		]);
+		return await refresh(credential, controller.signal);
+	} catch (error) {
+		// Once our timer fired, whatever rejection surfaced (the callback's own
+		// abort error included) IS the lost-response case — classification must
+		// not depend on which listener rejected first.
+		if (controller.signal.aborted && !(error instanceof InvalidGrantError)) {
+			throw new RefreshTimeoutError(`refresh timed out after ${timeoutMs}ms; response treated as lost`);
+		}
+		throw error;
 	} finally {
 		clearTimeout(timer);
 	}
