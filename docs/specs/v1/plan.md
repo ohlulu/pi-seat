@@ -161,6 +161,22 @@ AC-to-test matrix（bun test，除另註明）：
 
 無 ACCEPT-RISK；new-mechanism 收 2 項，於預算內。
 
+### tasks.md round
+
+tasks.md 由單一 critic lens（task-breakdown fidelity）審查，9 項 findings 全數 accept，無爭議項故省略 round 2。
+
+| Finding | Disposition | Resolution |
+|---|---|---|
+| [P1] T001 在無 TS input 時要求 typecheck（false-green 風險） | accept | T001 改驗 install + manifest/scripts 存在；首次 typecheck 移至 T003 |
+| [P1] T004 的 Verify 不執行 helper（Bun 實測 exit 1） | accept（new-mechanism 1/2） | 新增 auth-snapshot.test.ts 自測 + bunfig preload 強制 integration tests 套用 |
+| [P1] AC-004 放在 extension 尚不存在的 selector unit test | accept | T013 留 parser matrix；新增 T030 於 extension 載入後做 startup fail-closed integration |
+| [P1] ModelRuntime 存取路徑與測試 seam 未釘死 | accept | T015 釘 `ctx.modelRegistry.runtime` structural cast；T008 釘 refresh-callback DI；T009 ephemeral HTTP server + child processes；T016 fake runtime 計數 stream |
+| [P1] T019 smoke false-green 且會在 cutover 前觸發 live migration | accept | smoke 改 sandbox `PI_CODING_AGENT_DIR` + RPC mode，pass signal = sandbox migration side effect，live 檔 byte-identical 斷言；新增全局 sandbox rule |
+| [P1] T022 無 runnable Verify、fixture contract 未定義 | accept | 釘單一 python-golden.json schema（scenario→width→lines）與 cmp 驗證；T025 補三種 TS-native scenarios |
+| [P1] Command tasks 過大、CLI contract 測試缺口 | accept | T020 縮為 shared mutation handlers；新增 T031（handler tests）、T032（extension adapter）；T028 擴為全 synopsis matrix + exit 0/1/2 |
+| [P2] 三個 normative branch 無 correctness signal | accept | T009 補 timeout-keeps-store；T016 補 transient recovery + invalid_grant 持續阻擋；T011 補 existing-store/legacy-absent no-op + notice |
+| [P3] Traceability refs 不完整、bench script 雙重責任 | accept | 補齊 T014/T019/T027 refs；bench script 歸 T029 單一責任 |
+
 ## Related
 
 - [requirements.md](./requirements.md) ← Behavioral requirements and acceptance criteria
