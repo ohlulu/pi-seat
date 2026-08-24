@@ -10,7 +10,8 @@
 	},
 	"scripts": {
 		"test": "bun test",
-		"typecheck": "tsc --noEmit"
+		"typecheck": "tsc --noEmit",
+		"smoke:extension": "bash scripts/smoke-extension.sh"
 	},
 	"dependencies": {
 		"proper-lockfile": "^4.1.2"

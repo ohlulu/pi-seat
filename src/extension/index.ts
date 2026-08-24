@@ -1,0 +1,116 @@
+/**
+ * pi-seat extension entry (REQ-002, REQ-004, REQ-008).
+ *
+ * Init order matters: first-load migration runs BEFORE pin resolution, because
+ * PI_SEAT may name a profile the migration just imported. Both happen once at
+ * extension setup; the PI_SEAT pin (with aliases resolved to labels) is
+ * immutable for the session (DEC-002).
+ *
+ * Fail-closed wiring (AC-004): any PI_SEAT error — malformed, unknown
+ * provider, duplicate provider, unknown label — records a startup error that
+ * aborts every turn with an explicit notice, and applies no pin at all.
+ * Missing runtime overlay support (Pi version incompatibility) aborts the same
+ * way with a version notice.
+ */
+
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import type { ProviderId } from "../store/schema.ts";
+import { FileSeatStorageBackend } from "../store/storage.ts";
+import { migrateLegacyProfiles } from "../store/migrate.ts";
+import { decodeStore } from "../store/storage.ts";
+import { resolvePins } from "../store/selector.ts";
+import { createSeatProviderAdapters } from "./oauth.ts";
+import { SeatRuntimeAuthCoordinator, getSeatRuntime } from "./runtime-auth.ts";
+
+const PI_VERSION_NOTICE =
+	"seat: this Pi version does not expose the runtime auth overlay (ModelRuntime.setRuntimeApiKey); " +
+	"seat requires Pi >= 0.84.2. Provider turns are aborted until seat is disabled or Pi is upgraded.";
+
+export function agentDir(env: Record<string, string | undefined> = process.env): string {
+	const dir = env["PI_CODING_AGENT_DIR"];
+	return dir !== undefined && dir.length > 0 ? dir : join(homedir(), ".pi", "agent");
+}
+
+export default function seatExtension(pi: ExtensionAPI): void {
+	const base = agentDir();
+	const backend = new FileSeatStorageBackend(join(base, "seat.json"));
+	const adapters = createSeatProviderAdapters();
+
+	const startupNotices: string[] = [];
+	let startupError: string | undefined;
+	let pins: Partial<Record<ProviderId, string>> = {};
+
+	// 1. First-load migration (REQ-008): inside the lock, re-checked, legacy
+	// file untouched. Fail-closed migration only surfaces a notice — provider
+	// turns still work through Pi's built-in login.
+	try {
+		const migration = migrateLegacyProfiles({
+			backend,
+			legacyPath: join(base, "claude-profiles.json"),
+			authPath: join(base, "auth.json"),
+		});
+		if (migration.outcome === "imported" || migration.outcome === "fail-closed") {
+			startupNotices.push(migration.notice);
+		}
+	} catch (error) {
+		startupNotices.push(`seat migration skipped: ${message(error)}`);
+	}
+
+	// 2. Init-time pin parse (DEC-002): read PI_SEAT once, resolve aliases once.
+	const pinSpec = process.env["PI_SEAT"] ?? "";
+	try {
+		pins = resolvePins(backend.read((current) => decodeStore(current)), pinSpec);
+	} catch (error) {
+		startupError = `seat: PI_SEAT is invalid — ${message(error)}. All seat-managed provider turns are aborted; fix PI_SEAT and restart.`;
+		startupNotices.push(startupError);
+	}
+
+	let coordinator: SeatRuntimeAuthCoordinator | undefined;
+	let noticesFlushed = false;
+
+	pi.on("session_start", async (_event, ctx) => {
+		if (noticesFlushed) return;
+		noticesFlushed = true;
+		for (const notice of startupNotices) notify(ctx, notice, startupError ? "error" : "info");
+	});
+
+	pi.on("turn_start", async (_event, ctx) => {
+		// AC-004: never partial-apply — a bad pin spec aborts every provider turn.
+		if (startupError !== undefined) {
+			ctx.abort();
+			notify(ctx, startupError, "error");
+			return;
+		}
+
+		if (!coordinator) {
+			const runtime = getSeatRuntime(ctx.modelRegistry);
+			if (!runtime) {
+				ctx.abort();
+				notify(ctx, PI_VERSION_NOTICE, "error");
+				return;
+			}
+			coordinator = new SeatRuntimeAuthCoordinator({ runtime, backend, adapters, pins });
+		}
+
+		await coordinator.syncTurn((reason) => {
+			ctx.abort();
+			notify(ctx, reason, "error");
+		});
+	});
+}
+
+function notify(ctx: ExtensionContext, text: string, level: "info" | "error"): void {
+	// ui.notify works in TUI and RPC alike (only ui.custom is TUI-only);
+	// console.error is the fallback for anything without a notification channel.
+	try {
+		ctx.ui.notify(text, level);
+	} catch {
+		console.error(text);
+	}
+}
+
+function message(error: unknown): string {
+	return error instanceof Error ? error.message : String(error);
+}

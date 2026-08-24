@@ -19,7 +19,11 @@
  * extension fails closed at startup (T019).
  */
 
-import { closeOpenAICodexWebSocketSessions } from "@earendil-works/pi-ai/api/openai-codex-responses";
+// Pi's jiti extension loader aliases the bare "@earendil-works/pi-ai"
+// specifier to a single entry file, so subpath imports break under `pi -e`.
+// cleanupSessionResources (root export) dispatches to the registered
+// closeOpenAICodexWebSocketSessions cleanup — same close, loadable path.
+import { cleanupSessionResources } from "@earendil-works/pi-ai";
 import { PROVIDER_IDS, type ProviderId, type SeatCredential } from "../store/schema.ts";
 import { InvalidGrantError, ensureFreshProfile } from "../store/refresh.ts";
 import { decodeStore, type SeatStorageBackend } from "../store/storage.ts";
@@ -198,7 +202,7 @@ export class SeatRuntimeAuthCoordinator {
 		const previous = this.appliedIdentity[provider];
 		if (previous !== undefined && identityEquals(previous, next)) return;
 		if (previous === undefined && next.kind === "builtin") return;
-		const invalidate = this.options.invalidateCodex ?? closeOpenAICodexWebSocketSessions;
+		const invalidate = this.options.invalidateCodex ?? cleanupSessionResources;
 		await invalidate(this.options.sessionId);
 	}
 
