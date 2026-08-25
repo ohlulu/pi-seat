@@ -96,6 +96,10 @@ export async function profileUsage(
 	try {
 		const outcome = await ensureFreshProfile(backend, provider, label, refresh, {
 			...(options.now !== undefined ? { now: options.now } : {}),
+			// This read is unlocked, so a concurrent same-label replacement means
+			// the refresh sends a credential we have never seen. Redaction has to
+			// follow what was actually sent, not what we read (T042).
+			onAttempt: (sent) => secrets.push(sent.access, sent.refresh),
 		});
 		secrets.push(outcome.credential.access, outcome.credential.refresh);
 		const usage =

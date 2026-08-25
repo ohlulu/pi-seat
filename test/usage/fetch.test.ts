@@ -3,7 +3,12 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { emptyStore, type SeatCredential } from "../../src/store/schema.ts";
-import { InMemorySeatStorageBackend, decodeStore, encodeStore } from "../../src/store/storage.ts";
+import {
+	InMemorySeatStorageBackend,
+	decodeStore,
+	encodeStore,
+	type StorageLockResult,
+} from "../../src/store/storage.ts";
 import type { RefreshCallback } from "../../src/store/refresh.ts";
 import { builtinUsage, fetchCodexUsage, profileUsage, readBuiltinSnapshot } from "../../src/usage/fetch.ts";
 import { planLayout } from "../../src/usage/layout.ts";
@@ -127,6 +132,56 @@ describe("T037 regression: profile errors never leak token material", () => {
 		if (result.ok) throw new Error("unreachable");
 		expect(result.error).not.toContain("rt-secret");
 		expect(result.error).not.toContain("at-rt-secret");
+		expect(result.error).toContain("<redacted>");
+	});
+
+	test("T042: a same-label replacement between the unlocked read and the locked re-read stays redacted", async () => {
+		const old: SeatCredential = {
+			type: "oauth",
+			refresh: "OLD_SECRET_REFRESH",
+			access: "OLD_SECRET_ACCESS",
+			expires: Date.now() - 60_000,
+		};
+		const replacement: SeatCredential = {
+			type: "oauth",
+			refresh: "NEW_SECRET_REFRESH",
+			access: "NEW_SECRET_ACCESS",
+			expires: Date.now() - 60_000,
+		};
+		const backend = seedBackend(old);
+
+		// Another process replaced the same label while we sat between our
+		// unlocked read and the lock: it held the lock, wrote, and released.
+		const realWithLockAsync = backend.withLockAsync.bind(backend);
+		let replacedOnce = false;
+		backend.withLockAsync = async <T>(
+			mutator: (current: string | undefined) => Promise<StorageLockResult<T>>,
+		): Promise<T> => {
+			if (!replacedOnce) {
+				replacedOnce = true;
+				backend.withLock((current) => {
+					const store = decodeStore(current);
+					store.providers.anthropic!.profiles["personal"] = replacement;
+					return { result: undefined, next: encodeStore(store) };
+				});
+			}
+			return realWithLockAsync(mutator);
+		};
+
+		const sent: string[] = [];
+		const refresh: RefreshCallback = async (credential) => {
+			sent.push(credential.refresh);
+			throw new Error(`server rejected refresh ${credential.refresh} (access ${credential.access})`);
+		};
+
+		const result = await profileUsage(backend, "anthropic", "personal", refresh, { claudeUrl });
+		expect(sent).toEqual(["NEW_SECRET_REFRESH"]); // the divergence is real
+		expect(result.ok).toBe(false);
+		if (result.ok) throw new Error("unreachable");
+		expect(result.error).not.toContain("NEW_SECRET_REFRESH");
+		expect(result.error).not.toContain("NEW_SECRET_ACCESS");
+		expect(result.error).not.toContain("OLD_SECRET_REFRESH");
+		expect(result.error).not.toContain("OLD_SECRET_ACCESS");
 		expect(result.error).toContain("<redacted>");
 	});
 

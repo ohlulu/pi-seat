@@ -32,14 +32,6 @@ export interface RefreshCallback {
 /** Persistent failure: the grant is dead; re-login is required. */
 export class InvalidGrantError extends Error {
 	override name = "InvalidGrantError";
-	/**
-	 * Identity of the credential the refresh ACTUALLY sent — the locked
-	 * re-read's credential, which can differ from any unlocked read the caller
-	 * did earlier. Fail-closed blocks must bind to this, or a concurrent
-	 * same-label replacement unbinds the block and the dead token is re-sent.
-	 */
-	sentRefresh?: string;
-	sentAccess?: string;
 }
 
 /** Transient failure: response lost (timeout/network); old credential kept. */
@@ -65,6 +57,16 @@ export interface RefreshOptions {
 	timeoutMs?: number;
 	now?: () => number;
 	skewMs?: number;
+	/**
+	 * The credential this refresh is about to send, reported from inside the
+	 * lock. It is the locked re-read's credential, which differs from any
+	 * unlocked read the caller did earlier whenever another process replaced
+	 * the same label in between. Callers MUST bind fail-closed blocks (T034)
+	 * and error redaction (T042) to this credential rather than to their own
+	 * read: otherwise a block binds to a grant nobody sent, and an error
+	 * echoing the sent credential is "redacted" with the wrong secrets.
+	 */
+	onAttempt?: (credential: SeatCredential) => void;
 }
 
 export interface RefreshOutcome {
@@ -104,16 +106,8 @@ export async function ensureFreshProfile(
 			return { result: { credential, refreshed: false } };
 		}
 
-		let rotated: SeatCredential;
-		try {
-			rotated = await callWithTimeout(refresh, credential, options.timeoutMs ?? DEFAULT_TIMEOUT_MS);
-		} catch (error) {
-			if (error instanceof InvalidGrantError) {
-				error.sentRefresh = credential.refresh;
-				error.sentAccess = credential.access;
-			}
-			throw error;
-		}
+		options.onAttempt?.(credential);
+		const rotated = await callWithTimeout(refresh, credential, options.timeoutMs ?? DEFAULT_TIMEOUT_MS);
 		section.profiles[label] = rotated;
 		return { result: { credential: rotated, refreshed: true }, next: encodeStore(store) };
 	});

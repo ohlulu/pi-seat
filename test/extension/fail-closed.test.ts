@@ -154,6 +154,52 @@ describe("T034 regression: block binds to the credential the refresh actually se
 	});
 });
 
+describe("T042 regression: redaction binds to the credential the refresh actually sent", () => {
+	test("a same-label replacement mid-turn never leaks the new credential in the abort reason", async () => {
+		// Same divergence as T034, but the refresh fails with an ordinary error
+		// instead of invalid_grant: the coordinator's entry read names the old
+		// grant while the locked re-read sends — and echoes — the new one.
+		const h = makeSharedHarness({
+			sections: {
+				anthropic: {
+					default: "work",
+					profiles: {
+						work: {
+							type: "oauth",
+							refresh: "NEW_SECRET_REFRESH",
+							access: "NEW_SECRET_ACCESS",
+							expires: EXPIRED_EXPIRES,
+						},
+					},
+				},
+			},
+			behavior: {
+				refresh: (c) => {
+					throw new Error(`upstream rejected ${c.refresh} using ${c.access}`);
+				},
+			},
+		});
+		const realRead = h.backend.read.bind(h.backend);
+		let entryReadServed = false;
+		h.backend.read = <T>(reader: (current: string | undefined) => T): T => {
+			if (!entryReadServed) {
+				entryReadServed = true;
+				return realRead((current) => reader(current?.replaceAll("NEW_SECRET", "OLD_SECRET")));
+			}
+			return realRead(reader);
+		};
+
+		await runTurn(h);
+		expect(h.aborts).toHaveLength(1);
+		expect(h.aborts[0]).not.toContain("NEW_SECRET_REFRESH");
+		expect(h.aborts[0]).not.toContain("NEW_SECRET_ACCESS");
+		expect(h.aborts[0]).not.toContain("OLD_SECRET_REFRESH");
+		expect(h.aborts[0]).not.toContain("OLD_SECRET_ACCESS");
+		expect(h.aborts[0]).toContain("<redacted>");
+		expect(h.runtime.streamCalls).toBe(0);
+	});
+});
+
 describe("transient failure recovers automatically next turn", () => {
 	test("network blip on turn 1, success on turn 2", async () => {
 		let failOnce = true;

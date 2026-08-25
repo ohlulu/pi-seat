@@ -115,7 +115,10 @@ export class SeatRuntimeAuthCoordinator {
 	}
 
 	async syncProvider(provider: ProviderId, abort: (reason: string) => void): Promise<TurnAuthResult> {
-		let credentialForRedaction: SeatCredential | undefined;
+		// Every credential this turn touched, so an abort reason cannot echo one
+		// of them (T037/T042). Grown as they appear: the stored one, the one the
+		// locked refresh actually sent, and the rotation it returned.
+		const secrets: string[] = [];
 		try {
 			const store = this.options.backend.read((current) => decodeStore(current));
 			const selection = resolveSelection(store, provider, this.options.pins[provider]);
@@ -134,6 +137,11 @@ export class SeatRuntimeAuthCoordinator {
 
 			const label = selection.label;
 
+			// Redactable even when the failure happens inside refresh, before any
+			// rotation exists.
+			const stored = store.providers[provider]?.profiles[label];
+			if (stored) secrets.push(stored.access, stored.refresh);
+
 			// Persistent fail-closed: a dead grant blocks this provider until a
 			// replacement login rotates the stored refresh token (AC-007).
 			const block = this.blocked[provider];
@@ -142,40 +150,35 @@ export class SeatRuntimeAuthCoordinator {
 					? store.providers[provider]?.profiles[label]?.refresh
 					: undefined;
 				if (currentRefresh === block.refresh) {
-					return this.failClosed(provider, abort, new Error(block.reason));
+					return this.failClosed(provider, abort, new Error(block.reason), secrets);
 				}
 				delete this.blocked[provider]; // replacement login cleared it
 			}
 
 			const adapter = adapterFor(this.options.adapters, provider);
-			// The stored credential's secrets must be redactable even when the
-			// failure happens inside refresh, before a rotated credential exists.
-			credentialForRedaction = store.providers[provider]?.profiles[label];
 			let credential: SeatCredential;
+			// The credential the locked refresh actually sent, which diverges from
+			// this coordinator's entry read under a concurrent same-label
+			// replacement. Both the fail-closed block (T034) and redaction (T042)
+			// must bind to it.
+			let sent: SeatCredential | undefined;
 			try {
 				const nowOption = this.options.now;
 				const outcome = await ensureFreshProfile(this.options.backend, provider, label, toRefreshCallback(adapter), {
 					...(this.options.refreshTimeoutMs !== undefined ? { timeoutMs: this.options.refreshTimeoutMs } : {}),
 					...(nowOption !== undefined ? { now: nowOption } : {}),
+					onAttempt: (attempted) => {
+						sent = attempted;
+						secrets.push(attempted.access, attempted.refresh);
+					},
 				});
 				credential = outcome.credential;
-				credentialForRedaction = credential;
+				secrets.push(credential.access, credential.refresh);
 			} catch (error) {
 				if (error instanceof InvalidGrantError) {
-					// Bind the block to the credential the refresh ACTUALLY sent
-					// (locked re-read), not this coordinator's entry read — they
-					// diverge under concurrent same-label replacement (T034).
-					const deadRefresh = error.sentRefresh ?? store.providers[provider]?.profiles[label]?.refresh;
+					const deadRefresh = sent?.refresh ?? store.providers[provider]?.profiles[label]?.refresh;
 					if (deadRefresh !== undefined) {
 						this.blocked[provider] = { label, refresh: deadRefresh, reason: error.message };
-					}
-					if (error.sentAccess !== undefined && error.sentRefresh !== undefined) {
-						credentialForRedaction = {
-							type: "oauth",
-							refresh: error.sentRefresh,
-							access: error.sentAccess,
-							expires: 0,
-						};
 					}
 				}
 				throw error;
@@ -196,7 +199,7 @@ export class SeatRuntimeAuthCoordinator {
 			this.appliedIdentity[provider] = identity;
 			return { provider, status: "applied", label };
 		} catch (error) {
-			return this.failClosed(provider, abort, error, credentialForRedaction);
+			return this.failClosed(provider, abort, error, secrets);
 		}
 	}
 
@@ -205,11 +208,9 @@ export class SeatRuntimeAuthCoordinator {
 		provider: ProviderId,
 		abort: (reason: string) => void,
 		error: unknown,
-		credential?: SeatCredential,
+		secrets: readonly string[] = [],
 	): TurnAuthResult {
-		const reason = credential
-			? redactTokenText(errorMessage(error), [credential.access, credential.refresh])
-			: redactTokenText(errorMessage(error));
+		const reason = redactTokenText(errorMessage(error), secrets);
 		abort(`seat: ${provider} auth failed — ${reason}`);
 		try {
 			const applied = this.options.runtime.setRuntimeApiKey(provider, SEAT_SENTINEL_API_KEY);
