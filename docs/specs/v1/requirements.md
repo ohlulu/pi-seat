@@ -141,13 +141,13 @@ WHEN the active openai-codex account changes, the extension SHALL invalidate liv
 
 ### REQ-010: In-session usage view
 
-WHEN `/seat` runs with no arguments, or `/seat status` runs, in a TUI session, the extension SHALL open an interactive usage view rendering the same bars as the CLI (all stored profiles + built-in + Codex) plus the current default/pin state, and SHALL close on `esc` or `q`. WHERE the session is not TUI (`ctx.mode !== "tui"`；RPC、print mode), the command SHALL fall back to text output instead of opening a component.
+WHEN `/seat` runs with no arguments, or `/seat status` or `/seat usage` runs, in a TUI session, the extension SHALL open an interactive usage view rendering the same bars as the CLI (all stored profiles + built-in + Codex) plus the current default/pin state, and SHALL close on `esc` or `q`. WHERE the session is not TUI (`ctx.mode !== "tui"`；RPC、print mode), the command SHALL fall back to text output instead of opening a component.
 
 渲染復用 `src/usage` 純模組；view 開啟期間的 refresh 仍走 REQ-005 路徑。
 
 | AC | Given | When | Then |
 |---|---|---|---|
-| AC-018 | TUI session | `/seat` 或 `/seat status` | view 開啟並渲染 usage bars 與 default/pin 狀態；`esc` 與 `q` 都關閉 view |
+| AC-018 | TUI session | `/seat`、`/seat status` 或 `/seat usage` | view 開啟並渲染 usage bars 與 default/pin 狀態；`esc` 與 `q` 都關閉 view |
 | AC-019 | 非 TUI session（RPC / `pi -p`） | `/seat status` | 文字輸出，不開 component，不 hang |
 
 ## Non-functional

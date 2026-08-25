@@ -11,7 +11,7 @@
  */
 
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseStore } from "../../src/store/schema.ts";
@@ -88,8 +88,17 @@ function dryRun(fx: Fixture): Run {
 }
 
 function snapshot(fx: Fixture): Record<string, string | null> {
-	const read = (path: string) => (existsSync(path) ? readFileSync(path).toString("base64") : null);
-	return { store: read(fx.storePath), legacy: read(fx.legacyPath), auth: read(fx.authPath) };
+	// Content alone is not enough: the P1 regression was a dry run that left
+	// bytes identical but fchmod'd the store to 0600 and took the write lock.
+	// Mode and the directory listing (lock/tmp artifacts) are part of "nothing".
+	const read = (path: string) =>
+		existsSync(path) ? `${readFileSync(path).toString("base64")}:${statSync(path).mode.toString(8)}` : null;
+	return {
+		store: read(fx.storePath),
+		legacy: read(fx.legacyPath),
+		auth: read(fx.authPath),
+		dir: readdirSync(fx.dir).sort().join(","),
+	};
 }
 
 /** Wrap a scenario so the legacy file (and auth.json) are asserted byte-identical. */
@@ -212,6 +221,28 @@ describe("migration via migrate-legacy.ts (AC-014)", () => {
 					expect(applied.out).toContain("nothing to do");
 					expect(readFileSync(fx.storePath, "utf8")).toBe(before); // store untouched too
 				});
+			},
+		);
+	});
+
+	test("dry run never takes the lock or touches store metadata (P1 regression)", () => {
+		withFixture(
+			{
+				legacy: { active: "work", profiles: { work: cred("rt-1"), dormant: cred("rt-2") }, aliases: {} },
+				auth: { anthropic: cred("rt-live") },
+				seatStore: true,
+			},
+			(fx) => {
+				// A mode the backend would "correct": the old preview read via
+				// FileSeatStorageBackend.read(), which fchmods 0600 and locks.
+				chmodSync(fx.storePath, 0o644);
+				const modeBefore = statSync(fx.storePath).mode;
+				const dirBefore = readdirSync(fx.dir).sort().join(",");
+
+				dryRun(fx);
+
+				expect(statSync(fx.storePath).mode).toBe(modeBefore);
+				expect(readdirSync(fx.dir).sort().join(",")).toBe(dirBefore);
 			},
 		);
 	});

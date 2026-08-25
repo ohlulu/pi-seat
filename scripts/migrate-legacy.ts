@@ -23,7 +23,7 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { migrateLegacyProfiles, type ExclusionRule, type MigrationResult } from "../src/store/migrate.ts";
-import { FileSeatStorageBackend, InMemorySeatStorageBackend } from "../src/store/storage.ts";
+import { FileSeatStorageBackend, InMemorySeatStorageBackend, readForeignFileNoFollow } from "../src/store/storage.ts";
 
 export const EXIT_OK = 0;
 export const EXIT_FAIL = 1;
@@ -107,13 +107,14 @@ export function runMigrateScript(argv: string[], deps: MigrateScriptDeps = defau
 }
 
 /**
- * Run the real decision against a copy of the store held in memory. The lock is
- * not taken: a preview cannot promise anything about a store another process is
- * writing, and taking a write lock to answer a question would block the very
- * session the operator is about to migrate.
+ * Run the real decision against a copy of the store held in memory. The store
+ * is read with the same no-lock, no-chmod O_NOFOLLOW snapshot used for foreign
+ * files: a preview must not take the write lock (it would block the session the
+ * operator is about to migrate) and must not touch metadata — the backend's
+ * read() fchmods 0600 as a side effect, which a dry run may never do.
  */
 function previewMigration(storePath: string, legacyPath: string, authPath: string): MigrationResult {
-	const current = new FileSeatStorageBackend(storePath).read((content) => content);
+	const current = readForeignFileNoFollow(storePath);
 	const preview = new InMemorySeatStorageBackend();
 	if (current !== undefined) preview.withLock(() => ({ result: undefined, next: current }));
 	return migrateLegacyProfiles({ backend: preview, legacyPath, authPath });

@@ -98,6 +98,8 @@ Review of T043..T045 returned APPROVE with three P2 findings, all in the T044 ex
 
 - [x] T049 [REQ-008] Move the migration trigger out of the extension: create `scripts/migrate-legacy.ts` (dry-run by default printing what would import/skip and why, `--apply` executes via the existing `src/store/migrate.ts` logic and lock); delete the first-load hook from `src/extension/index.ts`; update the T019 smoke pass signal from migration-side-effect to command-registration; retarget AC-014 tests at the script and add AC-020 (extension load never migrates, with and without a legacy file present). Verify: `bun test test/store/migrate.test.ts test/extension && bun run smoke:extension` → GREEN + pass
 
+- [x] T050 [REQ-008, REQ-010] Review remediation: dry-run reads the store via the no-lock/no-chmod foreign snapshot (was: backend read that fchmods 0600 and locks — P1); snapshot assertions extended to mode + directory listing with a 0644 regression; `/seat usage` → view added to REQ-010/AC-018 (P2 scope disposition: spec catches up, behavior kept). Verify: `bun test test/store/migrate.test.ts` → GREEN
+
 ## Human Acceptance
 
 - [ ] H001 [AC-003] Two real pi sessions with `PI_SEAT=work` / `PI_SEAT=personal` in tmux: requests attributed to the pinned accounts, store default unchanged
