@@ -129,6 +129,7 @@ AC-to-test matrix（bun test，除另註明）：
 3. `/seat login` 逐帳號建立新 grant（或使用 migration 匯入的 dormant profiles）。
 4. 驗證雙 session pin 工作流跑順一週。
 5. Rollback：停止所有 Pi/CLI process → settings.json 移除 package → 還原 Python `bin/seat`（git revert dotfiles）。注意：已 migrate 且用過的 profile，其 refresh token 已 rotate 進 `seat.json`，legacy 檔中是已 spent token，該帳號可能需重新 login/save。保留 `seat.json` 直到 rollback 驗證完成；最後跑 `seat status` 與一次 usage check 確認。
+6. Post-transition cleanup：步驟 3–4 驗證完成、rollback 窗口過後，移除 migration 路徑（`src/store/migrate.ts`、extension 的 first-load hook、對應測試）並同步攸除 REQ-008。它是一次性 upgrade path（服務對象只有本機的 Python seat legacy store，對其他使用者永遠 no-op），不是永久 compat contract。
 
 ## Open questions
 
