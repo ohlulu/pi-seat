@@ -22,9 +22,10 @@ import { FileSeatStorageBackend, decodeStore, type SeatStorageBackend } from "..
 import { SelectorError, parseSelector, resolvePins, resolveSelection } from "../store/selector.ts";
 import { CommandError, loginProfile, removeSelection, renameProfile, runMutation, useSelection } from "../extension/commands.ts";
 import { adapterFor, createSeatProviderAdapters, toRefreshCallback, type SeatProviderAdapter } from "../extension/oauth.ts";
-import { builtinUsage, profileUsage, type UsageFetchOptions } from "../usage/fetch.ts";
+import type { UsageFetchOptions } from "../usage/fetch.ts";
 import { planLayout } from "../usage/layout.ts";
-import { accountLine, hintLine, renderClaudeUsage, renderCodexUsage, type ClaudeUsage, type CodexUsage, type RenderOptions } from "../usage/render.ts";
+import { collectUsage, renderAccountBlock } from "../usage/report.ts";
+import type { RenderOptions } from "../usage/render.ts";
 
 export const VERSION = "3.0.0";
 const EXIT_OK = 0;
@@ -382,88 +383,56 @@ async function cmdUsage(rest: string[], deps: CliDeps): Promise<number> {
 	const extra = rest.filter((t) => t !== "--json");
 	if (extra.length > 0) throw new UsageInvocationError("usage: seat usage [--json]");
 
-	const store = loadStore(deps);
-	const pins = reportingPins(store, deps);
+	const pins = reportingPins(loadStore(deps), deps);
 	const layout = planLayout(deps.termWidth);
 	const renderOptions: RenderOptions = { color: deps.color && !asJson, now: deps.now ?? (() => new Date()) };
-	const fetchOptions = deps.fetchOptions ?? {};
-	let failed = false;
-	const json: Record<string, unknown> = {};
-
-	const emit = (lines: string[]) => {
-		if (!asJson) for (const line of lines) deps.io.out(line);
-	};
 
 	// REQ-006: every stored profile, the built-in login credential, and Codex.
-	// Both providers walk the same path (T039): all stored profiles (live dot on
-	// the effective selection), then the built-in snapshot as its own block.
-	const renderBlock = (provider: ProviderId, usage: ClaudeUsage | CodexUsage): string[] =>
-		provider === "anthropic"
-			? renderClaudeUsage(layout, usage as ClaudeUsage, renderOptions)
-			: renderCodexUsage(layout, usage as CodexUsage, renderOptions);
-	const blockNote = (provider: ProviderId, usage: ClaudeUsage | CodexUsage): string =>
-		provider === "anthropic" ? "" : String((usage as CodexUsage).plan_type ?? "");
+	// Both providers walk the same path (T039); the walk itself lives in
+	// src/usage/report.ts because the in-session view renders the same accounts.
+	const accounts = await collectUsage({
+		backend: deps.backend,
+		authPath: deps.authPath,
+		pins,
+		refreshFor: (provider) => toRefreshCallback(adapterFor(deps.adapters, provider)),
+		...(deps.fetchOptions !== undefined ? { fetchOptions: deps.fetchOptions } : {}),
+	});
 
-	for (const provider of PROVIDER_IDS) {
-		const section = store.providers[provider];
-		const selection = resolveSelection(store, provider, pins[provider]);
-		const activeLabel = selection.source === "builtin" ? null : selection.label;
-		const builtinName = provider === "anthropic" ? "Claude" : "Codex";
-		const profileJson: Record<string, unknown> = {};
-
-		for (const label of Object.keys(section?.profiles ?? {})) {
-			const akas = Object.keys(section?.aliases ?? {})
-				.filter((a) => section?.aliases[a] === label)
-				.sort();
-			const adapter = adapterFor(deps.adapters, provider);
-			const result = await profileUsage(deps.backend, provider, label, toRefreshCallback(adapter), fetchOptions);
-			if (result.ok) {
-				emit(["", accountLine(layout, label, akas, label === activeLabel, blockNote(provider, result.usage), renderOptions)]);
-				emit(renderBlock(provider, result.usage));
-				profileJson[label] = result.usage;
-			} else {
-				failed = true;
-				if (asJson) deps.io.err(`seat: ${label}: unavailable — ${result.error}`);
-				else {
-					emit(["", accountLine(layout, label, akas, false, "unavailable", renderOptions)]);
-					emit([hintLine(layout, result.error, renderOptions)]);
-				}
+	let failed = false;
+	for (const account of accounts) {
+		if (!account.result.ok && account.result.failed) {
+			failed = true;
+			if (asJson) {
+				const who = account.kind === "builtin" ? `${account.name} built-in` : account.name;
+				deps.io.err(`seat: ${who}: unavailable — ${account.result.hint}`);
+				continue;
 			}
 		}
-
-		const builtin = await builtinUsage(deps.authPath, provider, fetchOptions);
-		if (builtin !== undefined) {
-			const live = selection.source === "builtin";
-			if ("ok" in builtin && builtin.ok) {
-				const note = blockNote(provider, builtin.usage) || "built-in";
-				emit(["", accountLine(layout, builtinName, [], live, note, renderOptions)]);
-				emit(renderBlock(provider, builtin.usage));
-				json[`${provider}-builtin`] = builtin.usage;
-			} else if ("expired" in builtin) {
-				emit(["", accountLine(layout, builtinName, [], live, "token expired", renderOptions)]);
-				emit([hintLine(layout, "run pi once to refresh it — seat never touches Pi's grant", renderOptions)]);
-			} else {
-				failed = true;
-				const message = "error" in builtin ? builtin.error : "unavailable";
-				if (asJson) deps.io.err(`seat: ${builtinName} built-in: unavailable — ${message}`);
-				else {
-					emit(["", accountLine(layout, builtinName, [], live, "unavailable", renderOptions)]);
-					emit([hintLine(layout, message, renderOptions)]);
-				}
-			}
-		}
-
-		// JSON: {active, profiles} whenever named profiles are in play; a lone
-		// built-in credential keeps the legacy top-level usage shape.
-		if (Object.keys(profileJson).length > 0 || activeLabel !== null) {
-			json[provider] = { active: activeLabel, profiles: profileJson };
-		} else if (json[`${provider}-builtin`] !== undefined) {
-			json[provider] = json[`${provider}-builtin`];
-			delete json[`${provider}-builtin`];
-		}
+		if (!asJson) for (const line of ["", ...renderAccountBlock(layout, account, renderOptions)]) deps.io.out(line);
 	}
 
-	if (asJson) deps.io.out(JSON.stringify(json, null, 2));
+	if (asJson) {
+		const json: Record<string, unknown> = {};
+		for (const provider of PROVIDER_IDS) {
+			const mine = accounts.filter((a) => a.provider === provider);
+			const activeLabel = mine.find((a) => a.kind === "profile" && a.live)?.label ?? null;
+			const profileJson: Record<string, unknown> = {};
+			for (const account of mine) {
+				if (account.kind === "profile" && account.result.ok) profileJson[account.name] = account.result.usage;
+			}
+			const builtin = mine.find((a) => a.kind === "builtin");
+			const builtinUsageJson = builtin?.result.ok === true ? builtin.result.usage : undefined;
+			// {active, profiles} whenever named profiles are in play; a lone
+			// built-in credential keeps the legacy top-level usage shape.
+			if (Object.keys(profileJson).length > 0 || activeLabel !== null) {
+				json[provider] = { active: activeLabel, profiles: profileJson };
+				if (builtinUsageJson !== undefined) json[`${provider}-builtin`] = builtinUsageJson;
+			} else if (builtinUsageJson !== undefined) {
+				json[provider] = builtinUsageJson;
+			}
+		}
+		deps.io.out(JSON.stringify(json, null, 2));
+	}
 	return failed ? EXIT_FAIL : EXIT_OK;
 }
 

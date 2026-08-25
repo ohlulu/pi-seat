@@ -32,7 +32,7 @@ export interface RenderOptions {
 	timeZone?: string;
 }
 
-type Segment = readonly [text: string, code: string | undefined];
+export type Segment = readonly [text: string, code: string | undefined];
 
 function colorize(code: string | undefined, text: string, color: boolean): string {
 	return code !== undefined && color ? `${code}${text}${RESET}` : text;
