@@ -79,6 +79,7 @@ Review of 608670c..HEAD returned NEEDS-FIX with 7 findings. One task per finding
 Re-review of the Phase 8 fixes returned three P1 findings — T033 and T037 did not fully close. Same rule: regression test reproduces the flaw first, then the fix.
 
 - [x] T040 [REQ-001, REQ-005] T033's inode ownership check runs before `writePrivate`, but the commit is the later `renameSync`: a writer paused in that window still clobbers a stale-takeover writer (reproduced through the `onBeforeRename` seam — no error, stale content wins). Fence the publication itself: re-verify ownership immediately before the rename, sync and async paths. Regression: takeover injected at `onBeforeRename` → commit refused, takeover's rotation intact. Verify: `bun test test/store/storage.test.ts` → GREEN
+- [x] T041 [REQ-001, REQ-005] After refusing a compromised commit, the release path still ran proper-lockfile's release, which removes the lock directory by path and so deletes the takeover writer's NEW lock — a third writer can enter during the successor's commit. Release must be ownership-aware: skip it when the lock is no longer ours, and drop proper-lockfile's bookkeeping (its exit handler rmdirs every registered lock) without touching the directory. Regression: 'takeover still holding lock' asserts the new lock survives, in the sync path, the async path, and across the refusing process's exit. Verify: `bun test test/store/storage.test.ts` → GREEN
 
 ## Human Acceptance
 

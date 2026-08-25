@@ -11,6 +11,9 @@
  *   lock could clobber another process's rotated credential. The fence sits on
  *   the rename (the actual publication), not on the earlier temp-file write:
  *   a writer paused mid-write is exactly the writer a takeover races.
+ * - Releasing is fenced the same way. proper-lockfile removes the lock
+ *   directory by path, so after a takeover the release (and its exit handler)
+ *   would delete the SUCCESSOR's lock and let a third writer in mid-commit.
  * - Temp file created 0600 with O_EXCL in dirname(seat.json); same-volume
  *   rename completes the atomic write.
  * - Reads open with O_NOFOLLOW and reject anything but a regular file.
@@ -91,6 +94,15 @@ const LOCKFILE_FS_ADAPTER: LockfileFsAdapter = {
 	utimesSync,
 };
 
+// Used to drop proper-lockfile's bookkeeping for a lock we no longer own
+// without removing the directory itself — unlockSync clears the update timer
+// and the exit-handler registry, then rmdirs through this adapter.
+const NON_REMOVING_LOCKFILE_FS: LockfileFsAdapter = {
+	...LOCKFILE_FS_ADAPTER,
+	rmdir: ((_path: unknown, callback: (error: Error | null) => void) => callback(null)) as unknown as typeof rmdir,
+	rmdirSync: (() => undefined) as unknown as typeof rmdirSync,
+};
+
 export type StorageLockResult<T> = {
 	result: T;
 	/** When set, committed as the new file content before the lock is released. */
@@ -118,12 +130,14 @@ export class FileSeatStorageBackend implements SeatStorageBackend {
 	read<T>(reader: (current: string | undefined) => T): T {
 		if (!this.fileOrLockExistsForRead()) return reader(undefined);
 		let release: (() => void) | undefined;
+		let ownership: bigint | undefined;
 		try {
 			release = this.acquireLockSyncWithRetry();
+			ownership = this.captureLockOwnership();
 			return reader(readPrivateRegularFileIfExists(this.filePath));
 		} finally {
 			try {
-				release?.();
+				this.releaseOwnedLock(release, ownership);
 			} catch {
 				// A compromised lock may already belong to another process.
 			}
@@ -133,9 +147,10 @@ export class FileSeatStorageBackend implements SeatStorageBackend {
 	withLock<T>(mutator: (current: string | undefined) => StorageLockResult<T>): T {
 		this.ensureParentDirectory();
 		let release: (() => void) | undefined;
+		let ownership: bigint | undefined;
 		try {
 			release = this.acquireLockSyncWithRetry();
-			const ownership = this.captureLockOwnership();
+			ownership = this.captureLockOwnership();
 			const { result, next } = mutator(readPrivateRegularFileIfExists(this.filePath));
 			// DEC-003: no commit after compromise. If this writer was paused long
 			// enough for the lock to go stale and be taken over, the lock directory
@@ -145,7 +160,7 @@ export class FileSeatStorageBackend implements SeatStorageBackend {
 			return result;
 		} finally {
 			try {
-				release?.();
+				this.releaseOwnedLock(release, ownership);
 			} catch {
 				// A compromised lock may already belong to another process; the
 				// ownership assertion above is the real guard — never let a release
@@ -157,6 +172,7 @@ export class FileSeatStorageBackend implements SeatStorageBackend {
 	async withLockAsync<T>(mutator: (current: string | undefined) => Promise<StorageLockResult<T>>): Promise<T> {
 		this.ensureParentDirectory();
 		let release: (() => Promise<void>) | undefined;
+		let ownership: bigint | undefined;
 		let compromisedError: Error | undefined;
 		const throwIfCompromised = () => {
 			if (compromisedError) throw compromisedError;
@@ -167,7 +183,7 @@ export class FileSeatStorageBackend implements SeatStorageBackend {
 				compromisedError = error;
 			});
 			throwIfCompromised();
-			const ownership = this.captureLockOwnership();
+			ownership = this.captureLockOwnership();
 			const { result, next } = await mutator(readPrivateRegularFileIfExists(this.filePath));
 			// DEC-003: never commit after compromise — the lock no longer excludes
 			// other writers, so this write could overwrite a rotated credential.
@@ -178,14 +194,31 @@ export class FileSeatStorageBackend implements SeatStorageBackend {
 			throwIfCompromised();
 			return result;
 		} finally {
-			if (release) {
-				try {
-					await release();
-				} catch {
-					// A compromised lock may already have been removed by another process.
-				}
+			try {
+				await this.releaseOwnedLock(release, ownership);
+			} catch {
+				// A compromised lock may already have been removed by another process.
 			}
 		}
+	}
+
+	/**
+	 * Release only what is still ours. After a stale takeover the lock directory
+	 * belongs to the successor: removing it would let a third writer in while
+	 * the successor is mid-commit (T041). In that case drop proper-lockfile's
+	 * own bookkeeping instead — its exit handler rmdirs every lock still
+	 * registered, so a refusing CLI process would otherwise delete the
+	 * successor's lock on the way out.
+	 */
+	private releaseOwnedLock<R>(release: (() => R) | undefined, ownership: bigint | undefined): R | undefined {
+		if (release === undefined) return undefined;
+		if (this.stillOwnsLock(ownership)) return release();
+		try {
+			lockfile.unlockSync(this.filePath, { fs: NON_REMOVING_LOCKFILE_FS, realpath: false });
+		} catch {
+			// proper-lockfile's own compromise detector may have dropped it already.
+		}
+		return undefined;
 	}
 
 	/** Inode of our lock directory at acquisition; stale takeover recreates it. */
@@ -197,14 +230,18 @@ export class FileSeatStorageBackend implements SeatStorageBackend {
 		}
 	}
 
-	private assertLockOwnership(acquiredIno: bigint | undefined): void {
-		let currentIno: bigint | undefined;
+	/** False whenever ownership cannot be PROVEN — unprovable means not ours. */
+	private stillOwnsLock(acquiredIno: bigint | undefined): boolean {
+		if (acquiredIno === undefined) return false;
 		try {
-			currentIno = statSync(`${this.filePath}.lock`, { bigint: true }).ino;
+			return statSync(`${this.filePath}.lock`, { bigint: true }).ino === acquiredIno;
 		} catch {
-			currentIno = undefined;
+			return false;
 		}
-		if (acquiredIno === undefined || currentIno === undefined || currentIno !== acquiredIno) {
+	}
+
+	private assertLockOwnership(acquiredIno: bigint | undefined): void {
+		if (!this.stillOwnsLock(acquiredIno)) {
 			throw new Error(`seat store lock compromised for ${this.filePath}; commit refused to protect the other writer's rotation`);
 		}
 	}

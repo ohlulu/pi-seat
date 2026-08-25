@@ -196,8 +196,55 @@ describe("DEC-003: no commit after compromise (T033, T040 regressions)", () => {
 				}),
 			).toThrow(/compromised/);
 			expect(readFileSync(path, "utf8")).toBe(storeWithProfile("rt-original"));
+			// T041: releasing here would rmdir the SUCCESSOR's lock (proper-lockfile
+			// removes by path, never by ownership), opening the store to a third
+			// writer while the successor is mid-commit.
+			expect(existsSync(`${path}.lock`)).toBe(true);
 		});
 	});
+
+	test("T041 regression: withLockAsync also leaves the successor's lock alone", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "seat-storage-"));
+		try {
+			const path = join(dir, "seat.json");
+			new FileSeatStorageBackend(path).withLock(() => ({ result: undefined, next: storeWithProfile("rt-original") }));
+
+			const slowWriter = new FileSeatStorageBackend(path);
+			await expect(
+				slowWriter.withLockAsync(async () => {
+					rmSync(`${path}.lock`, { recursive: true, force: true });
+					mkdirSync(`${path}.lock`);
+					return { result: undefined, next: storeWithProfile("rt-stale-clobber") };
+				}),
+			).rejects.toThrow(/compromised/);
+			expect(readFileSync(path, "utf8")).toBe(storeWithProfile("rt-original"));
+			expect(existsSync(`${path}.lock`)).toBe(true);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("T041 regression: the successor's lock survives the refusing process exiting", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "seat-storage-"));
+		try {
+			const path = join(dir, "seat.json");
+			new FileSeatStorageBackend(path).withLock(() => ({ result: undefined, next: storeWithProfile("rt-original") }));
+
+			// proper-lockfile also rmdirs every still-registered lock on process
+			// exit, so skipping the release is not enough on its own: a CLI that
+			// refuses a commit and exits milliseconds later would still delete the
+			// successor's lock.
+			const worker = new URL("./lock-abandon-worker.ts", import.meta.url).pathname;
+			const proc = Bun.spawn(["bun", worker, path], { stdout: "pipe", stderr: "pipe" });
+			const code = await proc.exited;
+			if (code !== 0) throw new Error(`worker exited ${code}: ${await new Response(proc.stderr).text()}`);
+
+			expect(existsSync(`${path}.lock`)).toBe(true);
+			expect(readFileSync(path, "utf8")).toBe(storeWithProfile("rt-original"));
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	}, 30_000);
 
 	test("T040 regression: a takeover landing between the check and the rename cannot be clobbered", () => {
 		withTempDir((dir) => {
