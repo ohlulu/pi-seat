@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, lstatSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { emptyStore, type SeatCredential } from "../../src/store/schema.ts";
@@ -155,6 +155,57 @@ describe("FileSeatStorageBackend (AC-002)", () => {
 				rmSync(dir, { recursive: true, force: true });
 			}
 		})();
+	});
+});
+
+describe("DEC-003: no commit after compromise (T033 regression)", () => {
+	test("a writer resuming after stale takeover cannot overwrite the new writer's commit", () => {
+		withTempDir((dir) => {
+			const path = join(dir, "seat.json");
+			new FileSeatStorageBackend(path).withLock(() => ({ result: undefined, next: storeWithProfile("rt-original") }));
+
+			const slowWriter = backend(dir);
+			expect(() =>
+				slowWriter.withLock(() => {
+					// Simulate the pause: the lock goes stale (stand-in: remove it,
+					// like T007's utimes trick) and another process takes over,
+					// rotates the credential, and releases.
+					rmSync(`${path}.lock`, { recursive: true, force: true });
+					new FileSeatStorageBackend(path).withLock(() => ({ result: undefined, next: storeWithProfile("rt-rotated") }));
+					// The paused writer now resumes and tries to commit stale state.
+					return { result: undefined, next: storeWithProfile("rt-stale-clobber") };
+				}),
+			).toThrow(/compromised/);
+
+			// The takeover's rotation survives; the stale commit never landed.
+			expect(readFileSync(path, "utf8")).toBe(storeWithProfile("rt-rotated"));
+		});
+	});
+
+	test("a takeover that is still holding the lock also blocks the resumed writer", () => {
+		withTempDir((dir) => {
+			const path = join(dir, "seat.json");
+			new FileSeatStorageBackend(path).withLock(() => ({ result: undefined, next: storeWithProfile("rt-original") }));
+
+			const slowWriter = backend(dir);
+			expect(() =>
+				slowWriter.withLock(() => {
+					rmSync(`${path}.lock`, { recursive: true, force: true });
+					mkdirSync(`${path}.lock`); // another process's fresh lock, still held
+					return { result: undefined, next: storeWithProfile("rt-stale-clobber") };
+				}),
+			).toThrow(/compromised/);
+			expect(readFileSync(path, "utf8")).toBe(storeWithProfile("rt-original"));
+		});
+	});
+
+	test("read-only mutations never trip the ownership check", () => {
+		withTempDir((dir) => {
+			const storage = backend(dir);
+			storage.withLock(() => ({ result: undefined, next: storeWithProfile("rt-1") }));
+			const seen = storage.withLock((current) => ({ result: current }));
+			expect(seen).toContain("rt-1");
+		});
 	});
 });
 

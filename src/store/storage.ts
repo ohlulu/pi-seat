@@ -120,7 +120,11 @@ export class FileSeatStorageBackend implements SeatStorageBackend {
 			release = this.acquireLockSyncWithRetry();
 			return reader(readPrivateRegularFileIfExists(this.filePath));
 		} finally {
-			release?.();
+			try {
+				release?.();
+			} catch {
+				// A compromised lock may already belong to another process.
+			}
 		}
 	}
 
@@ -129,11 +133,25 @@ export class FileSeatStorageBackend implements SeatStorageBackend {
 		let release: (() => void) | undefined;
 		try {
 			release = this.acquireLockSyncWithRetry();
+			const ownership = this.captureLockOwnership();
 			const { result, next } = mutator(readPrivateRegularFileIfExists(this.filePath));
-			if (next !== undefined) this.writePrivate(next);
+			if (next !== undefined) {
+				// DEC-003: no commit after compromise. If this writer was paused
+				// long enough for the lock to go stale and be taken over, the lock
+				// directory was recreated (new inode) — committing now would
+				// overwrite the other process's rotated credential.
+				this.assertLockOwnership(ownership);
+				this.writePrivate(next);
+			}
 			return result;
 		} finally {
-			release?.();
+			try {
+				release?.();
+			} catch {
+				// A compromised lock may already belong to another process; the
+				// ownership assertion above is the real guard — never let a release
+				// failure mask it.
+			}
 		}
 	}
 
@@ -150,11 +168,17 @@ export class FileSeatStorageBackend implements SeatStorageBackend {
 				compromisedError = error;
 			});
 			throwIfCompromised();
+			const ownership = this.captureLockOwnership();
 			const { result, next } = await mutator(readPrivateRegularFileIfExists(this.filePath));
 			// DEC-003: never commit after compromise — the lock no longer excludes
 			// other writers, so this write could overwrite a rotated credential.
+			// onCompromised is the async detector; the synchronous inode check
+			// closes the window where the updater has not fired yet.
 			throwIfCompromised();
-			if (next !== undefined) this.writePrivate(next);
+			if (next !== undefined) {
+				this.assertLockOwnership(ownership);
+				this.writePrivate(next);
+			}
 			throwIfCompromised();
 			return result;
 		} finally {
@@ -165,6 +189,27 @@ export class FileSeatStorageBackend implements SeatStorageBackend {
 					// A compromised lock may already have been removed by another process.
 				}
 			}
+		}
+	}
+
+	/** Inode of our lock directory at acquisition; stale takeover recreates it. */
+	private captureLockOwnership(): bigint | undefined {
+		try {
+			return statSync(`${this.filePath}.lock`, { bigint: true }).ino;
+		} catch {
+			return undefined;
+		}
+	}
+
+	private assertLockOwnership(acquiredIno: bigint | undefined): void {
+		let currentIno: bigint | undefined;
+		try {
+			currentIno = statSync(`${this.filePath}.lock`, { bigint: true }).ino;
+		} catch {
+			currentIno = undefined;
+		}
+		if (acquiredIno === undefined || currentIno === undefined || currentIno !== acquiredIno) {
+			throw new Error(`seat store lock compromised for ${this.filePath}; commit refused to protect the other writer's rotation`);
 		}
 	}
 
