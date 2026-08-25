@@ -53,6 +53,7 @@ Selector grammar（所有接受 selector 的指令與 `PI_SEAT` 共用）：
 | AC-005 | 無 pin 的 session | `/seat use work` | store default 更新；本 session 與之後所有無 pin session 生效 |
 | AC-006 | provider 無 default 無 pin | 任何 turn | Pi 內建登入原樣運作，runtime 無 seat override |
 | AC-016 | 有 pin 的 session | `/seat use other` | store default 更新；本 session 仍使用 pin；顯示「default 已更新，本 session 維持 pin」提示 |
+| AC-017 | profile `ohlulu` 存在，無 alias `o` | `/seat ohlulu -a o` | default 指向 ohlulu；alias `o` 指向 ohlulu；後續 `/seat o` 生效 |
 
 ### REQ-004: Fail-closed runtime application
 
@@ -87,7 +88,7 @@ CLI synopsis 與 I/O 契約（與 Python 版一致）：
 | `seat usage [--json]` | usage；`--json` 掛在 `usage` 子指令 |
 | `seat status [--plain]` | 狀態；`--plain` 輸出 TSV |
 | `seat whoami [--plain]` | 離線：報告 store default 與（pi session 內）當前 pin |
-| `seat use <selector>` / `seat <selector>` | 寫 global default（shorthand 同義） |
+| `seat use <selector> [-a\|--alias <alias>]…` / `seat <selector> [-a …]` | 寫 global default（shorthand 同義）；`-a` 同時把 alias 指向目標 profile（沿用 Python seat 的 use 語意） |
 | `seat login <selector> [-a\|--alias <alias>]…` | named login，alias repeatable |
 | `seat rm <selector> [--force\|--no-input]` | 刪除 profile |
 | `seat rename <old-selector> <new-label>` | 改名；old selector 決定 provider |
@@ -136,6 +137,17 @@ WHEN the active openai-codex account changes, the extension SHALL invalidate liv
 | AC | Given | When | Then |
 |---|---|---|---|
 | AC-015 | codex 帳號切換 | 切換完成 | 既有 WebSocket 連線被關閉（close 完成後才回報切換成功），下一請求以新 credential 建立 |
+
+### REQ-010: In-session usage view
+
+WHEN `/seat` runs with no arguments, or `/seat status` runs, in a TUI session, the extension SHALL open an interactive usage view rendering the same bars as the CLI (all stored profiles + built-in + Codex) plus the current default/pin state, and SHALL close on `esc` or `q`. WHERE the session is not TUI (`ctx.mode !== "tui"`；RPC、print mode), the command SHALL fall back to text output instead of opening a component.
+
+渲染復用 `src/usage` 純模組；view 開啟期間的 refresh 仍走 REQ-005 路徑。
+
+| AC | Given | When | Then |
+|---|---|---|---|
+| AC-018 | TUI session | `/seat` 或 `/seat status` | view 開啟並渲染 usage bars 與 default/pin 狀態；`esc` 與 `q` 都關閉 view |
+| AC-019 | 非 TUI session（RPC / `pi -p`） | `/seat status` | 文字輸出，不開 component，不 hang |
 
 ## Non-functional
 
