@@ -31,3 +31,4 @@ Adapted components (see docs/specs/v1/plan.md DEC-001):
 - src/store/storage.ts   — locked atomic credential store
 - src/extension/runtime-auth.ts — runtime overlay coordinator
 - src/extension/oauth.ts — provider OAuth adapters
+pi-coding-agent: dist/utils/open-browser.js adapted into src/extension/open-browser.ts (MIT)
