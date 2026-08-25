@@ -17,22 +17,25 @@
 ## 安裝
 
 ```sh
-git clone https://github.com/ohlulu/pi-seat.git
-cd pi-seat && bun install
+pi install npm:pi-seat    # extension — 在 Pi 裡加入 /seat
+bun add -g pi-seat        # seat CLI 裝到 PATH
 ```
 
-把 repo 路徑加進 `~/.pi/agent/settings.json` 的 `packages` 來註冊 extension：
+<details>
+<summary>或從原始碼安裝</summary>
 
-```json
-{ "packages": ["/path/to/pi-seat"] }
+```sh
+git clone https://github.com/ohlulu/pi-seat.git && cd pi-seat && bun install
 ```
 
-在 `PATH` 上建立 `seat` CLI shim：
+把 repo 路徑加進 `~/.pi/agent/settings.json` 的 `packages`，並在 `PATH` 上建立 `seat` shim：
 
 ```sh
 printf '#!/bin/sh\nexec bun /path/to/pi-seat/src/cli/main.ts "$@"\n' > ~/.pi/agent/bin/seat
 chmod +x ~/.pi/agent/bin/seat
 ```
+
+</details>
 
 ## 快速上手
 

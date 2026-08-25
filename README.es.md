@@ -17,22 +17,25 @@ Gestor de múltiples cuentas para [Pi](https://github.com/badlogic/pi-mono): cam
 ## Instalación
 
 ```sh
-git clone https://github.com/ohlulu/pi-seat.git
-cd pi-seat && bun install
+pi install npm:pi-seat    # extensión — añade /seat a Pi
+bun add -g pi-seat        # CLI seat en tu PATH
 ```
 
-Registra la extensión añadiendo la ruta del repositorio a `packages` en `~/.pi/agent/settings.json`:
+<details>
+<summary>O desde el código fuente</summary>
 
-```json
-{ "packages": ["/path/to/pi-seat"] }
+```sh
+git clone https://github.com/ohlulu/pi-seat.git && cd pi-seat && bun install
 ```
 
-Crea el shim de la CLI `seat` en tu `PATH`:
+Añade la ruta del repositorio a `packages` en `~/.pi/agent/settings.json` y crea el shim `seat` en tu `PATH`:
 
 ```sh
 printf '#!/bin/sh\nexec bun /path/to/pi-seat/src/cli/main.ts "$@"\n' > ~/.pi/agent/bin/seat
 chmod +x ~/.pi/agent/bin/seat
 ```
+
+</details>
 
 ## Primeros pasos
 

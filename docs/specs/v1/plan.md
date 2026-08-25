@@ -59,8 +59,8 @@ read_when:
 
 ### DEC-006: 部署形態
 
-- Choice: repo 常駐 `~/Developer/ohlulu/pi-seat`；Pi 以 local package path 載入 extension（`~/.pi/agent/settings.json` packages 條目，經 `package.json` 的 `pi.extensions` manifest 指到 extension 入口）；CLI shim 覆蓋 `~/.pi/agent/bin/seat`（路徑不變，dotfiles `gg_add_allowlist` 無需改動）。不發 npm。
-- Alternatives: 發 npm 走 `pi install`（個人工具，發佈成本無收益）。
+- Choice: repo 常駐 `~/Developer/ohlulu/pi-seat`；本機 dogfooding 以 local package path 載入（settings.json packages 條目 + working-tree CLI shim）；對外發佈 npm `pi-seat`（`pi install npm:pi-seat` + `bun add -g pi-seat`），Pi 套件以 peerDependencies `*` 由 pi runtime 提供（同 pi-accounts pattern）。發佈程序見 `docs/RELEASING.md`。
+- History: v1 原判斷「不發 npm（個人工具，發佈成本無收益）」；0.1.0 由使用者拍板改發佈。
 
 ### DEC-007: In-session usage view 復用 usage 純模組
 

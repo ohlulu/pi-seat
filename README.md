@@ -17,22 +17,25 @@ Named multi-account manager for [Pi](https://github.com/badlogic/pi-mono) — sw
 ## Install
 
 ```sh
-git clone https://github.com/ohlulu/pi-seat.git
-cd pi-seat && bun install
+pi install npm:pi-seat    # extension — adds /seat to Pi
+bun add -g pi-seat        # seat CLI on your PATH
 ```
 
-Register the extension by adding the repo path to `packages` in `~/.pi/agent/settings.json`:
+<details>
+<summary>From source instead</summary>
 
-```json
-{ "packages": ["/path/to/pi-seat"] }
+```sh
+git clone https://github.com/ohlulu/pi-seat.git && cd pi-seat && bun install
 ```
 
-Create the `seat` CLI shim somewhere on your `PATH`:
+Add the repo path to `packages` in `~/.pi/agent/settings.json`, and put a `seat` shim on your `PATH`:
 
 ```sh
 printf '#!/bin/sh\nexec bun /path/to/pi-seat/src/cli/main.ts "$@"\n' > ~/.pi/agent/bin/seat
 chmod +x ~/.pi/agent/bin/seat
 ```
+
+</details>
 
 ## Quick start
 

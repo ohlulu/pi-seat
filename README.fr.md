@@ -17,22 +17,25 @@ Gestionnaire multi-comptes pour [Pi](https://github.com/badlogic/pi-mono) : basc
 ## Installation
 
 ```sh
-git clone https://github.com/ohlulu/pi-seat.git
-cd pi-seat && bun install
+pi install npm:pi-seat    # extension — ajoute /seat à Pi
+bun add -g pi-seat        # CLI seat dans votre PATH
 ```
 
-Enregistrez l'extension en ajoutant le chemin du dépôt à `packages` dans `~/.pi/agent/settings.json` :
+<details>
+<summary>Ou depuis les sources</summary>
 
-```json
-{ "packages": ["/path/to/pi-seat"] }
+```sh
+git clone https://github.com/ohlulu/pi-seat.git && cd pi-seat && bun install
 ```
 
-Créez le shim CLI `seat` dans votre `PATH` :
+Ajoutez le chemin du dépôt à `packages` dans `~/.pi/agent/settings.json`, puis créez le shim `seat` dans votre `PATH` :
 
 ```sh
 printf '#!/bin/sh\nexec bun /path/to/pi-seat/src/cli/main.ts "$@"\n' > ~/.pi/agent/bin/seat
 chmod +x ~/.pi/agent/bin/seat
 ```
+
+</details>
 
 ## Démarrage rapide
 

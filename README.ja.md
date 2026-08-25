@@ -17,22 +17,25 @@
 ## インストール
 
 ```sh
-git clone https://github.com/ohlulu/pi-seat.git
-cd pi-seat && bun install
+pi install npm:pi-seat    # 拡張 — Pi に /seat を追加
+bun add -g pi-seat        # seat CLI を PATH に配置
 ```
 
-`~/.pi/agent/settings.json` の `packages` にリポジトリのパスを追加して拡張を登録します:
+<details>
+<summary>ソースからインストールする場合</summary>
 
-```json
-{ "packages": ["/path/to/pi-seat"] }
+```sh
+git clone https://github.com/ohlulu/pi-seat.git && cd pi-seat && bun install
 ```
 
-`PATH` 上に `seat` CLI シムを作成します:
+`~/.pi/agent/settings.json` の `packages` にリポジトリのパスを追加し、`PATH` 上に `seat` シムを作成します:
 
 ```sh
 printf '#!/bin/sh\nexec bun /path/to/pi-seat/src/cli/main.ts "$@"\n' > ~/.pi/agent/bin/seat
 chmod +x ~/.pi/agent/bin/seat
 ```
+
+</details>
 
 ## クイックスタート
 

@@ -1,3 +1,4 @@
+#!/usr/bin/env bun
 /**
  * seat CLI entry (REQ-003, REQ-006, REQ-007).
  *

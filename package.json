@@ -1,12 +1,13 @@
 {
 	"name": "pi-seat",
-	"version": "1.0.0",
-	"private": true,
+	"version": "0.1.0",
 	"type": "module",
-	"description": "seat rewritten as a Pi extension + TS CLI; extension entry declared in the pi.extensions manifest",
+	"description": "Named multi-account manager for Pi: exclusive OAuth profile store, per-session pinning via PI_SEAT, and terminal usage meters for Anthropic and OpenAI Codex",
 	"license": "MIT",
 	"pi": {
-		"extensions": ["./src/extension/index.ts"]
+		"extensions": [
+			"./src/extension/index.ts"
+		]
 	},
 	"scripts": {
 		"test": "bun test",
@@ -19,9 +20,41 @@
 		"proper-lockfile": "^4.1.2"
 	},
 	"devDependencies": {
-		"@earendil-works/pi-coding-agent": "0.84.2",
 		"@types/bun": "^1.2.0",
 		"@types/proper-lockfile": "^4.1.4",
-		"typescript": "^5.7.0"
+		"typescript": "^5.7.0",
+		"@earendil-works/pi-coding-agent": "0.84.2",
+		"@earendil-works/pi-ai": "*"
+	},
+	"bin": {
+		"seat": "./src/cli/main.ts"
+	},
+	"files": [
+		"src",
+		"scripts/migrate-legacy.ts",
+		"LICENSE",
+		"NOTICE",
+		"README*.md",
+		"CHANGELOG.md"
+	],
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/ohlulu/pi-seat.git"
+	},
+	"homepage": "https://github.com/ohlulu/pi-seat#readme",
+	"bugs": "https://github.com/ohlulu/pi-seat/issues",
+	"keywords": [
+		"pi",
+		"pi-package",
+		"anthropic",
+		"claude",
+		"openai-codex",
+		"accounts",
+		"oauth",
+		"usage"
+	],
+	"peerDependencies": {
+		"@earendil-works/pi-ai": "*",
+		"@earendil-works/pi-coding-agent": "*"
 	}
 }
