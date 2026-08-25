@@ -137,18 +137,24 @@ export function loginProfile(
 export type RemoveResult = MutationOutcome &
 	(
 		| { action: "alias-removed"; provider: ProviderId; alias: string; target: string }
-		| { action: "needs-confirm"; provider: ProviderId; label: string }
+		| { action: "needs-confirm"; provider: ProviderId; label: string; refresh: string }
+		| { action: "stale"; provider: ProviderId; label: string; currentRefresh: string }
 		| { action: "profile-removed"; provider: ProviderId; label: string; droppedAliases: string[]; clearedDefault: boolean }
 	);
 
 /**
  * `rm <selector>`: an alias is removed immediately; removing a profile is
  * destructive (grant is lost) and requires `confirmedProfileRemoval`.
+ *
+ * TOCTOU guard (T036): needs-confirm carries the profile's refresh-token
+ * fingerprint. A confirmed removal passes it back as `expectedRefresh`; if the
+ * grant changed while the user was staring at the prompt, the mutation is
+ * rejected as `stale` and the caller re-asks against the new grant.
  */
 export function removeSelection(
 	store: SeatStore,
 	selectorInput: string,
-	options: { confirmedProfileRemoval?: boolean } = {},
+	options: { confirmedProfileRemoval?: boolean; expectedRefresh?: string } = {},
 ): RemoveResult {
 	const selector = parseSelector(selectorInput);
 	const sec = section(store, selector.provider);
@@ -161,11 +167,15 @@ export function removeSelection(
 	}
 
 	const label = selector.name;
-	if (own(sec.profiles, label) === undefined) {
+	const current = own(sec.profiles, label);
+	if (current === undefined) {
 		throw new CommandError(`no profile or alias "${label}" for provider "${selector.provider}"`);
 	}
 	if (!options.confirmedProfileRemoval) {
-		return { changed: false, action: "needs-confirm", provider: selector.provider, label };
+		return { changed: false, action: "needs-confirm", provider: selector.provider, label, refresh: current.refresh };
+	}
+	if (options.expectedRefresh !== undefined && options.expectedRefresh !== current.refresh) {
+		return { changed: false, action: "stale", provider: selector.provider, label, currentRefresh: current.refresh };
 	}
 
 	delete sec.profiles[label];

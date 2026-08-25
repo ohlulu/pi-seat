@@ -109,7 +109,7 @@ describe("removeSelection", () => {
 
 	test("profile removal is destructive: needs-confirm, then drops aliases and default", () => {
 		const store = seeded();
-		expect(removeSelection(store, "work")).toEqual({ changed: false, action: "needs-confirm", provider: "anthropic", label: "work" });
+		expect(removeSelection(store, "work")).toEqual({ changed: false, action: "needs-confirm", provider: "anthropic", label: "work", refresh: "rt-w" });
 
 		const confirmed = removeSelection(store, "work", { confirmedProfileRemoval: true });
 		expect(confirmed).toEqual({
@@ -129,6 +129,25 @@ describe("removeSelection", () => {
 
 	test("unknown name is an operation error", () => {
 		expect(() => removeSelection(seeded(), "nosuch")).toThrow(CommandError);
+	});
+
+	test("T036: confirmed removal with a stale fingerprint is rejected", () => {
+		const store = seeded();
+		const pre = removeSelection(store, "work");
+		expect(pre.action).toBe("needs-confirm");
+		if (pre.action !== "needs-confirm") throw new Error("unreachable");
+		expect(pre.refresh).toBe("rt-w"); // fingerprint of the grant being confirmed
+
+		// The grant is replaced between confirm and commit.
+		store.providers.anthropic!.profiles["work"] = cred("rt-replaced");
+		const stale = removeSelection(store, "work", { confirmedProfileRemoval: true, expectedRefresh: pre.refresh });
+		expect(stale).toEqual({ changed: false, action: "stale", provider: "anthropic", label: "work", currentRefresh: "rt-replaced" });
+		expect(store.providers.anthropic?.profiles["work"]?.refresh).toBe("rt-replaced"); // untouched
+
+		// Re-confirmed against the current fingerprint → removal proceeds.
+		const removed = removeSelection(store, "work", { confirmedProfileRemoval: true, expectedRefresh: "rt-replaced" });
+		expect(removed.action).toBe("profile-removed");
+		assertValid(store);
 	});
 });
 

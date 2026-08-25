@@ -208,14 +208,31 @@ async function cmdRm(rest: string[], deps: CliDeps): Promise<number> {
 	const pre = runMutation(deps.backend, (store) => removeSelection(store, selector, { confirmedProfileRemoval: force }));
 	if (pre.action === "needs-confirm") {
 		if (noInput) throw new CommandError(`removing profile "${pre.label}" needs confirmation; pass --force`);
-		const ok = await deps.io.confirm(`Delete profile "${pre.label}" and its grant?`);
-		if (!ok) {
-			deps.io.err("seat: rm cancelled");
-			return EXIT_FAIL;
+		// T036: each confirmation covers exactly one grant fingerprint. If the
+		// grant changes during the prompt, the removal is rejected as stale and
+		// the user is asked again about what is actually there now.
+		let expectedRefresh = pre.refresh;
+		for (let attempt = 0; attempt < 5; attempt += 1) {
+			const ok = await deps.io.confirm(`Delete profile "${pre.label}" and its grant?`);
+			if (!ok) {
+				deps.io.err("seat: rm cancelled");
+				return EXIT_FAIL;
+			}
+			const result = runMutation(deps.backend, (store) =>
+				removeSelection(store, selector, { confirmedProfileRemoval: true, expectedRefresh }),
+			);
+			if (result.action === "profile-removed") {
+				deps.io.err(`seat: removed profile "${result.label}"`);
+				return EXIT_OK;
+			}
+			if (result.action === "stale") {
+				deps.io.err(`seat: profile "${result.label}" changed while waiting for confirmation; please re-confirm`);
+				expectedRefresh = result.currentRefresh;
+				continue;
+			}
+			throw new CommandError("rm raced another mutation; try again");
 		}
-		const result = runMutation(deps.backend, (store) => removeSelection(store, selector, { confirmedProfileRemoval: true }));
-		if (result.action === "profile-removed") deps.io.err(`seat: removed profile "${result.label}"`);
-		return EXIT_OK;
+		throw new CommandError("rm gave up after repeated concurrent changes");
 	}
 	if (pre.action === "alias-removed") deps.io.err(`seat: removed alias "${pre.alias}" (profile "${pre.target}" kept)`);
 	else if (pre.action === "profile-removed") deps.io.err(`seat: removed profile "${pre.label}"`);

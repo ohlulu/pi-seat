@@ -172,6 +172,29 @@ describe("AC-016: use in a pinned session persists the default and keeps the pin
 	});
 });
 
+describe("T036: extension rm re-asks when the grant changes during the prompt", () => {
+	test("replacement mid-confirm → second confirm, then the new grant is removed", async () => {
+		const backend = seededBackend();
+		const f = fakeCtx();
+		let confirmCount = 0;
+		(f.ctx.ui as { confirm: unknown }).confirm = async () => {
+			confirmCount += 1;
+			if (confirmCount === 1) {
+				backend.withLock((current) => {
+					const store = decodeStore(current!);
+					store.providers.anthropic!.profiles["work"] = cred("rt-replaced");
+					return { result: undefined, next: encodeStore(store) };
+				});
+			}
+			return true;
+		};
+		await runSeatCommand("rm work", f.ctx, deps(backend));
+		expect(confirmCount).toBe(2); // stale rejection forced a re-ask
+		expect(backend.read((c) => decodeStore(c)).providers.anthropic?.profiles["work"]).toBeUndefined();
+		expect(f.notices.some((n) => n.includes("changed while waiting"))).toBe(true);
+	});
+});
+
 describe("error surface", () => {
 	test("unknown selector reports an error notice, never throws", async () => {
 		const f = fakeCtx();

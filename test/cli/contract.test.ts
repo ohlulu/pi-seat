@@ -177,6 +177,29 @@ describe("mutations via CLI", () => {
 		expect(cli.backend.read((c) => decodeStore(c)).providers.anthropic?.profiles["personal"]).toBeUndefined();
 	});
 
+	test("T036 regression: grant replaced during the confirm wait is not deleted unseen", async () => {
+		const cli = makeCli();
+		let confirmCount = 0;
+		cli.deps.io.confirm = async (question) => {
+			cli.confirms.push(question);
+			confirmCount += 1;
+			if (confirmCount === 1) {
+				// While the user stares at the prompt, a login replaces the grant.
+				cli.backend.withLock((current) => {
+					const store = decodeStore(current!);
+					store.providers.anthropic!.profiles["work"] = cred("rt-replaced");
+					return { result: undefined, next: encodeStore(store) };
+				});
+			}
+			return true;
+		};
+		expect(await cli.run("rm", "work")).toBe(0);
+		// The first confirmation covered the OLD grant; deleting the replaced one
+		// requires a second look. Only then may the profile go.
+		expect(confirmCount).toBe(2);
+		expect(cli.backend.read((c) => decodeStore(c)).providers.anthropic?.profiles["work"]).toBeUndefined();
+	});
+
 	test("rm --no-input on a profile fails instead of prompting", async () => {
 		const cli = makeCli();
 		expect(await cli.run("rm", "work", "--no-input")).toBe(1);

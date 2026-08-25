@@ -131,14 +131,30 @@ async function handleRm(rest: string[], ctx: ExtensionCommandContext, deps: Seat
 
 	const pre = runMutation(deps.backend, (store) => removeSelection(store, selector, { confirmedProfileRemoval: force }));
 	if (pre.action === "needs-confirm") {
-		const ok = await ctx.ui.confirm("seat rm", `Delete profile "${pre.label}" and its grant? This cannot be undone.`);
-		if (!ok) {
-			ctx.ui.notify("seat: rm cancelled", "info");
-			return;
+		// T036: a confirmation covers exactly one grant fingerprint; a stale
+		// result means the grant changed mid-prompt and the user re-confirms.
+		let expectedRefresh = pre.refresh;
+		for (let attempt = 0; attempt < 5; attempt += 1) {
+			const ok = await ctx.ui.confirm("seat rm", `Delete profile "${pre.label}" and its grant? This cannot be undone.`);
+			if (!ok) {
+				ctx.ui.notify("seat: rm cancelled", "info");
+				return;
+			}
+			const result = runMutation(deps.backend, (store) =>
+				removeSelection(store, selector, { confirmedProfileRemoval: true, expectedRefresh }),
+			);
+			if (result.action === "profile-removed") {
+				notifyRemoved(ctx, result.label, result.droppedAliases);
+				return;
+			}
+			if (result.action === "stale") {
+				ctx.ui.notify(`seat: profile "${result.label}" changed while waiting for confirmation; please re-confirm`, "warning");
+				expectedRefresh = result.currentRefresh;
+				continue;
+			}
+			throw new CommandError("rm raced another mutation; try again");
 		}
-		const result = runMutation(deps.backend, (store) => removeSelection(store, selector, { confirmedProfileRemoval: true }));
-		if (result.action === "profile-removed") notifyRemoved(ctx, result.label, result.droppedAliases);
-		return;
+		throw new CommandError("rm gave up after repeated concurrent changes");
 	}
 	if (pre.action === "alias-removed") {
 		ctx.ui.notify(`seat: removed alias "${pre.alias}" (profile "${pre.target}" kept)`, "info");
