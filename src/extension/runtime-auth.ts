@@ -80,8 +80,19 @@ interface BlockedState {
 	reason: string;
 }
 
-/** Effective identity for connection-invalidation purposes. */
-type Identity = { kind: "label"; label: string } | { kind: "builtin" };
+/**
+ * Effective identity for connection-invalidation purposes. `fingerprint` is
+ * the ACCOUNT identity: accountId when the credential carries one (Codex
+ * always does), else the refresh token — the conservative fallback closes
+ * sockets on rotation rather than let a request ride a replaced account
+ * behind an unchanged label (T035).
+ */
+type Identity = { kind: "label"; label: string; fingerprint: string } | { kind: "builtin" };
+
+function accountFingerprint(credential: SeatCredential): string {
+	const accountId = credential["accountId"];
+	return typeof accountId === "string" && accountId.length > 0 ? `id:${accountId}` : `rt:${credential.refresh}`;
+}
 
 export class SeatRuntimeAuthCoordinator {
 	private readonly blocked: Partial<Record<ProviderId, BlockedState>> = {};
@@ -174,13 +185,14 @@ export class SeatRuntimeAuthCoordinator {
 
 			// REQ-009: close live Codex sockets BEFORE the new credential is
 			// applied and the switch is reported — no request rides a stale grant.
-			await this.invalidateOnIdentityChange(provider, { kind: "label", label });
+			const identity: Identity = { kind: "label", label, fingerprint: accountFingerprint(credential) };
+			await this.invalidateOnIdentityChange(provider, identity);
 
 			await this.options.runtime.setRuntimeApiKey(provider, auth.apiKey);
 			this.overlayActive[provider] = true;
 			await this.verifyApplied(provider, auth.apiKey);
 
-			this.appliedIdentity[provider] = { kind: "label", label };
+			this.appliedIdentity[provider] = identity;
 			return { provider, status: "applied", label };
 		} catch (error) {
 			return this.failClosed(provider, abort, error, credentialForRedaction);
@@ -229,7 +241,7 @@ export class SeatRuntimeAuthCoordinator {
 
 function identityEquals(left: Identity, right: Identity): boolean {
 	if (left.kind === "builtin" || right.kind === "builtin") return left.kind === right.kind;
-	return left.label === right.label;
+	return left.label === right.label && left.fingerprint === right.fingerprint;
 }
 
 /** Vendored from pi-accounts: validate provider-produced ModelAuth. */

@@ -73,6 +73,54 @@ describe("codex connection invalidation (AC-015)", () => {
 		expect(h.invalidations).toBe(afterFirstApply + 1);
 	});
 
+	test("T035 regression: same-label login to a DIFFERENT account closes the old socket", async () => {
+		const h = makeHarness({
+			sections: {
+				"openai-codex": {
+					default: "main",
+					profiles: { main: { ...cred("rt-a", FRESH), accountId: "acct-1" } },
+				},
+			},
+			spyInvalidation: true,
+		});
+		await runTurn(h);
+		const afterFirstApply = h.invalidations;
+
+		// /seat login main from elsewhere: same label, different ChatGPT account.
+		mutateStore(h.backend, (store) => {
+			store.providers["openai-codex"]!.profiles["main"] = { ...cred("rt-b", FRESH), accountId: "acct-2" };
+		});
+		await runTurn(h);
+		expect(h.aborts).toEqual([]);
+		expect(h.invalidations).toBe(afterFirstApply + 1); // old account's sockets closed
+		expect(h.runtime.keys.get("openai-codex")).toBe("at-rt-b");
+		// Close completed before the replacement credential was applied.
+		const events = h.runtime.events;
+		expect(events.lastIndexOf("invalidate:end")).toBeLessThan(events.indexOf("set:openai-codex:at-rt-b"));
+	});
+
+	test("T035: same-account refresh rotation does NOT close sockets", async () => {
+		const h = makeHarness({
+			sections: {
+				"openai-codex": {
+					default: "main",
+					profiles: { main: { ...cred("rt-a", FRESH), accountId: "acct-1" } },
+				},
+			},
+			spyInvalidation: true,
+		});
+		await runTurn(h);
+		const afterFirstApply = h.invalidations;
+
+		// A locked refresh rotated the token; the account identity is unchanged.
+		mutateStore(h.backend, (store) => {
+			store.providers["openai-codex"]!.profiles["main"] = { ...cred("rt-rotated", FRESH), accountId: "acct-1" };
+		});
+		await runTurn(h);
+		expect(h.invalidations).toBe(afterFirstApply); // A→A never closes
+		expect(h.runtime.keys.get("openai-codex")).toBe("at-rt-rotated");
+	});
+
 	test("anthropic switches never touch codex invalidation", async () => {
 		const h = makeHarness({
 			sections: {
