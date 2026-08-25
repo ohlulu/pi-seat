@@ -8,7 +8,9 @@
  * - Shared `stale` / `update` params and lock path across sync and async paths.
  * - Mutators re-check their condition on the content read inside the lock.
  * - After a lock is compromised, committing is forbidden — a write without the
- *   lock could clobber another process's rotated credential.
+ *   lock could clobber another process's rotated credential. The fence sits on
+ *   the rename (the actual publication), not on the earlier temp-file write:
+ *   a writer paused mid-write is exactly the writer a takeover races.
  * - Temp file created 0600 with O_EXCL in dirname(seat.json); same-volume
  *   rename completes the atomic write.
  * - Reads open with O_NOFOLLOW and reject anything but a regular file.
@@ -135,14 +137,11 @@ export class FileSeatStorageBackend implements SeatStorageBackend {
 			release = this.acquireLockSyncWithRetry();
 			const ownership = this.captureLockOwnership();
 			const { result, next } = mutator(readPrivateRegularFileIfExists(this.filePath));
-			if (next !== undefined) {
-				// DEC-003: no commit after compromise. If this writer was paused
-				// long enough for the lock to go stale and be taken over, the lock
-				// directory was recreated (new inode) — committing now would
-				// overwrite the other process's rotated credential.
-				this.assertLockOwnership(ownership);
-				this.writePrivate(next);
-			}
+			// DEC-003: no commit after compromise. If this writer was paused long
+			// enough for the lock to go stale and be taken over, the lock directory
+			// was recreated (new inode) — publishing now would overwrite the other
+			// process's rotated credential. writePrivate fences the rename itself.
+			if (next !== undefined) this.writePrivate(next, ownership);
 			return result;
 		} finally {
 			try {
@@ -175,10 +174,7 @@ export class FileSeatStorageBackend implements SeatStorageBackend {
 			// onCompromised is the async detector; the synchronous inode check
 			// closes the window where the updater has not fired yet.
 			throwIfCompromised();
-			if (next !== undefined) {
-				this.assertLockOwnership(ownership);
-				this.writePrivate(next);
-			}
+			if (next !== undefined) this.writePrivate(next, ownership);
 			throwIfCompromised();
 			return result;
 		} finally {
@@ -256,7 +252,7 @@ export class FileSeatStorageBackend implements SeatStorageBackend {
 		}
 	}
 
-	private writePrivate(contents: string): void {
+	private writePrivate(contents: string, ownership: bigint | undefined): void {
 		const tempPath = `${this.filePath}.${randomUUID()}.tmp`;
 		try {
 			// "wx" = O_EXCL: refuse to follow a pre-planted symlink or reuse a
@@ -264,6 +260,9 @@ export class FileSeatStorageBackend implements SeatStorageBackend {
 			writeFileSync(tempPath, contents, { ...PRIVATE_FILE_WRITE_OPTIONS, flag: "wx" });
 			chmodSync(tempPath, 0o600);
 			this.options.onBeforeRename?.();
+			// The rename IS the commit, so the ownership fence belongs here — a
+			// check before the temp write leaves the whole write window unfenced.
+			this.assertLockOwnership(ownership);
 			renameSync(tempPath, this.filePath);
 			chmodSync(this.filePath, 0o600);
 		} finally {

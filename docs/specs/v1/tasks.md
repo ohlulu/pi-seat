@@ -76,6 +76,10 @@ Review of 608670c..HEAD returned NEEDS-FIX with 7 findings. One task per finding
 - [x] T038 [REQ-004] AC-008 'stream zero' is tautological in the harness (the harness itself skips stream on abort). Add a runner-level integration: real `pi` RPC in a sandbox, custom provider pointing at a counting mock endpoint; control run proves the spy counts, seat-aborted run proves zero provider calls. Verify: `bun test test/integration/runner-abort.test.ts` → GREEN
 - [x] T039 [REQ-006] CLI usage renders only the effective named Codex profile and skips built-in when a named selection exists. Render all stored Codex profiles like Anthropic, plus the built-in snapshot independently; JSON shape mirrors anthropic. Verify: `bun test test/cli/contract.test.ts` → GREEN
 
+Re-review of the Phase 8 fixes returned three P1 findings — T033 and T037 did not fully close. Same rule: regression test reproduces the flaw first, then the fix.
+
+- [x] T040 [REQ-001, REQ-005] T033's inode ownership check runs before `writePrivate`, but the commit is the later `renameSync`: a writer paused in that window still clobbers a stale-takeover writer (reproduced through the `onBeforeRename` seam — no error, stale content wins). Fence the publication itself: re-verify ownership immediately before the rename, sync and async paths. Regression: takeover injected at `onBeforeRename` → commit refused, takeover's rotation intact. Verify: `bun test test/store/storage.test.ts` → GREEN
+
 ## Human Acceptance
 
 - [ ] H001 [AC-003] Two real pi sessions with `PI_SEAT=work` / `PI_SEAT=personal` in tmux: requests attributed to the pinned accounts, store default unchanged

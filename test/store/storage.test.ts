@@ -158,7 +158,7 @@ describe("FileSeatStorageBackend (AC-002)", () => {
 	});
 });
 
-describe("DEC-003: no commit after compromise (T033 regression)", () => {
+describe("DEC-003: no commit after compromise (T033, T040 regressions)", () => {
 	test("a writer resuming after stale takeover cannot overwrite the new writer's commit", () => {
 		withTempDir((dir) => {
 			const path = join(dir, "seat.json");
@@ -197,6 +197,58 @@ describe("DEC-003: no commit after compromise (T033 regression)", () => {
 			).toThrow(/compromised/);
 			expect(readFileSync(path, "utf8")).toBe(storeWithProfile("rt-original"));
 		});
+	});
+
+	test("T040 regression: a takeover landing between the check and the rename cannot be clobbered", () => {
+		withTempDir((dir) => {
+			const path = join(dir, "seat.json");
+			new FileSeatStorageBackend(path).withLock(() => ({ result: undefined, next: storeWithProfile("rt-original") }));
+
+			// The pause is injected where the real one lives: temp file written,
+			// rename — the actual publication — not yet issued.
+			const slowWriter = backend(dir, {
+				onBeforeRename: () => {
+					rmSync(`${path}.lock`, { recursive: true, force: true });
+					new FileSeatStorageBackend(path).withLock(() => ({
+						result: undefined,
+						next: storeWithProfile("rt-rotated"),
+					}));
+				},
+			});
+
+			expect(() =>
+				slowWriter.withLock(() => ({ result: undefined, next: storeWithProfile("rt-stale-clobber") })),
+			).toThrow(/compromised/);
+
+			expect(readFileSync(path, "utf8")).toBe(storeWithProfile("rt-rotated"));
+			expect(readdirSync(dir).filter((name) => name.endsWith(".tmp"))).toEqual([]);
+		});
+	});
+
+	test("T040 regression: withLockAsync fences the rename too", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "seat-storage-"));
+		try {
+			const path = join(dir, "seat.json");
+			new FileSeatStorageBackend(path).withLock(() => ({ result: undefined, next: storeWithProfile("rt-original") }));
+
+			const slowWriter = new FileSeatStorageBackend(path, {
+				onBeforeRename: () => {
+					rmSync(`${path}.lock`, { recursive: true, force: true });
+					new FileSeatStorageBackend(path).withLock(() => ({
+						result: undefined,
+						next: storeWithProfile("rt-rotated"),
+					}));
+				},
+			});
+
+			await expect(
+				slowWriter.withLockAsync(async () => ({ result: undefined, next: storeWithProfile("rt-stale-clobber") })),
+			).rejects.toThrow(/compromised/);
+
+			expect(readFileSync(path, "utf8")).toBe(storeWithProfile("rt-rotated"));
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
 	});
 
 	test("read-only mutations never trip the ownership check", () => {
