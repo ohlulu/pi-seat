@@ -12,6 +12,7 @@
 		"test": "bun test",
 		"typecheck": "tsc --noEmit",
 		"smoke:extension": "bash scripts/smoke-extension.sh",
+		"smoke:usage-view": "bash scripts/smoke-usage-view.sh",
 		"bench": "bash scripts/bench.sh"
 	},
 	"dependencies": {

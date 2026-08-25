@@ -28,6 +28,39 @@ export interface UsageFetchOptions {
 	now?: () => number;
 }
 
+/**
+ * Loopback-only endpoint override, for the T045 TUI smoke: a real Pi session
+ * cannot render real meters without a real usage endpoint, and no test should
+ * need a real grant to prove the view draws.
+ *
+ * Non-loopback values are ignored on purpose. These requests carry a bearer
+ * token, so an env var that could point them at an arbitrary host would be an
+ * exfiltration primitive — a strictly worse one than reading the store on
+ * disk, because it works from off-box and leaves nothing behind.
+ */
+export function envUsageFetchOptions(env: Record<string, string | undefined>): UsageFetchOptions {
+	const options: UsageFetchOptions = {};
+	const claude = loopbackUrl(env["SEAT_CLAUDE_USAGE_URL"]);
+	const codex = loopbackUrl(env["SEAT_CODEX_USAGE_URL"]);
+	if (claude !== undefined) options.claudeUrl = claude;
+	if (codex !== undefined) options.codexUrl = codex;
+	return options;
+}
+
+function loopbackUrl(value: string | undefined): string | undefined {
+	if (value === undefined || value === "") return undefined;
+	let url: URL;
+	try {
+		url = new URL(value);
+	} catch {
+		return undefined;
+	}
+	if (url.protocol !== "http:") return undefined;
+	const host = url.hostname.replace(/^\[|\]$/g, "");
+	if (host !== "localhost" && host !== "127.0.0.1" && host !== "::1") return undefined;
+	return url.toString();
+}
+
 async function getJson(
 	url: string,
 	headers: Record<string, string>,

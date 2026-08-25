@@ -25,22 +25,45 @@ function seededBackend(): InMemorySeatStorageBackend {
 	return backend;
 }
 
+interface FakeComponent {
+	render(width: number): string[];
+	handleInput?(data: string): void;
+	invalidate?(): void;
+	dispose?(): void;
+}
+
 interface FakeCtx {
 	ctx: ExtensionCommandContext;
 	notices: string[];
 	confirmCalls: string[];
 	confirmAnswer: boolean;
+	/** Components opened through ui.custom, in order. */
+	customs: FakeComponent[];
+	renderRequests: number;
+	/** Closes the open component the way `done()` would. */
+	close?: () => void;
 }
 
-function fakeCtx(): FakeCtx {
+/**
+ * Drives ui.custom without a terminal (pi.md render-probe pattern): the factory
+ * runs, the component is captured, and the promise resolves only when the
+ * component calls done — so a command that opens a view and never closes it
+ * shows up as a hung test rather than a passing one.
+ */
+type FakeMode = "rpc" | "tui";
+
+function fakeCtx(mode: FakeMode = "rpc"): FakeCtx {
 	const state: FakeCtx = {
 		notices: [],
 		confirmCalls: [],
 		confirmAnswer: true,
+		customs: [],
+		renderRequests: 0,
 		ctx: undefined as never,
 	};
+	const tui = { requestRender: () => void (state.renderRequests += 1) };
 	state.ctx = {
-		mode: "rpc",
+		mode,
 		hasUI: true,
 		ui: {
 			notify: (text: string) => {
@@ -52,6 +75,17 @@ function fakeCtx(): FakeCtx {
 			},
 			input: async () => undefined,
 			select: async () => undefined,
+			custom: async (factory: (t: unknown, theme: unknown, kb: unknown, done: (r: unknown) => void) => FakeComponent) =>
+				new Promise((resolve) => {
+					let component: FakeComponent | undefined;
+					const done = (result: unknown) => {
+						resolve(result);
+						component?.dispose?.(); // interactive-mode.js disposes on close
+					};
+					component = factory(tui, {}, {}, done);
+					state.customs.push(component);
+					state.close = () => done(undefined);
+				}),
 		},
 	} as never;
 	return state;
@@ -75,13 +109,58 @@ function loginAdapters(minted: SeatCredential, calls: { login: number }): SeatPr
 	return [make("anthropic"), make("openai-codex")];
 }
 
+const CLAUDE_PAYLOAD = { limits: [{ kind: "session", percent: 42, resets_at: new Date(FRESH).toISOString() }] };
+
 function deps(backend: InMemorySeatStorageBackend, overrides: Partial<SeatCommandDeps> = {}): SeatCommandDeps {
 	return {
 		backend,
 		adapters: overrides.adapters ?? loginAdapters(cred("rt-unused"), { login: 0 }),
 		pins: overrides.pins ?? {},
+		authPath: overrides.authPath ?? "/nonexistent/auth.json",
+		// No usage request leaves this test file.
+		fetchOptions: overrides.fetchOptions ?? { fetchImpl: (async () => Response.json(CLAUDE_PAYLOAD)) as unknown as typeof fetch },
 	};
 }
+
+describe("AC-018 / AC-019: /seat status routing", () => {
+	test("TUI: bare /seat opens the view, renders bars, and q closes it", async () => {
+		const backend = seededBackend();
+		const f = fakeCtx("tui");
+		// The command does not resolve until the view closes, so hold the promise.
+		const running = runSeatCommand("", f.ctx, deps(backend, { pins: { anthropic: "work" } }));
+		await Promise.resolve();
+		expect(f.customs).toHaveLength(1);
+		expect(f.notices).toEqual([]); // a view, not a notice
+
+		for (let i = 0; i < 20; i += 1) await new Promise((r) => setTimeout(r, 1));
+		const frame = f.customs[0]!.render(100).join("\n");
+		expect(frame).toContain("anthropic: work (pin)"); // REQ-010 header
+		expect(frame).toContain("█"); // meters actually drawn
+		expect(frame).toContain("esc/q close");
+
+		f.customs[0]!.handleInput?.("q");
+		await running; // AC-018: q closes, and the command returns
+	});
+
+	test("TUI: /seat status opens the same view", async () => {
+		const f = fakeCtx("tui");
+		const running = runSeatCommand("status", f.ctx, deps(seededBackend()));
+		await Promise.resolve();
+		expect(f.customs).toHaveLength(1);
+		f.close?.();
+		await running;
+	});
+
+	test("AC-019: RPC mode falls back to text — no component, no hang", async () => {
+		const f = fakeCtx("rpc");
+		for (const args of ["", "status", "usage", "whoami"]) {
+			f.notices.length = 0;
+			await runSeatCommand(args, f.ctx, deps(seededBackend(), { pins: { anthropic: "personal" } }));
+			expect(f.customs).toHaveLength(0);
+			expect(f.notices[0]).toContain("anthropic: personal (pin)");
+		}
+	});
+});
 
 describe("AC-005: use persists the default; fresh unpinned resolution reads it", () => {
 	test("via subcommand and via bare shorthand", async () => {

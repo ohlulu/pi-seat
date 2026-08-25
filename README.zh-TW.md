@@ -41,8 +41,11 @@ chmod +x ~/.pi/agent/bin/seat
 ```
 /seat login work        # 走 OAuth 建立新 grant，存為 "work"
 /seat use work          # 把 "work" 設為全域預設
-/seat status            # 查看目前生效的帳號
+/seat use work -a w     # 順便把別名 "w" 指到它
+/seat status            # 用量、預設與 pin，按 esc 或 q 關閉
 ```
+
+`/seat` 與 `/seat status` 在 TUI session 會開互動式用量畫面；非 TUI（RPC、`pi -p`）則退回純文字輸出。
 
 把某個 session 固定在特定帳號（優先於預設，只影響該 session）：
 
@@ -58,7 +61,7 @@ seat                    # 所有 profile 的用量 bar
 seat status --plain     # TSV 輸出，供 shell prompt 使用
 ```
 
-`use default` 清除預設、還原 Pi 內建登入。`rm`、`rename` 與可重複的 `-a <alias>` 語意如你所料。
+`use default` 清除預設、還原 Pi 內建登入。`rm`、`rename` 與可重複的 `-a <alias>`（`login` 和 `use` 都支援）語意如你所料。
 
 ## 安全設計
 

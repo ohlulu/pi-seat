@@ -41,8 +41,11 @@ Dentro de una sesión de Pi:
 ```
 /seat login work        # crea un nuevo grant OAuth y lo guarda como "work"
 /seat use work          # convierte "work" en el predeterminado global
-/seat status            # qué está activo ahora mismo
+/seat use work -a w     # …y apunta el alias "w" a él
+/seat status            # uso, predeterminado y pin — esc o q para cerrar
 ```
+
+`/seat` y `/seat status` abren una vista de uso interactiva en una sesión TUI, y caen a texto plano en cualquier otro modo (RPC, `pi -p`).
 
 Fija una sesión a una cuenta (prevalece sobre el predeterminado, solo en esa sesión):
 
@@ -58,7 +61,7 @@ seat                    # barras de uso de todos los perfiles
 seat status --plain     # salida TSV para prompts de shell
 ```
 
-`use default` borra el predeterminado y restaura el login integrado de Pi. `rm`, `rename` y el repetible `-a <alias>` funcionan como esperas.
+`use default` borra el predeterminado y restaura el login integrado de Pi. `rm`, `rename` y el repetible `-a <alias>` (tanto en `login` como en `use`) funcionan como esperas.
 
 ## Diseño de seguridad
 

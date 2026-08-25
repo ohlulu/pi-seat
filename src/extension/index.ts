@@ -21,6 +21,7 @@ import { FileSeatStorageBackend } from "../store/storage.ts";
 import { migrateLegacyProfiles } from "../store/migrate.ts";
 import { decodeStore } from "../store/storage.ts";
 import { resolvePins } from "../store/selector.ts";
+import { envUsageFetchOptions } from "../usage/fetch.ts";
 import { createSeatProviderAdapters } from "./oauth.ts";
 import { SeatRuntimeAuthCoordinator, getSeatRuntime } from "./runtime-auth.ts";
 import { SEAT_COMMAND_DESCRIPTION, runSeatCommand } from "./seat-command.ts";
@@ -37,7 +38,9 @@ export function agentDir(env: Record<string, string | undefined> = process.env):
 export default function seatExtension(pi: ExtensionAPI): void {
 	const base = agentDir();
 	const backend = new FileSeatStorageBackend(join(base, "seat.json"));
+	const authPath = join(base, "auth.json");
 	const adapters = createSeatProviderAdapters();
+	const fetchOptions = envUsageFetchOptions(process.env);
 
 	const startupNotices: string[] = [];
 	let startupError: string | undefined;
@@ -50,7 +53,7 @@ export default function seatExtension(pi: ExtensionAPI): void {
 		const migration = migrateLegacyProfiles({
 			backend,
 			legacyPath: join(base, "claude-profiles.json"),
-			authPath: join(base, "auth.json"),
+			authPath,
 		});
 		if (migration.outcome === "imported" || migration.outcome === "fail-closed") {
 			startupNotices.push(migration.notice);
@@ -70,7 +73,7 @@ export default function seatExtension(pi: ExtensionAPI): void {
 
 	pi.registerCommand("seat", {
 		description: SEAT_COMMAND_DESCRIPTION,
-		handler: async (args, ctx) => runSeatCommand(args, ctx, { backend, adapters, pins }),
+		handler: async (args, ctx) => runSeatCommand(args, ctx, { backend, adapters, pins, authPath, fetchOptions }),
 	});
 
 	let coordinator: SeatRuntimeAuthCoordinator | undefined;
