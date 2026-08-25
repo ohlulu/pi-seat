@@ -7,9 +7,9 @@
  * the same "pure usage domain" layering as cells / layout / render.
  */
 
-import { PROVIDER_IDS, type ProviderId } from "../store/schema.ts";
+import { PROVIDER_IDS, type ProviderId, type SeatStore } from "../store/schema.ts";
 import type { RefreshCallback } from "../store/refresh.ts";
-import { decodeStore, type SeatStorageBackend } from "../store/storage.ts";
+import type { SeatStorageBackend } from "../store/storage.ts";
 import { resolveSelection } from "../store/selector.ts";
 import { builtinUsage, profileUsage, type UsageFetchOptions } from "./fetch.ts";
 import type { Layout } from "./layout.ts";
@@ -53,6 +53,14 @@ export interface UsageAccount {
 
 export interface UsageCollectDeps {
 	backend: SeatStorageBackend;
+	/**
+	 * Decoded ONCE by the caller and shared with whatever resolved `pins`.
+	 * Reading the store again here would let a concurrent rename land between
+	 * the two reads, and then the selection and the enumeration describe
+	 * different stores: the report says "nothing is active" while quietly
+	 * fetching the renamed profile's usage.
+	 */
+	store: SeatStore;
 	authPath: string;
 	pins: Partial<Record<ProviderId, string>>;
 	/** REQ-005 refresh path for stored profiles, per provider. */
@@ -80,7 +88,7 @@ export async function collectUsage(
 		onAccount?.(account);
 	};
 
-	const store = deps.backend.read((current) => decodeStore(current));
+	const store = deps.store;
 	const fetchOptions = deps.fetchOptions ?? {};
 
 	for (const provider of PROVIDER_IDS) {

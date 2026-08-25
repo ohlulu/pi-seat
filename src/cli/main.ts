@@ -383,33 +383,41 @@ async function cmdUsage(rest: string[], deps: CliDeps): Promise<number> {
 	const extra = rest.filter((t) => t !== "--json");
 	if (extra.length > 0) throw new UsageInvocationError("usage: seat usage [--json]");
 
-	const pins = reportingPins(loadStore(deps), deps);
+	// One snapshot for the pins, the selection and the enumeration: a rename
+	// landing between two reads would otherwise report a different store than
+	// the one it fetched usage for.
+	const store = loadStore(deps);
+	const pins = reportingPins(store, deps);
 	const layout = planLayout(deps.termWidth);
 	const renderOptions: RenderOptions = { color: deps.color && !asJson, now: deps.now ?? (() => new Date()) };
 
 	// REQ-006: every stored profile, the built-in login credential, and Codex.
 	// Both providers walk the same path (T039); the walk itself lives in
 	// src/usage/report.ts because the in-session view renders the same accounts.
-	const accounts = await collectUsage({
-		backend: deps.backend,
-		authPath: deps.authPath,
-		pins,
-		refreshFor: (provider) => toRefreshCallback(adapterFor(deps.adapters, provider)),
-		...(deps.fetchOptions !== undefined ? { fetchOptions: deps.fetchOptions } : {}),
-	});
-
+	// Output is per account, as it lands — one slow account must not hold back
+	// the bars of the accounts that already answered.
 	let failed = false;
-	for (const account of accounts) {
-		if (!account.result.ok && account.result.failed) {
-			failed = true;
-			if (asJson) {
-				const who = account.kind === "builtin" ? `${account.name} built-in` : account.name;
-				deps.io.err(`seat: ${who}: unavailable — ${account.result.hint}`);
-				continue;
+	const accounts = await collectUsage(
+		{
+			backend: deps.backend,
+			store,
+			authPath: deps.authPath,
+			pins,
+			refreshFor: (provider) => toRefreshCallback(adapterFor(deps.adapters, provider)),
+			...(deps.fetchOptions !== undefined ? { fetchOptions: deps.fetchOptions } : {}),
+		},
+		(account) => {
+			if (!account.result.ok && account.result.failed) {
+				failed = true;
+				if (asJson) {
+					const who = account.kind === "builtin" ? `${account.name} built-in` : account.name;
+					deps.io.err(`seat: ${who}: unavailable — ${account.result.hint}`);
+					return;
+				}
 			}
-		}
-		if (!asJson) for (const line of ["", ...renderAccountBlock(layout, account, renderOptions)]) deps.io.out(line);
-	}
+			if (!asJson) for (const line of ["", ...renderAccountBlock(layout, account, renderOptions)]) deps.io.out(line);
+		},
+	);
 
 	if (asJson) {
 		const json: Record<string, unknown> = {};

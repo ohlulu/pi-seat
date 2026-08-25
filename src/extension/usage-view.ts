@@ -24,7 +24,7 @@
  * can drive `render`/`handleInput` with no terminal.
  */
 
-import type { ProviderId } from "../store/schema.ts";
+import type { ProviderId, SeatStore } from "../store/schema.ts";
 import { decodeStore } from "../store/storage.ts";
 import { resolveSelection } from "../store/selector.ts";
 import { PROVIDER_IDS } from "../store/schema.ts";
@@ -41,11 +41,18 @@ import {
 	type Segment,
 } from "../usage/render.ts";
 
+/**
+ * How often a loaded view re-measures its "resets in …" countdowns. They are
+ * minute-grained, so this only has to be well under a minute; the spinner's
+ * 80ms would be burning frames to redraw an unchanged screen.
+ */
+export const IDLE_TICK_MS = 20_000;
+
 export const VIEW_TITLE = "seat usage";
 export const VIEW_LEGEND = "esc/q close · r refresh";
 export const LOADING_TEXT = "loading usage…";
 
-export interface UsageViewDeps extends UsageCollectDeps {
+export interface UsageViewDeps extends Omit<UsageCollectDeps, "store"> {
 	color?: boolean;
 	now?: () => Date;
 	timeZone?: string;
@@ -63,6 +70,7 @@ export interface UsageViewHooks {
 
 export class UsageView {
 	private accounts: UsageAccount[] = [];
+	private store: SeatStore | undefined;
 	private loading = true;
 	private error: string | undefined;
 	private frame = 0;
@@ -79,13 +87,36 @@ export class UsageView {
 
 	/** Begin the first fetch and start the spinner. */
 	start(): void {
-		const tick = this.deps.setInterval ?? ((fn, ms) => setInterval(fn, ms));
-		this.timer = tick(() => {
-			if (this.disposed || !this.loading) return;
-			this.frame += 1;
-			this.changed();
-		}, SPINNER_INTERVAL_MS);
 		void this.load();
+	}
+
+	/**
+	 * One timer at a time: the spinner while fetching, a slow countdown tick
+	 * once the meters are up. Leaving the 80ms interval running after the fetch
+	 * wakes the process 12 times a second to decide it has nothing to do.
+	 */
+	private retime(): void {
+		const set = this.deps.setInterval ?? ((fn, ms) => setInterval(fn, ms));
+		this.clearTimer();
+		if (this.disposed) return;
+		this.timer = this.loading
+			? set(() => {
+					if (this.disposed || !this.loading) return;
+					this.frame += 1;
+					this.changed();
+				}, SPINNER_INTERVAL_MS)
+			: set(() => {
+					// Nothing fetched: only the clock moved, and the countdowns are
+					// computed at render time from it.
+					if (this.disposed || this.loading) return;
+					this.changed();
+				}, IDLE_TICK_MS);
+	}
+
+	private clearTimer(): void {
+		const clear = this.deps.clearInterval ?? ((handle) => clearInterval(handle as ReturnType<typeof setInterval>));
+		if (this.timer !== undefined) clear(this.timer);
+		this.timer = undefined;
 	}
 
 	/** Re-fetch. Credential refresh happens inside collectUsage, on the REQ-005
@@ -95,9 +126,11 @@ export class UsageView {
 		this.loading = true;
 		this.error = undefined;
 		this.accounts = [];
-		this.changed();
+		this.retime();
 		try {
-			const accounts = await collectUsage(this.deps, (account) => {
+			// Read once, so the header and the bars describe the same store.
+			this.store = this.deps.backend.read((current) => decodeStore(current));
+			const accounts = await collectUsage({ ...this.deps, store: this.store }, (account) => {
 				// A reload started (or the view closed) while this fetch was in
 				// flight: its accounts belong to a screen nobody is looking at.
 				if (this.disposed || generation !== this.generation) return;
@@ -111,6 +144,7 @@ export class UsageView {
 			this.error = error instanceof Error ? error.message : String(error);
 		}
 		this.loading = false;
+		this.retime();
 		this.changed();
 	}
 
@@ -170,9 +204,7 @@ export class UsageView {
 
 	dispose(): void {
 		this.disposed = true;
-		const clear = this.deps.clearInterval ?? ((handle) => clearInterval(handle as ReturnType<typeof setInterval>));
-		if (this.timer !== undefined) clear(this.timer);
-		this.timer = undefined;
+		this.clearTimer();
 	}
 
 	private changed(): void {
@@ -191,12 +223,8 @@ export class UsageView {
 
 	/** The default/pin state REQ-010 asks the view to show alongside the bars. */
 	private headerLines(): string[] {
-		let store;
-		try {
-			store = this.deps.backend.read((current) => decodeStore(current));
-		} catch (error) {
-			return [`store unreadable — ${error instanceof Error ? error.message : String(error)}`];
-		}
+		const store = this.store;
+		if (store === undefined) return this.error !== undefined ? [`store unreadable — ${this.error}`] : [];
 		return PROVIDER_IDS.map((provider: ProviderId) => {
 			const selection = resolveSelection(store, provider, this.deps.pins[provider]);
 			const detail = selection.source === "builtin" ? "Pi built-in login" : `${selection.label} (${selection.source})`;

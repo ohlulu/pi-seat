@@ -163,6 +163,61 @@ describe("usage", () => {
 		expect(await makeCli().run("usage", "--bogus")).toBe(2);
 	});
 
+	test("T046: the pin, the selection and the account list come from ONE snapshot", async () => {
+		const cli = makeCli({ piSeat: "p" }); // alias p → personal
+		// A rename lands the instant the CLI has read the store. Reading again for
+		// the enumeration would describe a store the selection never saw: the
+		// report would say nothing is active while quietly fetching "other".
+		const realRead = cli.backend.read.bind(cli.backend);
+		let reads = 0;
+		(cli.backend as { read: unknown }).read = <T,>(fn: (current: string | undefined) => T): T => {
+			const result = realRead(fn);
+			if ((reads += 1) === 1) {
+				cli.backend.withLock((current) => {
+					const store = decodeStore(current!);
+					const section = store.providers.anthropic!;
+					section.profiles["other"] = section.profiles["personal"]!;
+					delete section.profiles["personal"];
+					delete section.aliases["p"];
+					return { result: undefined, next: encodeStore(store) };
+				});
+			}
+			return result;
+		};
+
+		expect(await cli.run("usage", "--json")).toBe(1); // personal vanished mid-run
+		const doc = JSON.parse(cli.out.join("\n")) as Record<string, any>;
+		expect(doc["anthropic"].active).toBe("personal"); // the label the pin named
+		expect(cli.out.join("\n")).not.toContain("other"); // never enumerated, never fetched
+		expect(cli.errs.some((l) => l.includes("personal") && l.includes("unavailable"))).toBe(true);
+	});
+
+	test("T047: a finished account prints before a slow one answers", async () => {
+		let release: (() => void) | undefined;
+		const blocked = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		let calls = 0;
+		const cli = makeCli();
+		cli.deps.fetchOptions = {
+			fetchImpl: (async () => {
+				if ((calls += 1) === 2) await blocked; // the second account stalls
+				return Response.json(CLAUDE_PAYLOAD);
+			}) as unknown as typeof fetch,
+		};
+
+		const running = cli.run();
+		for (let i = 0; i < 10 && cli.out.length === 0; i += 1) await new Promise((r) => setTimeout(r, 1));
+		// The first account's bars are on stdout while the second is still in
+		// flight — a 10s timeout downstream must not hold back what already landed.
+		expect(cli.out.join("\n")).toContain("● work");
+		expect(cli.out.join("\n")).not.toContain("personal");
+
+		release?.();
+		expect(await running).toBe(0);
+		expect(cli.out.join("\n")).toContain("personal");
+	});
+
 	test("T037: refresh errors echoing credentials never reach stderr unredacted", async () => {
 		const cli = makeCli();
 		// Expire a profile and make its refresh throw with the tokens embedded.

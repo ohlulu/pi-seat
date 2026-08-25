@@ -88,6 +88,12 @@ Re-review of the Phase 8 fixes returned three P1 findings — T033 and T037 did 
 - [x] T044 [REQ-010] Create `src/extension/usage-view.ts`: ctx.ui.custom component rendering src/usage output plus default/pin header, esc/q close, spinner with dispose, refresh via REQ-005 path. Include a render probe sweeping widths 2–200 asserting no row overflow including fixed chrome strings. Verify: `bun test test/extension/usage-view.test.ts` → GREEN
 - [x] T045 [REQ-010] Route bare `/seat` and `/seat status` to the view in TUI mode, text fallback when `ctx.mode !== "tui"` (AC-019); tmux-driven TUI smoke: open view, assert bars render, `q` closes, session stays alive. Verify: `bun run smoke:usage-view` → pass. Depends: T044
 
+Review of T043..T045 returned APPROVE with three P2 findings, all in the T044 extraction. Same rule as Phase 8: the regression test reproduces the flaw first.
+
+- [x] T046 [REQ-006, REQ-010] `collectUsage` re-read the store after the caller had already resolved pins from its own read: a rename landing in between made the selection and the account list describe different stores (reported `active: null` while fetching the renamed profile). The snapshot is decoded once by the caller and passed in. Regression: mutation injected at the first read → `active` names the pinned label and the renamed profile is never enumerated or fetched. Verify: `bun test test/cli/contract.test.ts` → GREEN
+- [x] T047 [REQ-006] The extraction awaited the whole sequential walk before writing anything, so one 10s account timeout held back the bars of every account that had already answered. Output moves back onto the `onAccount` callback. Regression: second account blocked on a gate → the first account's block is on stdout while it is still in flight. Verify: `bun test test/cli/contract.test.ts` → GREEN
+- [x] T048 [REQ-010] The 80ms spinner interval kept firing after loading finished (waking only to return early), while the render cache was never invalidated — so the reset countdowns froze until the next keypress or resize. One timer at a time: spinner while fetching, a 20s countdown tick once loaded. Regression: after the fetch lands, the spinner handle is cleared, the idle handle is not, and advancing the clock plus one tick moves the countdown. Verify: `bun test test/extension/usage-view.test.ts` → GREEN
+
 ## Human Acceptance
 
 - [ ] H001 [AC-003] Two real pi sessions with `PI_SEAT=work` / `PI_SEAT=personal` in tmux: requests attributed to the pinned accounts, store default unchanged

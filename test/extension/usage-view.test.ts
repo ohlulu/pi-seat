@@ -17,8 +17,8 @@ import { join } from "node:path";
 import { emptyStore, type SeatCredential } from "../../src/store/schema.ts";
 import { InMemorySeatStorageBackend, encodeStore } from "../../src/store/storage.ts";
 import type { RefreshCallback } from "../../src/store/refresh.ts";
-import { SPINNER_FRAMES } from "../../src/usage/render.ts";
-import { LOADING_TEXT, UsageView, VIEW_LEGEND, VIEW_TITLE, type UsageViewDeps } from "../../src/extension/usage-view.ts";
+import { SPINNER_FRAMES, SPINNER_INTERVAL_MS } from "../../src/usage/render.ts";
+import { IDLE_TICK_MS, LOADING_TEXT, UsageView, VIEW_LEGEND, VIEW_TITLE, type UsageViewDeps } from "../../src/extension/usage-view.ts";
 
 const FRESH = Date.UTC(2026, 0, 15, 12, 0, 0) + 3_600_000;
 const NOW = () => new Date(Date.UTC(2026, 0, 15, 12, 0, 0));
@@ -75,8 +75,9 @@ interface Harness {
 	closed: number;
 	backend: InMemorySeatStorageBackend;
 	refreshCalls: string[];
-	timers: { fn: () => void; ms: number }[];
+	timers: { fn: () => void; ms: number; cleared: boolean }[];
 	cleared: number;
+	clock: { ms: number };
 	settle(): Promise<void>;
 }
 
@@ -90,6 +91,7 @@ function makeView(
 		codexUrl?: string;
 		claudeUrl?: string;
 		color?: boolean;
+		clock?: { ms: number };
 	} = {},
 ): Harness {
 	const backend = new InMemorySeatStorageBackend();
@@ -115,6 +117,7 @@ function makeView(
 		refreshCalls,
 		timers: [],
 		cleared: 0,
+		clock: options.clock ?? { ms: NOW().getTime() },
 		settle: async () => {
 			// Two macrotask hops: collectUsage awaits fetch per account.
 			for (let i = 0; i < 20; i += 1) await new Promise((r) => setTimeout(r, 1));
@@ -129,17 +132,19 @@ function makeView(
 		fetchOptions: {
 			claudeUrl: options.claudeUrl ?? claudeUrl,
 			codexUrl: options.codexUrl ?? codexUrl,
-			now: () => NOW().getTime(),
+			now: () => harness.clock.ms,
 		},
 		color: options.color ?? false,
-		now: NOW,
+		now: () => new Date(harness.clock.ms),
 		timeZone: "UTC",
 		setInterval: (fn, ms) => {
-			harness.timers.push({ fn, ms });
+			harness.timers.push({ fn, ms, cleared: false });
 			return harness.timers.length - 1;
 		},
-		clearInterval: () => {
+		clearInterval: (handle) => {
 			harness.cleared += 1;
+			const timer = harness.timers[handle as number];
+			if (timer) timer.cleared = true;
 		},
 	};
 
@@ -216,6 +221,32 @@ describe("AC-018: esc and q close; the spinner is disposed", () => {
 		expect(h.closed).toBe(1);
 		h.view.handleInput("q");
 		expect(h.closed).toBe(2);
+	});
+
+	test("T048: the 80ms spinner stops once the meters land, and the countdown keeps ticking", async () => {
+		const h = makeView();
+		h.view.start();
+		expect(h.timers[0]!.ms).toBe(SPINNER_INTERVAL_MS);
+		await h.settle();
+
+		// Leaving the spinner armed wakes the process 12 times a second to decide
+		// it has nothing to draw.
+		expect(h.timers[0]!.cleared).toBe(true);
+		const idle = h.timers.at(-1)!;
+		expect(idle.cleared).toBe(false);
+		expect(idle.ms).toBe(IDLE_TICK_MS);
+
+		// The reset countdown is computed at render time, so a cached frame that is
+		// never invalidated freezes it at whatever it said when the fetch landed.
+		const before = h.view.render(100).join("\n");
+		expect(before).toContain("in 2h31m");
+		h.clock.ms += 20 * 60_000;
+		expect(h.view.render(100).join("\n")).toBe(before); // cache still valid
+		idle.fn();
+		expect(h.view.render(100).join("\n")).toContain("in 2h11m");
+
+		h.view.dispose();
+		expect(h.timers.every((t) => t.cleared)).toBe(true);
 	});
 
 	test("dispose clears the interval and silences late results", async () => {
