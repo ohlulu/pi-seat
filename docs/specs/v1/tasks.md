@@ -84,7 +84,7 @@ Re-review of the Phase 8 fixes returned three P1 findings — T033 and T037 did 
 
 ## Phase 9: v1.1 — use -a and in-session usage view
 
-- [ ] T043 [REQ-003, REQ-007] Support repeatable `-a|--alias <alias>` on `use` and bare shorthand in both extension and CLI, attaching aliases to the target profile atomically with the default write (AC-017); reuse login's alias validation. Tests: `/seat ohlulu -a o` then `/seat o`; invalid alias rejected; CLI parity. Verify: `bun test test/extension/handlers.test.ts test/cli/contract.test.ts` → GREEN
+- [x] T043 [REQ-003, REQ-007] Support repeatable `-a|--alias <alias>` on `use` and bare shorthand in both extension and CLI, attaching aliases to the target profile atomically with the default write (AC-017); reuse login's alias validation. Tests: `/seat ohlulu -a o` then `/seat o`; invalid alias rejected; CLI parity. Verify: `bun test test/extension/handlers.test.ts test/cli/contract.test.ts` → GREEN
 - [ ] T044 [REQ-010] Create `src/extension/usage-view.ts`: ctx.ui.custom component rendering src/usage output plus default/pin header, esc/q close, spinner with dispose, refresh via REQ-005 path. Include a render probe sweeping widths 2–200 asserting no row overflow including fixed chrome strings. Verify: `bun test test/extension/usage-view.test.ts` → GREEN
 - [ ] T045 [REQ-010] Route bare `/seat` and `/seat status` to the view in TUI mode, text fallback when `ctx.mode !== "tui"` (AC-019); tmux-driven TUI smoke: open view, assert bars render, `q` closes, session stays alive. Verify: `bun run smoke:usage-view` → pass. Depends: T044
 

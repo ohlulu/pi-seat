@@ -193,6 +193,37 @@ describe("mutations via CLI", () => {
 		expect(cli.out).toEqual([]); // mutations put nothing on stdout
 	});
 
+	test("AC-017: `-a` attaches an alias while switching, via `use` and via shorthand", async () => {
+		const cli = makeCli();
+		expect(await cli.run("use", "personal", "-a", "o")).toBe(0);
+		let store = cli.backend.read((c) => decodeStore(c));
+		expect(store.providers.anthropic?.default).toBe("personal");
+		expect(store.providers.anthropic?.aliases["o"]).toBe("personal");
+		expect(cli.out).toEqual([]); // still nothing on stdout
+
+		// The fresh alias resolves on the next invocation.
+		expect(await cli.run("o")).toBe(0);
+		expect(storedDefault(cli)).toBe("personal");
+
+		// Shorthand takes repeatable --alias too.
+		expect(await cli.run("work", "-a", "w", "--alias", "day")).toBe(0);
+		store = cli.backend.read((c) => decodeStore(c));
+		expect(store.providers.anthropic?.default).toBe("work");
+		expect(store.providers.anthropic?.aliases["w"]).toBe("work");
+		expect(store.providers.anthropic?.aliases["day"]).toBe("work");
+	});
+
+	test("AC-017: bad alias arguments — invocation errors exit 2, conflicts exit 1", async () => {
+		const cli = makeCli();
+		expect(await cli.run("use", "work", "-a")).toBe(2); // missing value
+		expect(await cli.run("use", "work", "--wat", "x")).toBe(2); // unknown flag
+		expect(await cli.run("use", "work", "extra")).toBe(2); // second positional
+		expect(await cli.run("use", "work", "-a", "p")).toBe(1); // alias owned by personal
+		expect(await cli.run("use", "work", "-a", "a:b")).toBe(1); // charset rule
+		const store = cli.backend.read((c) => decodeStore(c));
+		expect(store.providers.anthropic?.aliases["p"]).toBe("personal"); // untouched
+	});
+
 	test("`seat login` mints through the adapter and stores", async () => {
 		const cli = makeCli();
 		expect(await cli.run("login", "openai-codex:backup", "-a", "b")).toBe(0);

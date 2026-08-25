@@ -100,6 +100,40 @@ describe("AC-005: use persists the default; fresh unpinned resolution reads it",
 	});
 });
 
+describe("AC-017: /seat <selector> -a <alias> attaches the alias with the switch", () => {
+	test("`/seat personal -a o` then `/seat o` resolves through the new alias", async () => {
+		const backend = seededBackend();
+		const f = fakeCtx();
+		await runSeatCommand("personal -a o", f.ctx, deps(backend)); // bare shorthand
+		const store = backend.read((c) => decodeStore(c));
+		expect(store.providers.anthropic?.default).toBe("personal");
+		expect(store.providers.anthropic?.aliases["o"]).toBe("personal");
+		expect(f.notices[0]).toContain("alias o → personal");
+
+		// The alias is usable as a selector on the very next command.
+		await runSeatCommand("work", f.ctx, deps(backend));
+		await runSeatCommand("o", f.ctx, deps(backend));
+		expect(resolveSelection(backend.read((c) => decodeStore(c)), "anthropic", undefined)).toEqual({
+			source: "default",
+			label: "personal",
+		});
+	});
+
+	test("`use` subcommand takes repeatable --alias; a conflicting alias is refused", async () => {
+		const backend = seededBackend();
+		const f = fakeCtx();
+		await runSeatCommand("use personal -a o --alias me", f.ctx, deps(backend));
+		const store = backend.read((c) => decodeStore(c));
+		expect(store.providers.anthropic?.aliases["o"]).toBe("personal");
+		expect(store.providers.anthropic?.aliases["me"]).toBe("personal");
+
+		const before = backend.read((c) => c);
+		await runSeatCommand("use work -a o", f.ctx, deps(backend)); // o belongs to personal
+		expect(f.notices.at(-1)).toContain("already points");
+		expect(backend.read((c) => c)).toBe(before); // default not switched either
+	});
+});
+
 describe("AC-006: no default, no pin → zero runtime override", () => {
 	test("coordinator never calls setRuntimeApiKey and the turn streams on builtin", async () => {
 		const h = makeHarness({ sections: {} }); // empty store, no pins

@@ -6,7 +6,7 @@
  *   seat usage [--json]
  *   seat status [--plain]               --plain: Anthropic-only 4-col TSV
  *   seat whoami [--plain]               offline: default + pin per provider
- *   seat use <selector> | seat <selector>
+ *   seat use <selector> [-a|--alias <alias>]… | seat <selector> [-a …]
  *   seat login <selector> [-a|--alias <alias>]…
  *   seat rm <selector> [--force|--no-input]
  *   seat rename <old-selector> <new-label>
@@ -105,7 +105,7 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
 			case "whoami":
 				return cmdWhoami(rest, deps);
 			case "use":
-				return requireArgs(rest, 1, "usage: seat use <selector>", deps) ?? cmdUse(rest[0]!, deps);
+				return cmdUse(rest, "usage: seat use <selector> [-a <alias>]…", deps);
 			case "login":
 				return await cmdLogin(rest, deps);
 			case "rm":
@@ -114,8 +114,8 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
 				return requireArgs(rest, 2, "usage: seat rename <old-selector> <new-label>", deps) ?? cmdRename(rest[0]!, rest[1]!, deps);
 			default:
 				if (head.startsWith("-")) return usageError(`unknown option "${head}"`, deps);
-				if (rest.length > 0) return usageError("usage: seat <selector>", deps);
-				return cmdUse(head, deps); // bare shorthand ≡ use
+				// bare shorthand ≡ use, aliases included
+				return cmdUse([head, ...rest], "usage: seat <selector> [-a <alias>]…", deps);
 		}
 	} catch (error) {
 		if (error instanceof UsageInvocationError) {
@@ -143,13 +143,36 @@ function requireArgs(rest: string[], count: number, message: string, deps: CliDe
 	return undefined;
 }
 
+/** One selector plus repeatable `-a|--alias` — shared by `use` and `login`. */
+function parseSelectorWithAliases(rest: string[], usage: string): { selector: string; aliases: string[] } {
+	let selector: string | undefined;
+	const aliases: string[] = [];
+	for (let i = 0; i < rest.length; i += 1) {
+		const token = rest[i]!;
+		if (token === "-a" || token === "--alias") {
+			const value = rest[i + 1];
+			if (value === undefined) throw new UsageInvocationError(`${token} needs a value`);
+			aliases.push(value);
+			i += 1;
+		} else if (token.startsWith("-")) {
+			throw new UsageInvocationError(`unknown flag "${token}"`);
+		} else if (selector === undefined) {
+			selector = token;
+		} else {
+			throw new UsageInvocationError(usage);
+		}
+	}
+	if (selector === undefined) throw new UsageInvocationError(usage);
+	return { selector, aliases };
+}
+
 function printHelp(io: CliIo): void {
 	io.out(
 		[
 			"usage:",
 			"  seat                                   usage (shorthand)",
-			"  seat <selector>                        switch default (shorthand)",
-			"  seat use <selector>",
+			"  seat <selector> [-a <alias>]…          switch default (shorthand)",
+			"  seat use <selector> [-a <alias>]…",
 			"  seat login <selector> [-a <alias>]…",
 			"  seat rm <selector> [--force|--no-input]",
 			"  seat rename <old-selector> <new-label>",
@@ -177,12 +200,16 @@ function reportingPins(store: SeatStore, deps: CliDeps): Partial<Record<Provider
 
 // --- use / rename / rm / login ----------------------------------------------
 
-function cmdUse(selector: string, deps: CliDeps): number {
-	const result = runMutation(deps.backend, (store) => useSelection(store, selector));
+function cmdUse(rest: string[], usage: string, deps: CliDeps): number {
+	const { selector, aliases } = parseSelectorWithAliases(rest, usage);
+	const result = runMutation(deps.backend, (store) => useSelection(store, selector, aliases));
 	const pins = reportingPins(loadStore(deps), deps);
 	const suffix = pins[result.provider] !== undefined ? ` — this session keeps its pin (${pins[result.provider]})` : "";
 	if (result.action === "clear") deps.io.err(`seat: ${result.provider} default cleared; Pi built-in login applies${suffix}`);
-	else deps.io.err(`seat: ${result.provider} default is now "${result.label}"${suffix}`);
+	else {
+		const attached = result.attachedAliases.length > 0 ? ` (alias ${result.attachedAliases.join(", ")} → ${result.label})` : "";
+		deps.io.err(`seat: ${result.provider} default is now "${result.label}"${attached}${suffix}`);
+	}
 	return EXIT_OK;
 }
 
@@ -240,25 +267,7 @@ async function cmdRm(rest: string[], deps: CliDeps): Promise<number> {
 }
 
 async function cmdLogin(rest: string[], deps: CliDeps): Promise<number> {
-	let selector: string | undefined;
-	const aliases: string[] = [];
-	for (let i = 0; i < rest.length; i += 1) {
-		const token = rest[i]!;
-		if (token === "-a" || token === "--alias") {
-			const value = rest[i + 1];
-			if (value === undefined) throw new UsageInvocationError(`${token} needs a value`);
-			aliases.push(value);
-			i += 1;
-		} else if (token.startsWith("-")) {
-			throw new UsageInvocationError(`unknown flag "${token}"`);
-		} else if (selector === undefined) {
-			selector = token;
-		} else {
-			throw new UsageInvocationError("usage: seat login <selector> [-a <alias>]…");
-		}
-	}
-	if (selector === undefined) throw new UsageInvocationError("usage: seat login <selector> [-a <alias>]…");
-
+	const { selector, aliases } = parseSelectorWithAliases(rest, "usage: seat login <selector> [-a <alias>]…");
 	const parsed = parseSelector(selector);
 	const exists = deps.backend.read((current) => {
 		const store = decodeStore(current);
@@ -298,7 +307,7 @@ async function cmdLogin(rest: string[], deps: CliDeps): Promise<number> {
 	});
 
 	const result = runMutation(deps.backend, (store) =>
-		loginProfile(store, selector!, credential as never, aliases, { confirmedOverwrite }),
+		loginProfile(store, selector, credential as never, aliases, { confirmedOverwrite }),
 	);
 	if (result.action !== "stored") throw new CommandError("login raced another mutation; try again");
 	deps.io.err(`seat: stored ${result.provider} profile "${result.label}"${result.overwrote ? " (overwrote previous grant)" : ""}`);

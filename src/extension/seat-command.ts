@@ -43,7 +43,10 @@ export async function runSeatCommand(args: string, ctx: ExtensionCommandContext,
 		const [head, ...rest] = tokens as [string, ...string[]];
 		switch (head) {
 			case "help":
-				ctx.ui.notify("usage: /seat [use] <selector> | login <selector> [-a <alias>]… | rm <selector> | rename <old> <new> | status", "info");
+				ctx.ui.notify(
+					"usage: /seat [use] <selector> [-a <alias>]… | login <selector> [-a <alias>]… | rm <selector> | rename <old> <new> | status",
+					"info",
+				);
 				return;
 			case "usage":
 				ctx.ui.notify("usage meters live in the `seat` CLI; run `seat` in a terminal", "info");
@@ -72,21 +75,22 @@ export async function runSeatCommand(args: string, ctx: ExtensionCommandContext,
 }
 
 async function handleUse(rest: string[], ctx: ExtensionCommandContext, deps: SeatCommandDeps): Promise<void> {
-	const selector = rest[0];
-	if (selector === undefined || rest.length > 1) throw new CommandError("usage: /seat use <selector>");
-	const result = runMutation(deps.backend, (store) => useSelection(store, selector));
+	const USAGE = "usage: /seat use <selector> [-a <alias>]…";
+	const { selector, aliases } = parseSelectorWithAliases(rest, USAGE);
+	const result = runMutation(deps.backend, (store) => useSelection(store, selector, aliases));
 
 	const pinned = deps.pins[result.provider];
 	const suffix = pinned !== undefined ? ` — this session keeps its pin (${pinned})` : "";
 	if (result.action === "clear") {
 		ctx.ui.notify(`seat: ${result.provider} default cleared; Pi built-in login applies${suffix}`, "info");
 	} else {
-		ctx.ui.notify(`seat: ${result.provider} default is now "${result.label}"${suffix}`, "info");
+		const attached = result.attachedAliases.length > 0 ? ` (alias ${result.attachedAliases.join(", ")} → ${result.label})` : "";
+		ctx.ui.notify(`seat: ${result.provider} default is now "${result.label}"${attached}${suffix}`, "info");
 	}
 }
 
 async function handleLogin(rest: string[], ctx: ExtensionCommandContext, deps: SeatCommandDeps): Promise<void> {
-	const { selector, aliases } = parseLoginArgs(rest);
+	const { selector, aliases } = parseSelectorWithAliases(rest, "usage: /seat login <selector> [-a <alias>]…");
 	// Validate grammar and charset, then run the overwrite check, all BEFORE the
 	// OAuth flow — the browser round-trip is never wasted on a login the user
 	// then declines to store (AC-013). The check is a pure read; the final
@@ -182,7 +186,8 @@ async function handleRename(rest: string[], ctx: ExtensionCommandContext, deps: 
 	);
 }
 
-function parseLoginArgs(rest: string[]): { selector: string; aliases: string[] } {
+/** One selector plus repeatable `-a|--alias` — shared by `use` and `login`. */
+function parseSelectorWithAliases(rest: string[], usage: string): { selector: string; aliases: string[] } {
 	let selector: string | undefined;
 	const aliases: string[] = [];
 	for (let i = 0; i < rest.length; i += 1) {
@@ -195,10 +200,10 @@ function parseLoginArgs(rest: string[]): { selector: string; aliases: string[] }
 		} else if (selector === undefined) {
 			selector = token;
 		} else {
-			throw new CommandError("usage: /seat login <selector> [-a <alias>]…");
+			throw new CommandError(usage);
 		}
 	}
-	if (selector === undefined) throw new CommandError("usage: /seat login <selector> [-a <alias>]…");
+	if (selector === undefined) throw new CommandError(usage);
 	return { selector, aliases };
 }
 

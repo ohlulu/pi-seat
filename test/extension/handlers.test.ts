@@ -38,7 +38,7 @@ describe("useSelection", () => {
 	test("sets the provider default via label or alias (Python-compatible resolution)", () => {
 		const store = seeded();
 		const result = useSelection(store, "p");
-		expect(result).toEqual({ changed: true, action: "set", provider: "anthropic", label: "personal" });
+		expect(result).toEqual({ changed: true, action: "set", provider: "anthropic", label: "personal", attachedAliases: [] });
 		expect(store.providers.anthropic?.default).toBe("personal");
 		assertValid(store);
 	});
@@ -61,6 +61,70 @@ describe("useSelection", () => {
 	test("unknown selector is an operation error", () => {
 		expect(() => useSelection(seeded(), "nosuch")).toThrow(CommandError);
 		expect(() => useSelection(seeded(), "openai-codex:nosuch")).toThrow(CommandError);
+	});
+});
+
+describe("AC-017: use attaches aliases atomically with the default", () => {
+	test("`use <label> -a <alias>` writes the default and the alias in one mutation", () => {
+		const store = seeded();
+		const result = useSelection(store, "personal", ["o", "me"]);
+		expect(result).toEqual({
+			changed: true,
+			action: "set",
+			provider: "anthropic",
+			label: "personal",
+			attachedAliases: ["o", "me"],
+		});
+		expect(store.providers.anthropic?.default).toBe("personal");
+		expect(store.providers.anthropic?.aliases["o"]).toBe("personal");
+		expect(store.providers.anthropic?.aliases["me"]).toBe("personal");
+		// The attached alias is a real selector afterwards.
+		expect(useSelection(store, "o")).toMatchObject({ action: "set", label: "personal" });
+		assertValid(store);
+	});
+
+	test("attaching an alias is a change even when the default already points there", () => {
+		const store = seeded();
+		const result = useSelection(store, "work", ["day"]);
+		expect(result.changed).toBe(true); // default unchanged, alias is new
+		expect(store.providers.anthropic?.aliases["day"]).toBe("work");
+		// Re-attaching the same alias to the same profile is a no-op.
+		expect(useSelection(store, "work", ["day"])).toEqual({
+			changed: false,
+			action: "set",
+			provider: "anthropic",
+			label: "work",
+			attachedAliases: [],
+		});
+		assertValid(store);
+	});
+
+	test("the selector may itself be an alias; the alias lands on the resolved label", () => {
+		const store = seeded();
+		useSelection(store, "p", ["pp"]);
+		expect(store.providers.anthropic?.aliases["pp"]).toBe("personal");
+		assertValid(store);
+	});
+
+	test("invalid or conflicting aliases are rejected with the store untouched", () => {
+		const store = seeded();
+		const before = serializeStore(store);
+		expect(() => useSelection(store, "work", ["a:b"])).toThrow(/invalid alias/); // login's charset rule
+		expect(() => useSelection(store, "work", ["a,b"])).toThrow(/invalid alias/);
+		expect(() => useSelection(store, "work", ["default"])).toThrow(/reserved/);
+		expect(() => useSelection(store, "work", ["personal"])).toThrow(/collides/); // alias = other profile
+		expect(() => useSelection(store, "work", ["work"])).toThrow(/collides/); // alias = its own label
+		expect(() => useSelection(store, "work", ["p"])).toThrow(/already points/); // owned by personal
+		expect(() => useSelection(store, "default", ["o"])).toThrow(/no profile to alias/);
+		// A partially-applied attachment would leave an alias without its default.
+		expect(() => useSelection(store, "work", ["ok", "personal"])).toThrow(/collides/);
+		expect(serializeStore(store)).toBe(before);
+	});
+
+	test("unknown selector with aliases still fails before any alias is written", () => {
+		const store = seeded();
+		expect(() => useSelection(store, "nosuch", ["n"])).toThrow(CommandError);
+		expect(store.providers.anthropic?.aliases["n"]).toBeUndefined();
 	});
 });
 
@@ -94,6 +158,7 @@ describe("loginProfile", () => {
 		expect(() => loginProfile(store, "anthropic:a,b", cred("x"))).toThrow(); // selector-level
 		expect(() => loginProfile(store, "w", cred("x"))).toThrow(/alias/); // label collides with alias
 		expect(() => loginProfile(store, "fresh", cred("x"), ["personal"])).toThrow(/collides/); // alias = profile name
+		expect(() => loginProfile(store, "fresh", cred("x"), ["fresh"])).toThrow(/collides/); // alias = the new label itself
 		expect(() => loginProfile(store, "fresh", cred("x"), ["w"])).toThrow(/already points/); // alias owned elsewhere
 	});
 });

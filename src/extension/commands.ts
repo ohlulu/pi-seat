@@ -55,17 +55,56 @@ function own<T>(map: Record<string, T>, key: string): T | undefined {
 	return Object.hasOwn(map, key) ? map[key] : undefined;
 }
 
+// --- alias validation (shared by login and use) -----------------------------
+
+/** Charset and reserved-name rules. Callable before any store lookup. */
+function validateAliasNames(aliases: readonly string[]): void {
+	for (const alias of aliases) {
+		if (alias === DEFAULT_KEYWORD) throw new CommandError(`"${DEFAULT_KEYWORD}" is a reserved name`);
+		if (!isValidLabel(alias)) throw new CommandError(`invalid alias "${alias}" (":" and "," are not allowed)`);
+	}
+}
+
+/**
+ * Structural rules for pointing `aliases` at `label`: an alias may not shadow a
+ * profile label (including `label` itself — the schema rejects a store where an
+ * alias and a profile share a name) nor steal an alias owned by another
+ * profile. Throws before any mutation so a rejected attachment leaves the store
+ * untouched.
+ */
+function assertAliasesAssignable(sec: ProviderSection, label: string, aliases: readonly string[]): void {
+	for (const alias of aliases) {
+		if (alias === label || own(sec.profiles, alias) !== undefined) {
+			throw new CommandError(`alias "${alias}" collides with an existing profile label`);
+		}
+		const target = own(sec.aliases, alias);
+		if (target !== undefined && target !== label) {
+			throw new CommandError(`alias "${alias}" already points at "${target}"; rm it first`);
+		}
+	}
+}
+
 // --- use / default ----------------------------------------------------------
 
 export type UseResult = MutationOutcome &
-	({ action: "set"; provider: ProviderId; label: string } | { action: "clear"; provider: ProviderId });
+	(
+		| { action: "set"; provider: ProviderId; label: string; attachedAliases: string[] }
+		| { action: "clear"; provider: ProviderId }
+	);
 
-/** `use <selector>`: persist the global default; `use default` clears it. */
-export function useSelection(store: SeatStore, selectorInput: string): UseResult {
+/**
+ * `use <selector> [-a <alias>]…`: persist the global default; `use default`
+ * clears it. Aliases attach to the resolved profile in the same mutation as the
+ * default write (AC-017), so `/seat ohlulu -a o` can never leave a default
+ * without its alias or the other way round.
+ */
+export function useSelection(store: SeatStore, selectorInput: string, aliases: readonly string[] = []): UseResult {
 	const selector = parseSelector(selectorInput);
+	validateAliasNames(aliases);
 	const sec = section(store, selector.provider);
 
 	if (selector.name === DEFAULT_KEYWORD) {
+		if (aliases.length > 0) throw new CommandError(`"${DEFAULT_KEYWORD}" clears the default; it has no profile to alias`);
 		if (!sec || sec.default === undefined) return { changed: false, action: "clear", provider: selector.provider };
 		delete sec.default;
 		return { changed: true, action: "clear", provider: selector.provider };
@@ -75,9 +114,23 @@ export function useSelection(store: SeatStore, selectorInput: string): UseResult
 	if (label === undefined || !sec) {
 		throw new CommandError(`no profile or alias "${selector.name}" for provider "${selector.provider}"`);
 	}
-	if (sec.default === label) return { changed: false, action: "set", provider: selector.provider, label };
+	assertAliasesAssignable(sec, label, aliases);
+
+	const attachedAliases: string[] = [];
+	for (const alias of aliases) {
+		if (own(sec.aliases, alias) === label) continue; // already attached
+		sec.aliases[alias] = label;
+		attachedAliases.push(alias);
+	}
+	const defaultChanged = sec.default !== label;
 	sec.default = label;
-	return { changed: true, action: "set", provider: selector.provider, label };
+	return {
+		changed: defaultChanged || attachedAliases.length > 0,
+		action: "set",
+		provider: selector.provider,
+		label,
+		attachedAliases,
+	};
 }
 
 // --- login ------------------------------------------------------------------
@@ -103,10 +156,7 @@ export function loginProfile(
 	const label = selector.name;
 	if (label === DEFAULT_KEYWORD) throw new CommandError(`"${DEFAULT_KEYWORD}" is a reserved name`);
 	if (!isValidLabel(label)) throw new CommandError(`invalid label "${label}" (":" and "," are not allowed)`);
-	for (const alias of aliases) {
-		if (alias === DEFAULT_KEYWORD) throw new CommandError(`"${DEFAULT_KEYWORD}" is a reserved name`);
-		if (!isValidLabel(alias)) throw new CommandError(`invalid alias "${alias}" (":" and "," are not allowed)`);
-	}
+	validateAliasNames(aliases);
 
 	const sec = ensureSection(store, selector.provider);
 	if (own(sec.aliases, label) !== undefined) {
@@ -117,15 +167,7 @@ export function loginProfile(
 		return { changed: false, action: "needs-confirm", provider: selector.provider, label };
 	}
 
-	for (const alias of aliases) {
-		if (own(sec.profiles, alias) !== undefined) {
-			throw new CommandError(`alias "${alias}" collides with an existing profile label`);
-		}
-		const target = own(sec.aliases, alias);
-		if (target !== undefined && target !== label) {
-			throw new CommandError(`alias "${alias}" already points at "${target}"; rm it first`);
-		}
-	}
+	assertAliasesAssignable(sec, label, aliases);
 
 	sec.profiles[label] = credential;
 	for (const alias of aliases) sec.aliases[alias] = label;
