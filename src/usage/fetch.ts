@@ -12,7 +12,8 @@
 
 import type { ProviderId, SeatCredential } from "../store/schema.ts";
 import { ensureFreshProfile, isExpired, type RefreshCallback } from "../store/refresh.ts";
-import { readForeignFileNoFollow, type SeatStorageBackend } from "../store/storage.ts";
+import { decodeStore, readForeignFileNoFollow, type SeatStorageBackend } from "../store/storage.ts";
+import { redactTokenText } from "../store/redact.ts";
 import type { ClaudeUsage, CodexUsage } from "./render.ts";
 
 export const CLAUDE_USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
@@ -83,17 +84,28 @@ export async function profileUsage(
 	refresh: RefreshCallback,
 	options: UsageFetchOptions = {},
 ): Promise<ProfileUsageResult> {
+	// Collected up front so even refresh-time failures redact the credential
+	// that was involved (T037); rotated secrets are added as they appear.
+	const secrets: string[] = [];
+	try {
+		const stored = backend.read((current) => decodeStore(current)).providers[provider]?.profiles[label];
+		if (stored) secrets.push(stored.access, stored.refresh);
+	} catch {
+		// Store unreadable → pattern-based redaction still applies below.
+	}
 	try {
 		const outcome = await ensureFreshProfile(backend, provider, label, refresh, {
 			...(options.now !== undefined ? { now: options.now } : {}),
 		});
+		secrets.push(outcome.credential.access, outcome.credential.refresh);
 		const usage =
 			provider === "anthropic"
 				? await fetchClaudeUsage(outcome.credential.access, options)
 				: await fetchCodexUsage(outcome.credential, options);
 		return { ok: true, label, usage, refreshed: outcome.refreshed };
 	} catch (error) {
-		return { ok: false, label, error: error instanceof Error ? error.message : String(error) };
+		const message = error instanceof Error ? error.message : String(error);
+		return { ok: false, label, error: redactTokenText(message, secrets) };
 	}
 }
 

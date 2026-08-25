@@ -144,6 +144,25 @@ describe("usage", () => {
 	test("unknown usage flag → exit 2", async () => {
 		expect(await makeCli().run("usage", "--bogus")).toBe(2);
 	});
+
+	test("T037: refresh errors echoing credentials never reach stderr unredacted", async () => {
+		const cli = makeCli();
+		// Expire a profile and make its refresh throw with the tokens embedded.
+		cli.backend.withLock((current) => {
+			const store = decodeStore(current!);
+			store.providers.anthropic!.profiles["work"] = { type: "oauth", refresh: "rt-leaky", access: "at-leaky", expires: Date.now() - 60_000 };
+			return { result: undefined, next: encodeStore(store) };
+		});
+		for (const adapter of cli.deps.adapters) {
+			adapter.oauth.refresh = async (c) => {
+				throw new Error(`refresh ${(c as SeatCredential).refresh} rejected (access ${(c as SeatCredential).access})`);
+			};
+		}
+		expect(await cli.run("usage", "--json")).toBe(1);
+		const everything = [...cli.out, ...cli.errs].join("\n");
+		expect(everything).not.toContain("rt-leaky");
+		expect(everything).not.toContain("at-leaky");
+	});
 });
 
 describe("mutations via CLI", () => {

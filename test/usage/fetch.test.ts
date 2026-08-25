@@ -116,6 +116,32 @@ describe("AC-010: dormant expired profile refreshes through the lock, then rende
 	});
 });
 
+describe("T037 regression: profile errors never leak token material", () => {
+	test("refresh error echoing the credential is redacted in ProfileUsageResult.error", async () => {
+		const backend = seedBackend(cred("rt-secret", Date.now() - 60_000));
+		const refresh: RefreshCallback = async (credential) => {
+			throw new Error(`server rejected refresh ${credential.refresh} (access ${credential.access})`);
+		};
+		const result = await profileUsage(backend, "anthropic", "personal", refresh, { claudeUrl });
+		expect(result.ok).toBe(false);
+		if (result.ok) throw new Error("unreachable");
+		expect(result.error).not.toContain("rt-secret");
+		expect(result.error).not.toContain("at-rt-secret");
+		expect(result.error).toContain("<redacted>");
+	});
+
+	test("endpoint error bodies echoing a bearer token are redacted", async () => {
+		const backend = seedBackend(cred("rt-echo", Date.now() + 3_600_000));
+		const refresh: RefreshCallback = async (c) => c;
+		const result = await profileUsage(backend, "anthropic", "personal", refresh, {
+			claudeUrl: `http://localhost:${server.port}/boom`,
+		});
+		expect(result.ok).toBe(false);
+		if (result.ok) throw new Error("unreachable");
+		expect(result.error).not.toContain("at-rt-echo");
+	});
+});
+
 describe("Python-parity request headers", () => {
 	test("Claude: bearer, anthropic-beta, claude-code UA", async () => {
 		captured = [];
