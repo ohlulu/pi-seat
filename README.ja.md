@@ -41,8 +41,11 @@ Pi セッション内で:
 ```
 /seat login work        # OAuth で新しいグラントを作成し "work" として保存
 /seat use work          # "work" をグローバルデフォルトに設定
-/seat status            # 現在有効なアカウントを確認
+/seat use work -a w     # 同時にエイリアス "w" を割り当て
+/seat status            # 使用量・デフォルト・pin を表示（esc または q で閉じる）
 ```
+
+`/seat` と `/seat status` は TUI セッションでは対話的な使用量ビューを開き、それ以外（RPC、`pi -p`）ではテキスト出力にフォールバックします。
 
 セッションを特定のアカウントに固定（デフォルトより優先、そのセッションのみ）:
 
@@ -58,7 +61,7 @@ seat                    # 全プロファイルの使用量バー
 seat status --plain     # シェルプロンプト向けの TSV 出力
 ```
 
-`use default` はデフォルトを解除し、Pi 標準のログインに戻します。`rm`、`rename`、繰り返し可能な `-a <alias>` も期待どおりに動作します。
+`use default` はデフォルトを解除し、Pi 標準のログインに戻します。`rm`、`rename`、繰り返し可能な `-a <alias>`（`login` と `use` の両方）も期待どおりに動作します。
 
 ## 安全設計
 

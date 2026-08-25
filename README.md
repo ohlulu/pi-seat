@@ -41,8 +41,11 @@ Inside a Pi session:
 ```
 /seat login work        # mint a new OAuth grant, store it as "work"
 /seat use work          # make "work" the global default
-/seat status            # what is active right now
+/seat use work -a w     # …and point the alias "w" at it
+/seat status            # usage meters, default and pin — press esc or q to close
 ```
+
+`/seat` and `/seat status` open an interactive usage view in a TUI session, and fall back to plain text everywhere else (RPC, `pi -p`).
 
 Pin a session to an account (overrides the default, this session only):
 
@@ -58,7 +61,7 @@ seat                    # usage bars for all profiles
 seat status --plain     # TSV output for shell prompts
 ```
 
-`use default` clears the default and restores Pi's built-in login. `rm`, `rename`, and repeatable `-a <alias>` work as expected.
+`use default` clears the default and restores Pi's built-in login. `rm`, `rename`, and repeatable `-a <alias>` (on both `login` and `use`) work as expected.
 
 ## How it stays safe
 

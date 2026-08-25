@@ -12,7 +12,9 @@ import { isValidLabel, type ProviderId, type SeatCredential } from "../store/sch
 import type { SeatStorageBackend } from "../store/storage.ts";
 import { decodeStore } from "../store/storage.ts";
 import { parseSelector, resolveSelection } from "../store/selector.ts";
-import { adapterFor, type SeatProviderAdapter } from "./oauth.ts";
+import type { UsageFetchOptions } from "../usage/fetch.ts";
+import { adapterFor, toRefreshCallback, type SeatProviderAdapter } from "./oauth.ts";
+import { UsageView } from "./usage-view.ts";
 import {
 	CommandError,
 	DEFAULT_KEYWORD,
@@ -27,6 +29,9 @@ export interface SeatCommandDeps {
 	backend: SeatStorageBackend;
 	adapters: SeatProviderAdapter[];
 	pins: Partial<Record<ProviderId, string>>;
+	/** auth.json, for the built-in credential's usage snapshot (REQ-010). */
+	authPath: string;
+	fetchOptions?: UsageFetchOptions;
 }
 
 const SUBCOMMANDS = new Set(["use", "login", "rm", "rename", "status", "whoami", "usage", "help"]);
@@ -36,17 +41,24 @@ export const SEAT_COMMAND_DESCRIPTION = "Manage seat account profiles (use/login
 export async function runSeatCommand(args: string, ctx: ExtensionCommandContext, deps: SeatCommandDeps): Promise<void> {
 	const tokens = args.trim().split(/\s+/).filter((t) => t.length > 0);
 	try {
-		if (tokens.length === 0 || tokens[0] === "status" || tokens[0] === "whoami") {
+		// REQ-010: bare /seat, /seat status and /seat usage open the view in a TUI;
+		// everywhere else they stay text. /seat whoami is offline by contract and
+		// never opens anything.
+		if (tokens.length === 0 || tokens[0] === "status" || tokens[0] === "usage") {
+			await showUsage(ctx, deps);
+			return;
+		}
+		if (tokens[0] === "whoami") {
 			ctx.ui.notify(statusText(deps), "info");
 			return;
 		}
 		const [head, ...rest] = tokens as [string, ...string[]];
 		switch (head) {
 			case "help":
-				ctx.ui.notify("usage: /seat [use] <selector> | login <selector> [-a <alias>]… | rm <selector> | rename <old> <new> | status", "info");
-				return;
-			case "usage":
-				ctx.ui.notify("usage meters live in the `seat` CLI; run `seat` in a terminal", "info");
+				ctx.ui.notify(
+					"usage: /seat [use] <selector> [-a <alias>]… | login <selector> [-a <alias>]… | rm <selector> | rename <old> <new> | status",
+					"info",
+				);
 				return;
 			case "use":
 				await handleUse(rest, ctx, deps);
@@ -71,22 +83,64 @@ export async function runSeatCommand(args: string, ctx: ExtensionCommandContext,
 	}
 }
 
+/**
+ * AC-018 / AC-019. `ctx.mode !== "tui"` is the guard, not `ctx.hasUI`: RPC mode
+ * reports hasUI true and its ui.custom() resolves undefined immediately, which
+ * would look like the user closed a view that never opened.
+ */
+async function showUsage(ctx: ExtensionCommandContext, deps: SeatCommandDeps): Promise<void> {
+	if (ctx.mode !== "tui") {
+		ctx.ui.notify(statusText(deps), "info");
+		return;
+	}
+	let view: UsageView | undefined;
+	try {
+		await ctx.ui.custom<void>((tui, _theme, _keybindings, done) => {
+			view = new UsageView(
+				{
+					backend: deps.backend,
+					authPath: deps.authPath,
+					pins: deps.pins,
+					refreshFor: (provider) => toRefreshCallback(adapterFor(deps.adapters, provider)),
+					...(deps.fetchOptions !== undefined ? { fetchOptions: deps.fetchOptions } : {}),
+				},
+				{ onChange: () => tui.requestRender(), onClose: () => done(undefined) },
+			);
+			view.start();
+			return {
+				render: (width: number) => view!.render(width),
+				handleInput: (data: string) => {
+					view!.handleInput(data);
+					tui.requestRender();
+				},
+				invalidate: () => view!.invalidate(),
+				dispose: () => view!.dispose(),
+			};
+		});
+	} finally {
+		// Pi disposes the component on close, but only once the factory has
+		// returned; dispose is idempotent, so claim the spinner either way.
+		view?.dispose();
+	}
+}
+
 async function handleUse(rest: string[], ctx: ExtensionCommandContext, deps: SeatCommandDeps): Promise<void> {
-	const selector = rest[0];
-	if (selector === undefined || rest.length > 1) throw new CommandError("usage: /seat use <selector>");
-	const result = runMutation(deps.backend, (store) => useSelection(store, selector));
+	const USAGE = "usage: /seat use <selector> [-a <alias>]…";
+	const { selector, aliases } = parseSelectorWithAliases(rest, USAGE);
+	const result = runMutation(deps.backend, (store) => useSelection(store, selector, aliases));
 
 	const pinned = deps.pins[result.provider];
 	const suffix = pinned !== undefined ? ` — this session keeps its pin (${pinned})` : "";
 	if (result.action === "clear") {
 		ctx.ui.notify(`seat: ${result.provider} default cleared; Pi built-in login applies${suffix}`, "info");
 	} else {
-		ctx.ui.notify(`seat: ${result.provider} default is now "${result.label}"${suffix}`, "info");
+		const attached = result.attachedAliases.length > 0 ? ` (alias ${result.attachedAliases.join(", ")} → ${result.label})` : "";
+		ctx.ui.notify(`seat: ${result.provider} default is now "${result.label}"${attached}${suffix}`, "info");
 	}
 }
 
 async function handleLogin(rest: string[], ctx: ExtensionCommandContext, deps: SeatCommandDeps): Promise<void> {
-	const { selector, aliases } = parseLoginArgs(rest);
+	const { selector, aliases } = parseSelectorWithAliases(rest, "usage: /seat login <selector> [-a <alias>]…");
 	// Validate grammar and charset, then run the overwrite check, all BEFORE the
 	// OAuth flow — the browser round-trip is never wasted on a login the user
 	// then declines to store (AC-013). The check is a pure read; the final
@@ -182,7 +236,8 @@ async function handleRename(rest: string[], ctx: ExtensionCommandContext, deps: 
 	);
 }
 
-function parseLoginArgs(rest: string[]): { selector: string; aliases: string[] } {
+/** One selector plus repeatable `-a|--alias` — shared by `use` and `login`. */
+function parseSelectorWithAliases(rest: string[], usage: string): { selector: string; aliases: string[] } {
 	let selector: string | undefined;
 	const aliases: string[] = [];
 	for (let i = 0; i < rest.length; i += 1) {
@@ -195,10 +250,10 @@ function parseLoginArgs(rest: string[]): { selector: string; aliases: string[] }
 		} else if (selector === undefined) {
 			selector = token;
 		} else {
-			throw new CommandError("usage: /seat login <selector> [-a <alias>]…");
+			throw new CommandError(usage);
 		}
 	}
-	if (selector === undefined) throw new CommandError("usage: /seat login <selector> [-a <alias>]…");
+	if (selector === undefined) throw new CommandError(usage);
 	return { selector, aliases };
 }
 

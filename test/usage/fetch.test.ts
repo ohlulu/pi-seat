@@ -10,7 +10,7 @@ import {
 	type StorageLockResult,
 } from "../../src/store/storage.ts";
 import type { RefreshCallback } from "../../src/store/refresh.ts";
-import { builtinUsage, fetchCodexUsage, profileUsage, readBuiltinSnapshot } from "../../src/usage/fetch.ts";
+import { builtinUsage, envUsageFetchOptions, fetchCodexUsage, profileUsage, readBuiltinSnapshot } from "../../src/usage/fetch.ts";
 import { planLayout } from "../../src/usage/layout.ts";
 import { meterLine, type ClaudeUsage } from "../../src/usage/render.ts";
 
@@ -251,5 +251,30 @@ describe("built-in credential: read-only snapshot, never refreshed", () => {
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}
+	});
+});
+
+describe("T045: the usage endpoint override is loopback-only", () => {
+	test("loopback URLs are honoured; anything that could leave the box is ignored", () => {
+		expect(envUsageFetchOptions({ SEAT_CLAUDE_USAGE_URL: "http://127.0.0.1:9/claude" })).toEqual({
+			claudeUrl: "http://127.0.0.1:9/claude",
+		});
+		expect(envUsageFetchOptions({ SEAT_CODEX_USAGE_URL: "http://localhost:9/codex" })).toEqual({
+			codexUrl: "http://localhost:9/codex",
+		});
+
+		// These requests carry a bearer token, so a redirect to an arbitrary
+		// host would be an exfiltration primitive, not a test seam.
+		for (const value of [
+			"https://evil.example.com/usage",
+			"http://evil.example.com/usage",
+			"http://127.0.0.1.evil.example.com/usage",
+			"file:///etc/passwd",
+			"not-a-url",
+			"",
+		]) {
+			expect(envUsageFetchOptions({ SEAT_CLAUDE_USAGE_URL: value })).toEqual({});
+		}
+		expect(envUsageFetchOptions({})).toEqual({});
 	});
 });

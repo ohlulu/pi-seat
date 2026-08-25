@@ -41,8 +41,11 @@ Dans une session Pi :
 ```
 /seat login work        # crée un nouveau grant OAuth, stocké sous "work"
 /seat use work          # fait de "work" le défaut global
-/seat status            # ce qui est actif en ce moment
+/seat use work -a w     # …et pointe l'alias "w" dessus
+/seat status            # usage, défaut et pin — esc ou q pour fermer
 ```
+
+`/seat` et `/seat status` ouvrent une vue d'usage interactive dans une session TUI, et retombent sur du texte partout ailleurs (RPC, `pi -p`).
 
 Épinglez une session à un compte (prioritaire sur le défaut, pour cette session uniquement) :
 
@@ -58,7 +61,7 @@ seat                    # barres d'utilisation de tous les profils
 seat status --plain     # sortie TSV pour les prompts shell
 ```
 
-`use default` efface le défaut et restaure la connexion intégrée de Pi. `rm`, `rename` et l'option répétable `-a <alias>` fonctionnent comme attendu.
+`use default` efface le défaut et restaure la connexion intégrée de Pi. `rm`, `rename` et l'option répétable `-a <alias>` (sur `login` comme sur `use`) fonctionnent comme attendu.
 
 ## Conception de sécurité
 

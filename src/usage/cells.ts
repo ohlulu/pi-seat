@@ -50,6 +50,19 @@ export function cellClip(text: string, width: number): string {
 	return kept.join("") + " ".repeat(width - 1 - used) + ELLIPSIS;
 }
 
+// SGR / OSC-8 sequences carry no display width. Kept narrow on purpose: this
+// only has to cover what render.ts emits (colour codes and resets).
+const ANSI_RE = /\x1b\[[0-9;]*m|\x1b\]8;[^\x07\x1b]*(?:\x07|\x1b\\)/g;
+
+export function stripAnsi(text: string): string {
+	return text.replace(ANSI_RE, "");
+}
+
+/** Cells occupied by an already-coloured line — what a terminal actually shows. */
+export function visibleCellWidth(text: string): number {
+	return cellWidth(stripAnsi(text));
+}
+
 /** Pad or ellipsize to exactly `width` cells so columns stay aligned. */
 export function fit(text: string, width: number): string {
 	const size = cellWidth(text);

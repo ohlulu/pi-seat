@@ -62,6 +62,13 @@ read_when:
 - Choice: repo 常駐 `~/Developer/ohlulu/pi-seat`；Pi 以 local package path 載入 extension（`~/.pi/agent/settings.json` packages 條目，經 `package.json` 的 `pi.extensions` manifest 指到 extension 入口）；CLI shim 覆蓋 `~/.pi/agent/bin/seat`（路徑不變，dotfiles `gg_add_allowlist` 無需改動）。不發 npm。
 - Alternatives: 發 npm 走 `pi install`（個人工具，發佈成本無收益）。
 
+### DEC-007: In-session usage view 復用 usage 純模組
+
+- Choice: `/seat`（無參數）與 `/seat status` 在 TUI 開 `ctx.ui.custom()` component（`src/extension/usage-view.ts`），直接吃 `src/usage` 的 cells/layout/render 輸出；`esc`/`q` 關閉。非 TUI（`ctx.mode !== "tui"`，不用 `hasUI`）退回文字。
+- 守則（來自 pi.md 實證 gotchas）：spinner 重繪必須回傳 `dispose`；view 開啟中不另開 nested UI；寬度安全走既有 `fit`/`cell_clip`，並以 render probe 掃 width 2–200 驗證無 row 溢出（含固定 chrome 字串）。
+- Alternatives: statusbar 常駐元件（資訊密度不够，且佔永久螢幕空間）。
+- Satisfies: REQ-010。
+
 ## Change Map
 
 | File | Action | Satisfies |
@@ -80,6 +87,7 @@ read_when:
 | `src/extension/runtime-auth.ts` | create — 改作 pi-accounts：coordinator、overlay、abort-first fail-closed、verify、`closeOpenAICodexWebSocketSessions(sessionId)` invalidation | REQ-004, REQ-009 |
 | `src/extension/oauth.ts` | create — 改作 pi-accounts：anthropic + openai-codex adapters（重用 Pi 內建 OAuth） | REQ-007 |
 | `src/extension/commands.ts` | create — `/seat` 子指令：login/use/rm/rename/status + shorthand + aliases + selector grammar | REQ-002, REQ-003, REQ-007 |
+| `src/extension/usage-view.ts` | create — in-session usage view（ctx.ui.custom、esc/q、非 TUI fallback） | REQ-010 |
 | `src/usage/cells.ts` | create — cell_width / cell_clip / fit 移植 | REQ-006 |
 | `src/usage/layout.ts` | create — layout tiers 移植 | REQ-006 |
 | `src/usage/render.ts` | create — bars / account blocks / spinner 移植 | REQ-006 |
