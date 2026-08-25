@@ -55,7 +55,18 @@ interface Cli {
 	run(...argv: string[]): Promise<number>;
 }
 
-function makeCli(options: { piSeat?: string; confirmAnswer?: boolean; claude?: string; empty?: boolean } = {}): Cli {
+let authFileCounter = 0;
+
+function makeCli(
+	options: {
+		piSeat?: string;
+		confirmAnswer?: boolean;
+		claude?: string;
+		empty?: boolean;
+		codexDefault?: string;
+		auth?: Record<string, unknown>;
+	} = {},
+): Cli {
 	const backend = new InMemorySeatStorageBackend();
 	if (!options.empty) {
 		const store = emptyStore();
@@ -65,10 +76,17 @@ function makeCli(options: { piSeat?: string; confirmAnswer?: boolean; claude?: s
 			aliases: Object.assign(Object.create(null), { p: "personal" }),
 		};
 		store.providers["openai-codex"] = {
-			profiles: Object.assign(Object.create(null), { main: cred("rt-c") }),
+			...(options.codexDefault !== undefined ? { default: options.codexDefault } : {}),
+			profiles: Object.assign(Object.create(null), { main: cred("rt-c"), backup: cred("rt-cb") }),
 			aliases: Object.assign(Object.create(null)),
 		};
 		backend.withLock(() => ({ result: undefined, next: encodeStore(store) }));
+	}
+	let testAuthPath = authPath;
+	if (options.auth !== undefined) {
+		authFileCounter += 1;
+		testAuthPath = join(fixtureDir, `auth-${authFileCounter}.json`);
+		writeFileSync(testAuthPath, JSON.stringify(options.auth), { mode: 0o600 });
 	}
 
 	const adapters: SeatProviderAdapter[] = (["anthropic", "openai-codex"] as const).map((id) => ({
@@ -92,7 +110,7 @@ function makeCli(options: { piSeat?: string; confirmAnswer?: boolean; claude?: s
 	cli.deps = {
 		backend,
 		adapters,
-		authPath,
+		authPath: testAuthPath,
 		env: options.piSeat !== undefined ? { PI_SEAT: options.piSeat } : {},
 		io: {
 			out: (line) => cli.out.push(line),
@@ -246,6 +264,37 @@ describe("mutations via CLI", () => {
 		expect(await cli.run("rm", "x", "--wat")).toBe(2);
 		expect(await cli.run("--wat")).toBe(2);
 		expect(await cli.run("status", "--wat")).toBe(2);
+	});
+});
+
+describe("T039: codex usage renders every stored profile plus the builtin snapshot", () => {
+	test("named codex selection no longer hides the other profiles or the builtin", async () => {
+		const cli = makeCli({
+			codexDefault: "main", // named selection exists — the buggy path skipped builtin
+			auth: { "openai-codex": { type: "oauth", refresh: "rt-builtin-c", access: "at-builtin-c", expires: FRESH } },
+		});
+		expect(await cli.run("usage", "--json")).toBe(0);
+		const doc = JSON.parse(cli.out.join("\n")) as Record<string, any>;
+		expect(doc["openai-codex"].active).toBe("main");
+		expect(Object.keys(doc["openai-codex"].profiles).sort()).toEqual(["backup", "main"]); // every stored profile
+		expect(doc["openai-codex-builtin"]).toBeDefined(); // builtin rendered independently
+
+		cli.out.length = 0;
+		expect(await cli.run()).toBe(0);
+		const text = cli.out.join("\n");
+		expect(text).toContain("● main"); // effective named profile is live
+		expect(text).toContain("○ backup"); // dormant codex profile visible
+		expect(text).toContain("Codex"); // builtin block visible
+	});
+
+	test("no codex profiles: builtin keeps the legacy top-level shape", async () => {
+		const cli = makeCli({
+			empty: true,
+			auth: { "openai-codex": { type: "oauth", refresh: "rt-only-c", access: "at-only-c", expires: FRESH } },
+		});
+		expect(await cli.run("usage", "--json")).toBe(0);
+		const doc = JSON.parse(cli.out.join("\n")) as Record<string, any>;
+		expect(doc["openai-codex"].rate_limit).toBeDefined(); // legacy: usage sits directly under the provider key
 	});
 });
 

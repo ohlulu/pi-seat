@@ -385,96 +385,72 @@ async function cmdUsage(rest: string[], deps: CliDeps): Promise<number> {
 		if (!asJson) for (const line of lines) deps.io.out(line);
 	};
 
-	// Anthropic: every stored profile, then the built-in snapshot.
-	const anthropicSection = store.providers.anthropic;
-	const anthropicSelection = resolveSelection(store, "anthropic", pins.anthropic);
-	const activeAnthropic = anthropicSelection.source === "builtin" ? null : anthropicSelection.label;
-	const profileJson: Record<string, unknown> = {};
-	for (const label of Object.keys(anthropicSection?.profiles ?? {})) {
-		const akas = Object.keys(anthropicSection?.aliases ?? {})
-			.filter((a) => anthropicSection?.aliases[a] === label)
-			.sort();
-		const adapter = adapterFor(deps.adapters, "anthropic");
-		const result = await profileUsage(deps.backend, "anthropic", label, toRefreshCallback(adapter), fetchOptions);
-		if (result.ok) {
-			emit(["", accountLine(layout, label, akas, label === activeAnthropic, "", renderOptions)]);
-			emit(renderClaudeUsage(layout, result.usage as ClaudeUsage, renderOptions));
-			profileJson[label] = result.usage;
-		} else {
-			failed = true;
-			if (asJson) deps.io.err(`seat: ${label}: unavailable — ${result.error}`);
-			else {
-				emit(["", accountLine(layout, label, akas, false, "unavailable", renderOptions)]);
-				emit([hintLine(layout, result.error, renderOptions)]);
-			}
-		}
-	}
-	const anthropicBuiltin = await builtinUsage(deps.authPath, "anthropic", fetchOptions);
-	if (anthropicBuiltin !== undefined) {
-		const live = anthropicSelection.source === "builtin";
-		if ("ok" in anthropicBuiltin && anthropicBuiltin.ok) {
-			emit(["", accountLine(layout, "Claude", [], live, "built-in", renderOptions)]);
-			emit(renderClaudeUsage(layout, anthropicBuiltin.usage as ClaudeUsage, renderOptions));
-			json["anthropic-builtin"] = anthropicBuiltin.usage;
-		} else if ("expired" in anthropicBuiltin) {
-			emit(["", accountLine(layout, "Claude", [], live, "token expired", renderOptions)]);
-			emit([hintLine(layout, "run pi once to refresh it — seat never touches Pi's grant", renderOptions)]);
-		} else {
-			failed = true;
-			const message = "error" in anthropicBuiltin ? anthropicBuiltin.error : "unavailable";
-			if (asJson) deps.io.err(`seat: built-in: unavailable — ${message}`);
-			else {
-				emit(["", accountLine(layout, "Claude", [], live, "unavailable", renderOptions)]);
-				emit([hintLine(layout, message, renderOptions)]);
-			}
-		}
-	}
-	if (Object.keys(profileJson).length > 0 || activeAnthropic !== null) {
-		json["anthropic"] = { active: activeAnthropic, profiles: profileJson };
-	} else if (json["anthropic-builtin"] !== undefined) {
-		json["anthropic"] = json["anthropic-builtin"];
-		delete json["anthropic-builtin"];
-	}
+	// REQ-006: every stored profile, the built-in login credential, and Codex.
+	// Both providers walk the same path (T039): all stored profiles (live dot on
+	// the effective selection), then the built-in snapshot as its own block.
+	const renderBlock = (provider: ProviderId, usage: ClaudeUsage | CodexUsage): string[] =>
+		provider === "anthropic"
+			? renderClaudeUsage(layout, usage as ClaudeUsage, renderOptions)
+			: renderCodexUsage(layout, usage as CodexUsage, renderOptions);
+	const blockNote = (provider: ProviderId, usage: ClaudeUsage | CodexUsage): string =>
+		provider === "anthropic" ? "" : String((usage as CodexUsage).plan_type ?? "");
 
-	// Codex: effective selection — a named profile, else the built-in snapshot.
-	const codexSelection = resolveSelection(store, "openai-codex", pins["openai-codex"]);
-	if (codexSelection.source !== "builtin") {
-		const adapter = adapterFor(deps.adapters, "openai-codex");
-		const result = await profileUsage(deps.backend, "openai-codex", codexSelection.label, toRefreshCallback(adapter), fetchOptions);
-		if (result.ok) {
-			const usage = result.usage as CodexUsage;
-			emit(["", accountLine(layout, codexSelection.label, [], true, String(usage.plan_type ?? ""), renderOptions)]);
-			emit(renderCodexUsage(layout, usage, renderOptions));
-			json["openai-codex"] = usage;
-		} else {
-			failed = true;
-			if (asJson) deps.io.err(`seat: ${codexSelection.label}: unavailable — ${result.error}`);
-			else {
-				emit(["", accountLine(layout, codexSelection.label, [], true, "unavailable", renderOptions)]);
-				emit([hintLine(layout, result.error, renderOptions)]);
-			}
-		}
-	} else {
-		const codexBuiltin = await builtinUsage(deps.authPath, "openai-codex", fetchOptions);
-		if (codexBuiltin !== undefined) {
-			if ("ok" in codexBuiltin && codexBuiltin.ok) {
-				const usage = codexBuiltin.usage as CodexUsage;
-				emit(["", accountLine(layout, "Codex", [], true, String(usage.plan_type ?? ""), renderOptions)]);
-				emit(renderCodexUsage(layout, usage, renderOptions));
-				json["openai-codex"] = usage;
-			} else if ("expired" in codexBuiltin) {
-				failed = true;
-				emit(["", accountLine(layout, "Codex", [], true, "token expired", renderOptions)]);
-				emit([hintLine(layout, "run pi once to refresh it", renderOptions)]);
+	for (const provider of PROVIDER_IDS) {
+		const section = store.providers[provider];
+		const selection = resolveSelection(store, provider, pins[provider]);
+		const activeLabel = selection.source === "builtin" ? null : selection.label;
+		const builtinName = provider === "anthropic" ? "Claude" : "Codex";
+		const profileJson: Record<string, unknown> = {};
+
+		for (const label of Object.keys(section?.profiles ?? {})) {
+			const akas = Object.keys(section?.aliases ?? {})
+				.filter((a) => section?.aliases[a] === label)
+				.sort();
+			const adapter = adapterFor(deps.adapters, provider);
+			const result = await profileUsage(deps.backend, provider, label, toRefreshCallback(adapter), fetchOptions);
+			if (result.ok) {
+				emit(["", accountLine(layout, label, akas, label === activeLabel, blockNote(provider, result.usage), renderOptions)]);
+				emit(renderBlock(provider, result.usage));
+				profileJson[label] = result.usage;
 			} else {
 				failed = true;
-				const message = "error" in codexBuiltin ? codexBuiltin.error : "unavailable";
-				if (asJson) deps.io.err(`seat: Codex: unavailable — ${message}`);
+				if (asJson) deps.io.err(`seat: ${label}: unavailable — ${result.error}`);
 				else {
-					emit(["", accountLine(layout, "Codex", [], true, "unavailable", renderOptions)]);
+					emit(["", accountLine(layout, label, akas, false, "unavailable", renderOptions)]);
+					emit([hintLine(layout, result.error, renderOptions)]);
+				}
+			}
+		}
+
+		const builtin = await builtinUsage(deps.authPath, provider, fetchOptions);
+		if (builtin !== undefined) {
+			const live = selection.source === "builtin";
+			if ("ok" in builtin && builtin.ok) {
+				const note = blockNote(provider, builtin.usage) || "built-in";
+				emit(["", accountLine(layout, builtinName, [], live, note, renderOptions)]);
+				emit(renderBlock(provider, builtin.usage));
+				json[`${provider}-builtin`] = builtin.usage;
+			} else if ("expired" in builtin) {
+				emit(["", accountLine(layout, builtinName, [], live, "token expired", renderOptions)]);
+				emit([hintLine(layout, "run pi once to refresh it — seat never touches Pi's grant", renderOptions)]);
+			} else {
+				failed = true;
+				const message = "error" in builtin ? builtin.error : "unavailable";
+				if (asJson) deps.io.err(`seat: ${builtinName} built-in: unavailable — ${message}`);
+				else {
+					emit(["", accountLine(layout, builtinName, [], live, "unavailable", renderOptions)]);
 					emit([hintLine(layout, message, renderOptions)]);
 				}
 			}
+		}
+
+		// JSON: {active, profiles} whenever named profiles are in play; a lone
+		// built-in credential keeps the legacy top-level usage shape.
+		if (Object.keys(profileJson).length > 0 || activeLabel !== null) {
+			json[provider] = { active: activeLabel, profiles: profileJson };
+		} else if (json[`${provider}-builtin`] !== undefined) {
+			json[provider] = json[`${provider}-builtin`];
+			delete json[`${provider}-builtin`];
 		}
 	}
 
