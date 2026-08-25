@@ -119,6 +119,8 @@ function deps(backend: InMemorySeatStorageBackend, overrides: Partial<SeatComman
 		authPath: overrides.authPath ?? "/nonexistent/auth.json",
 		// No usage request leaves this test file.
 		fetchOptions: overrides.fetchOptions ?? { fetchImpl: (async () => Response.json(CLAUDE_PAYLOAD)) as unknown as typeof fetch },
+		// No test may ever launch a real browser.
+		openBrowser: overrides.openBrowser ?? (() => {}),
 	};
 }
 
@@ -313,5 +315,77 @@ describe("error surface", () => {
 		const f = fakeCtx();
 		await runSeatCommand("use nosuch", f.ctx, deps(seededBackend()));
 		expect(f.notices.some((n) => n.startsWith("seat:") && n.includes("nosuch"))).toBe(true);
+	});
+});
+
+describe("AC-021: login opens the browser and reports completion", () => {
+	/** Adapter whose login emits the given interaction events before minting. */
+	function emittingAdapters(minted: SeatCredential, events: ("auth_url" | "device_code")[]): SeatProviderAdapter[] {
+		const make = (id: "anthropic" | "openai-codex"): SeatProviderAdapter => ({
+			id,
+			displayName: id,
+			oauth: {
+				login: async (interaction) => {
+					for (const type of events) {
+						if (type === "auth_url") {
+							interaction.notify?.({ type: "auth_url", url: "https://example.test/authorize" } as never);
+						} else {
+							interaction.notify?.({
+								type: "device_code",
+								verificationUri: "https://example.test/device",
+								userCode: "ABCD-1234",
+							} as never);
+						}
+					}
+					return minted as never;
+				},
+				refresh: async () => {
+					throw new Error("refresh not under test");
+				},
+				toAuth: async (c) => ({ apiKey: (c as SeatCredential).access }) as never,
+			},
+		});
+		return [make("anthropic"), make("openai-codex")];
+	}
+
+	test("auth_url → opener called once with the URL; notice carries it; success names the label", async () => {
+		const f = fakeCtx();
+		const opened: string[] = [];
+		await runSeatCommand(
+			"login work",
+			f.ctx,
+			deps(seededBackend(), { adapters: emittingAdapters(cred("rt-new"), ["auth_url"]) , openBrowser: (u) => void opened.push(u) }),
+		);
+		expect(opened).toEqual(["https://example.test/authorize"]);
+		expect(f.notices.some((n) => n.includes("https://example.test/authorize"))).toBe(true);
+		expect(f.notices.some((n) => n.includes('stored anthropic profile "work"'))).toBe(true);
+	});
+
+	test("device_code → opener called with verification URI, code shown", async () => {
+		const f = fakeCtx();
+		const opened: string[] = [];
+		await runSeatCommand(
+			"login openai-codex:team",
+			f.ctx,
+			deps(seededBackend(), { adapters: emittingAdapters(cred("rt-codex"), ["device_code"]), openBrowser: (u) => void opened.push(u) }),
+		);
+		expect(opened).toEqual(["https://example.test/device"]);
+		expect(f.notices.some((n) => n.includes("ABCD-1234"))).toBe(true);
+		expect(f.notices.some((n) => n.includes('stored openai-codex profile "team"'))).toBe(true);
+	});
+
+	test("a throwing opener never breaks the flow (best-effort contract)", async () => {
+		const f = fakeCtx();
+		await runSeatCommand(
+			"login work",
+			f.ctx,
+			deps(seededBackend(), {
+				adapters: emittingAdapters(cred("rt-new"), ["auth_url"]),
+				openBrowser: () => {
+					throw new Error("no launcher");
+				},
+			}),
+		);
+		expect(f.notices.some((n) => n.includes('stored anthropic profile "work"'))).toBe(true);
 	});
 });

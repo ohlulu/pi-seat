@@ -111,10 +111,13 @@ The CLI MAY refresh an expired stored credential on demand through the REQ-005 p
 
 保留 alias 習慣：`-a <alias>` repeatable；`rm`、`rename`、alias resolution 語意與 Python seat 相同。
 
+Login 互動對齊 Pi 內建 `/login` 體驗：WHEN the provider flow yields an auth URL or device code, the extension SHALL attempt to open the system browser (best-effort, never fatal) and SHALL render the URL as a clickable (OSC 8) link; completion SHALL be reported with an explicit success or failure notification naming the stored label.
+
 | AC | Given | When | Then |
 |---|---|---|---|
 | AC-012 | `/seat login work` 完成 OAuth | 登入成功 | store 新增 work profile；auth.json 未變 |
 | AC-013 | label 與既有 profile 重名 | login | 確認後才覆蓋（destructive confirm） |
+| AC-021 | login flow 發出 auth_url / device_code 事件 | 事件抵達 | browser opener 被呼叫恰一次（失敗不中斷 flow）；notify 含可點擊 URL；完成時有具名 success/failure 訊息 |
 
 ### REQ-008: Migration from claude-profiles.json
 

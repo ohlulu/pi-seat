@@ -14,6 +14,7 @@ import { decodeStore } from "../store/storage.ts";
 import { parseSelector, resolveSelection } from "../store/selector.ts";
 import type { UsageFetchOptions } from "../usage/fetch.ts";
 import { adapterFor, toRefreshCallback, type SeatProviderAdapter } from "./oauth.ts";
+import { openBrowser, type BrowserOpener } from "./open-browser.ts";
 import { UsageView } from "./usage-view.ts";
 import {
 	CommandError,
@@ -32,6 +33,8 @@ export interface SeatCommandDeps {
 	/** auth.json, for the built-in credential's usage snapshot (REQ-010). */
 	authPath: string;
 	fetchOptions?: UsageFetchOptions;
+	/** Injectable for AC-021 tests; defaults to the platform launcher. */
+	openBrowser?: BrowserOpener;
 }
 
 const SUBCOMMANDS = new Set(["use", "login", "rm", "rename", "status", "whoami", "usage", "help"]);
@@ -166,7 +169,9 @@ async function handleLogin(rest: string[], ctx: ExtensionCommandContext, deps: S
 
 	const adapter = adapterFor(deps.adapters, parsed.provider);
 	const controller = new AbortController();
-	const credential = (await adapter.oauth.login(buildInteraction(ctx, controller.signal))) as SeatCredential;
+	const credential = (await adapter.oauth.login(
+		buildInteraction(ctx, controller.signal, deps.openBrowser ?? openBrowser),
+	)) as SeatCredential;
 
 	const result = runMutation(deps.backend, (store) =>
 		loginProfile(store, selector, credential, aliases, { confirmedOverwrite }),
@@ -257,7 +262,16 @@ function parseSelectorWithAliases(rest: string[], usage: string): { selector: st
 	return { selector, aliases };
 }
 
-function buildInteraction(ctx: ExtensionCommandContext, signal: AbortSignal): ProviderAuthInteraction {
+/** OSC 8 hyperlink: terminals render it clickable, plain ones show the URL. */
+function clickable(url: string): string {
+	return `\x1b]8;;${url}\x07${url}\x1b]8;;\x07`;
+}
+
+function buildInteraction(
+	ctx: ExtensionCommandContext,
+	signal: AbortSignal,
+	open: BrowserOpener,
+): ProviderAuthInteraction {
 	return {
 		signal,
 		prompt: async (prompt: AuthPrompt): Promise<string> => {
@@ -274,10 +288,25 @@ function buildInteraction(ctx: ExtensionCommandContext, signal: AbortSignal): Pr
 		notify: (event) => {
 			switch (event.type) {
 				case "auth_url":
-					ctx.ui.notify([`Open this URL to login:`, event.url, event.instructions].filter(Boolean).join("\n"), "info");
+					// AC-021: launch first (best-effort), then always show the link.
+					try {
+						open(event.url);
+					} catch {}
+					ctx.ui.notify(
+						[`Opening browser to login (or click):`, clickable(event.url), event.instructions]
+							.filter(Boolean)
+							.join("\n"),
+						"info",
+					);
 					break;
 				case "device_code":
-					ctx.ui.notify([`Open ${event.verificationUri} and enter code: ${event.userCode}`].join("\n"), "info");
+					try {
+						open(event.verificationUri);
+					} catch {}
+					ctx.ui.notify(
+						`Opening browser (or click): ${clickable(event.verificationUri)}\nEnter code: ${event.userCode}`,
+						"info",
+					);
 					break;
 				case "info":
 					ctx.ui.notify([event.message, ...(event.links ?? []).map((l) => l.url)].join("\n"), "info");
