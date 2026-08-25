@@ -1,10 +1,10 @@
 /**
- * pi-seat extension entry (REQ-002, REQ-004, REQ-008).
+ * pi-seat extension entry (REQ-002, REQ-004).
  *
- * Init order matters: first-load migration runs BEFORE pin resolution, because
- * PI_SEAT may name a profile the migration just imported. Both happen once at
- * extension setup; the PI_SEAT pin (with aliases resolved to labels) is
- * immutable for the session (DEC-002).
+ * Loading is read-only with respect to the store: the PI_SEAT pin is parsed
+ * once at setup (with aliases resolved to labels) and is immutable for the
+ * session (DEC-002). Legacy migration is NOT part of loading (AC-020) — it is
+ * an operator action, `bun scripts/migrate-legacy.ts`.
  *
  * Fail-closed wiring (AC-004): any PI_SEAT error — malformed, unknown
  * provider, duplicate provider, unknown label — records a startup error that
@@ -18,7 +18,6 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ProviderId } from "../store/schema.ts";
 import { FileSeatStorageBackend } from "../store/storage.ts";
-import { migrateLegacyProfiles } from "../store/migrate.ts";
 import { decodeStore } from "../store/storage.ts";
 import { resolvePins } from "../store/selector.ts";
 import { envUsageFetchOptions } from "../usage/fetch.ts";
@@ -46,23 +45,7 @@ export default function seatExtension(pi: ExtensionAPI): void {
 	let startupError: string | undefined;
 	let pins: Partial<Record<ProviderId, string>> = {};
 
-	// 1. First-load migration (REQ-008): inside the lock, re-checked, legacy
-	// file untouched. Fail-closed migration only surfaces a notice — provider
-	// turns still work through Pi's built-in login.
-	try {
-		const migration = migrateLegacyProfiles({
-			backend,
-			legacyPath: join(base, "claude-profiles.json"),
-			authPath,
-		});
-		if (migration.outcome === "imported" || migration.outcome === "fail-closed") {
-			startupNotices.push(migration.notice);
-		}
-	} catch (error) {
-		startupNotices.push(`seat migration skipped: ${message(error)}`);
-	}
-
-	// 2. Init-time pin parse (DEC-002): read PI_SEAT once, resolve aliases once.
+	// Init-time pin parse (DEC-002): read PI_SEAT once, resolve aliases once.
 	const pinSpec = process.env["PI_SEAT"] ?? "";
 	try {
 		pins = resolvePins(backend.read((current) => decodeStore(current)), pinSpec);

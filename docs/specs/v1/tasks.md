@@ -96,7 +96,7 @@ Review of T043..T045 returned APPROVE with three P2 findings, all in the T044 ex
 
 ## Phase 10: migration trigger extraction
 
-- [ ] T049 [REQ-008] Move the migration trigger out of the extension: create `scripts/migrate-legacy.ts` (dry-run by default printing what would import/skip and why, `--apply` executes via the existing `src/store/migrate.ts` logic and lock); delete the first-load hook from `src/extension/index.ts`; update the T019 smoke pass signal from migration-side-effect to command-registration; retarget AC-014 tests at the script and add AC-020 (extension load never migrates, with and without a legacy file present). Verify: `bun test test/store/migrate.test.ts test/extension && bun run smoke:extension` → GREEN + pass
+- [x] T049 [REQ-008] Move the migration trigger out of the extension: create `scripts/migrate-legacy.ts` (dry-run by default printing what would import/skip and why, `--apply` executes via the existing `src/store/migrate.ts` logic and lock); delete the first-load hook from `src/extension/index.ts`; update the T019 smoke pass signal from migration-side-effect to command-registration; retarget AC-014 tests at the script and add AC-020 (extension load never migrates, with and without a legacy file present). Verify: `bun test test/store/migrate.test.ts test/extension && bun run smoke:extension` → GREEN + pass
 
 ## Human Acceptance
 

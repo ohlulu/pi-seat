@@ -118,9 +118,13 @@ AC-to-test matrix（bun test，除另註明）：
 | AC-011a | golden fixtures：width 2–200 掃描逐列比對 Python golden |
 | AC-011b | width ≥ 40 semantic assertions：account name / meter label / percent 存在、截斷帶 ellipsis |
 | AC-012 / 013 | fake OAuth adapter login flow；重名 → confirm 後才覆蓋 |
-| AC-014 | migration fixture：legacy `active` pointer 與 byte-equality 不一致 → 兩條排除規則各自生效；ambiguous fixture → fail-closed |
+| AC-014 | migration fixture（經 `migrate-legacy.ts`）：legacy `active` pointer 與 byte-equality 不一致 → 兩條排除規則各自生效；ambiguous fixture → fail-closed；dry-run 磁碟零變動 |
 | AC-015 | injected invalidator spy：identity A→B 恰一次、A→A 零次、close 完成後才回報切換成功 |
 | AC-016 | pinned session `use` → default 寫入 + pin 維持 + 提示訊息 |
+| AC-017 | `use <selector> -a <alias>` → default 與 alias 同一次 mutation 寫入；衝突/非法 alias → 拒絕且 store 未動（extension + CLI） |
+| AC-018 | TUI：`/seat` 開 view、bars 與 default/pin header 渲染、esc/q 關閉；render probe width 2–200 raw + guarded 皆無溢出；tmux smoke |
+| AC-019 | 非 TUI（`ctx.mode !== "tui"`）：文字輸出、不開 component、不 hang |
+| AC-020 | extension 載入（legacy 檔存在與不存在）→ 不建 seat.json、無 migration 訊息；smoke 以 command registration 為 pass signal |
 | NFR-001 | `hyperfine 'seat status --plain'`，process-cold p95 ≤ 150ms，run count 固定於 repo script |
 | NFR-002 | LICENSE / NOTICE 存在性檢查 |
 

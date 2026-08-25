@@ -1,11 +1,23 @@
+/**
+ * REQ-008 / AC-014, driven through the operator script (T049).
+ *
+ * The rules live in src/store/migrate.ts, but nothing in the product calls them
+ * except `scripts/migrate-legacy.ts`, so that is where they are tested: a rule
+ * that works in isolation and never fires from the one entry point that exists
+ * is not a migration.
+ *
+ * Every scenario runs the dry run first and asserts it wrote nothing, then
+ * `--apply`, and asserts both reached the same decision.
+ */
+
 import { describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { migrateLegacyProfiles, type MigrationResult } from "../../src/store/migrate.ts";
 import { parseStore } from "../../src/store/schema.ts";
 import { FileSeatStorageBackend, encodeStore } from "../../src/store/storage.ts";
 import { emptyStore } from "../../src/store/schema.ts";
+import { runMigrateScript, type MigrateScriptDeps } from "../../scripts/migrate-legacy.ts";
 
 function cred(refresh: string) {
 	return { type: "oauth", refresh, access: `at-${refresh}`, expires: 1_900_000_000_000 };
@@ -16,6 +28,12 @@ interface Fixture {
 	legacyPath: string;
 	authPath: string;
 	storePath: string;
+}
+
+interface Run {
+	code: number;
+	out: string;
+	errs: string;
 }
 
 function withFixture(
@@ -49,12 +67,29 @@ function withFixture(
 	}
 }
 
-function migrate(fx: Fixture): MigrationResult {
-	return migrateLegacyProfiles({
-		backend: new FileSeatStorageBackend(fx.storePath),
-		legacyPath: fx.legacyPath,
-		authPath: fx.authPath,
-	});
+function run(fx: Fixture, ...argv: string[]): Run {
+	const out: string[] = [];
+	const errs: string[] = [];
+	const deps: MigrateScriptDeps = {
+		io: { out: (line) => out.push(line), err: (line) => errs.push(line) },
+		env: {},
+		home: "/nonexistent-home",
+	};
+	const code = runMigrateScript(["--dir", fx.dir, ...argv], deps);
+	return { code, out: out.join("\n"), errs: errs.join("\n") };
+}
+
+/** The dry run is a preview: nothing on disk may differ afterwards. */
+function dryRun(fx: Fixture): Run {
+	const before = snapshot(fx);
+	const result = run(fx);
+	expect(snapshot(fx)).toEqual(before);
+	return result;
+}
+
+function snapshot(fx: Fixture): Record<string, string | null> {
+	const read = (path: string) => (existsSync(path) ? readFileSync(path).toString("base64") : null);
+	return { store: read(fx.storePath), legacy: read(fx.legacyPath), auth: read(fx.authPath) };
 }
 
 /** Wrap a scenario so the legacy file (and auth.json) are asserted byte-identical. */
@@ -74,7 +109,7 @@ function assertingForeignUntouched(fx: Fixture, fn: () => void): void {
 	else expect(authAfter !== null && authBefore.equals(authAfter)).toBe(true);
 }
 
-describe("migration (AC-014)", () => {
+describe("migration via migrate-legacy.ts (AC-014)", () => {
 	test("active pointer and byte-equality disagree → both exclusion rules fire independently", () => {
 		withFixture(
 			{
@@ -90,11 +125,22 @@ describe("migration (AC-014)", () => {
 			},
 			(fx) => {
 				assertingForeignUntouched(fx, () => {
-					const result = migrate(fx);
-					expect(result.outcome).toBe("imported");
-					if (result.outcome !== "imported") throw new Error("unreachable");
-					expect(result.imported).toEqual(["backup"]);
-					expect(result.excluded).toEqual(["personal", "work"]);
+					// Dry run: the plan, and why each account is skipped.
+					const preview = dryRun(fx);
+					expect(preview.code).toBe(0);
+					expect(preview.out).toContain("dry run");
+					expect(preview.out).toContain("would import (1)");
+					expect(preview.out).toContain("backup");
+					expect(preview.out).toContain("would skip (2)");
+					expect(preview.out).toContain("work — legacy `active` lineage");
+					expect(preview.out).toContain("personal — shares auth.json's current anthropic grant");
+					expect(preview.out).toContain("--apply");
+					expect(existsSync(fx.storePath)).toBe(false); // preview created nothing
+
+					const applied = run(fx, "--apply");
+					expect(applied.code).toBe(0);
+					expect(applied.out).toContain("imported (1)");
+					expect(applied.out).toContain("skipped (2)");
 
 					const store = parseStore(JSON.parse(readFileSync(fx.storePath, "utf8")));
 					expect(Object.keys(store.providers.anthropic?.profiles ?? {})).toEqual(["backup"]);
@@ -116,10 +162,16 @@ describe("migration (AC-014)", () => {
 			},
 			(fx) => {
 				assertingForeignUntouched(fx, () => {
-					const result = migrate(fx);
-					expect(result.outcome).toBe("fail-closed");
-					if (result.outcome !== "fail-closed") throw new Error("unreachable");
-					expect(result.notice).toContain("/seat login");
+					// The dry run refuses too — a cutover script can gate on exit 1
+					// before it has changed anything.
+					const preview = dryRun(fx);
+					expect(preview.code).toBe(1);
+					expect(preview.errs).toContain("refused");
+					expect(preview.errs).toContain("/seat login");
+
+					const applied = run(fx, "--apply");
+					expect(applied.code).toBe(1);
+					expect(applied.errs).toContain("/seat login");
 					expect(existsSync(fx.storePath)).toBe(false); // nothing imported, nothing created
 				});
 			},
@@ -128,17 +180,16 @@ describe("migration (AC-014)", () => {
 
 	test("active missing → fail-closed; active dangling → fail-closed", () => {
 		withFixture({ legacy: { profiles: { work: cred("rt-1") }, aliases: {} }, auth: {} }, (fx) => {
-			const result = migrate(fx);
-			expect(result.outcome).toBe("fail-closed");
+			expect(dryRun(fx).code).toBe(1);
+			expect(run(fx, "--apply").code).toBe(1);
 			expect(existsSync(fx.storePath)).toBe(false);
 		});
 		withFixture(
 			{ legacy: { active: "ghost", profiles: { work: cred("rt-1") }, aliases: {} }, auth: {} },
 			(fx) => {
-				const result = migrate(fx);
-				expect(result.outcome).toBe("fail-closed");
-				if (result.outcome !== "fail-closed") throw new Error("unreachable");
-				expect(result.reason).toContain("ghost");
+				const applied = run(fx, "--apply");
+				expect(applied.code).toBe(1);
+				expect(applied.errs).toContain("ghost");
 				expect(existsSync(fx.storePath)).toBe(false);
 			},
 		);
@@ -154,8 +205,11 @@ describe("migration (AC-014)", () => {
 			(fx) => {
 				assertingForeignUntouched(fx, () => {
 					const before = readFileSync(fx.storePath, "utf8");
-					const result = migrate(fx);
-					expect(result).toEqual({ outcome: "noop", reason: "store-exists" });
+					expect(dryRun(fx).out).toContain("seat.json already exists");
+
+					const applied = run(fx, "--apply");
+					expect(applied.code).toBe(0);
+					expect(applied.out).toContain("nothing to do");
 					expect(readFileSync(fx.storePath, "utf8")).toBe(before); // store untouched too
 				});
 			},
@@ -165,8 +219,10 @@ describe("migration (AC-014)", () => {
 	test("legacy file absent → no-op, no store created", () => {
 		withFixture({ auth: { anthropic: cred("rt-live") } }, (fx) => {
 			assertingForeignUntouched(fx, () => {
-				const result = migrate(fx);
-				expect(result).toEqual({ outcome: "noop", reason: "legacy-absent" });
+				expect(dryRun(fx).out).toContain("no claude-profiles.json");
+				const applied = run(fx, "--apply");
+				expect(applied.code).toBe(0);
+				expect(applied.out).toContain("nothing to do");
 				expect(existsSync(fx.storePath)).toBe(false);
 			});
 		});
@@ -180,14 +236,12 @@ describe("migration (AC-014)", () => {
 			},
 			(fx) => {
 				assertingForeignUntouched(fx, () => {
-					const result = migrate(fx);
-					expect(result.outcome).toBe("imported");
-					if (result.outcome !== "imported") throw new Error("unreachable");
-					expect(result.imported).toEqual(["dormant"]);
-					expect(result.excluded).toEqual(["work"]);
-					expect(result.notice).toContain("work");
-					expect(result.notice).toContain("built-in login");
-					expect(result.notice).toContain("/seat login");
+					const applied = run(fx, "--apply");
+					expect(applied.code).toBe(0);
+					expect(applied.out).toContain("dormant");
+					expect(applied.out).toContain("work");
+					expect(applied.out).toContain("built-in login");
+					expect(applied.out).toContain("/seat login");
 				});
 			},
 		);
@@ -198,11 +252,15 @@ describe("migration (AC-014)", () => {
 			{ legacy: { active: "work", profiles: { work: cred("rt-1"), dormant: cred("rt-2") }, aliases: {} } },
 			(fx) => {
 				assertingForeignUntouched(fx, () => {
-					const result = migrate(fx);
-					expect(result.outcome).toBe("imported");
-					if (result.outcome !== "imported") throw new Error("unreachable");
-					expect(result.imported).toEqual(["dormant"]);
-					expect(result.excluded).toEqual(["work"]);
+					const preview = dryRun(fx);
+					expect(preview.code).toBe(0);
+					expect(preview.out).toContain("would import (1)");
+					expect(preview.out).toContain("would skip (1)");
+					expect(preview.out).toContain("work — legacy `active` lineage");
+
+					expect(run(fx, "--apply").code).toBe(0);
+					const store = parseStore(JSON.parse(readFileSync(fx.storePath, "utf8")));
+					expect(Object.keys(store.providers.anthropic?.profiles ?? {})).toEqual(["dormant"]);
 				});
 			},
 		);
@@ -215,10 +273,45 @@ describe("migration (AC-014)", () => {
 				auth: {},
 			},
 			(fx) => {
-				const result = migrate(fx);
-				expect(result.outcome).toBe("fail-closed");
+				expect(dryRun(fx).code).toBe(1);
+				expect(run(fx, "--apply").code).toBe(1);
 				expect(existsSync(fx.storePath)).toBe(false);
 			},
 		);
+	});
+});
+
+describe("migrate-legacy.ts invocation contract", () => {
+	test("bad invocations exit 2 and never touch the store", () => {
+		withFixture(
+			{ legacy: { active: "work", profiles: { work: cred("rt-1"), dormant: cred("rt-2") }, aliases: {} } },
+			(fx) => {
+				const before = snapshot(fx);
+				for (const argv of [["--wat"], ["--dir"], ["extra"], ["--apply", "extra"]]) {
+					const result = run(fx, ...argv);
+					expect(result.code).toBe(2);
+					expect(result.errs).toContain("usage:");
+				}
+				expect(snapshot(fx)).toEqual(before);
+			},
+		);
+	});
+
+	test("--dir wins over PI_CODING_AGENT_DIR, and the paths are reported", () => {
+		withFixture({ legacy: { active: "work", profiles: { work: cred("rt-1") }, aliases: {} } }, (fx) => {
+			const out: string[] = [];
+			const code = runMigrateScript(["--dir", fx.dir], {
+				io: { out: (line) => out.push(line), err: () => undefined },
+				env: { PI_CODING_AGENT_DIR: "/nonexistent-env-dir" },
+				home: "/nonexistent-home",
+			});
+			// The lone profile IS the active lineage, so the plan is empty — a
+			// decision, not a refusal.
+			expect(code).toBe(0);
+			expect(out.join("\n")).toContain("would import (0)");
+			expect(out.join("\n")).toContain("(none)");
+			expect(out.join("\n")).toContain(fx.storePath);
+			expect(out.join("\n")).not.toContain("/nonexistent-env-dir");
+		});
 	});
 });

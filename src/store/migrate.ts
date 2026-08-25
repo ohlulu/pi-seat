@@ -1,7 +1,8 @@
 /**
  * One-time migration from legacy claude-profiles.json (REQ-008).
  *
- * Runs on first extension load: IF seat.json does not exist AND the legacy
+ * Triggered only by the operator script `scripts/migrate-legacy.ts` — the
+ * extension never migrates (AC-020). IF seat.json does not exist AND the legacy
  * file does, import legacy anthropic profiles with three exclusion rules:
  *
  * 1. Unconditionally exclude the profile the legacy `active` label points to —
@@ -20,8 +21,20 @@
 import { isValidLabel, type SeatCredential, type SeatStore } from "./schema.ts";
 import { decodeStore, encodeStore, readForeignFileNoFollow, type SeatStorageBackend } from "./storage.ts";
 
+/**
+ * Which rule caught an excluded profile. Reported rather than re-derived: the
+ * dry run has to explain each skip, and deciding it a second time in the script
+ * would be a second copy of the rules.
+ */
+export type ExclusionRule = "active-lineage" | "builtin-grant";
+
+export interface ExcludedProfile {
+	label: string;
+	rule: ExclusionRule;
+}
+
 export type MigrationResult =
-	| { outcome: "imported"; imported: string[]; excluded: string[]; notice: string }
+	| { outcome: "imported"; imported: string[]; excluded: ExcludedProfile[]; notice: string }
 	| { outcome: "noop"; reason: "store-exists" | "legacy-absent" | "legacy-empty" }
 	| { outcome: "fail-closed"; reason: string; notice: string };
 
@@ -130,7 +143,7 @@ export function migrateLegacyProfiles({ backend, legacyPath, authPath }: Migrate
 			return failClosed("auth.json is unreadable — refresh-token comparison is ambiguous");
 		}
 
-		const excluded = new Set<string>();
+		const excluded: ExcludedProfile[] = [];
 		const importable = Object.create(null) as Record<string, SeatCredential>;
 		for (const label of labels) {
 			const credential = toCredential(legacy.profiles[label]);
@@ -139,12 +152,12 @@ export function migrateLegacyProfiles({ backend, legacyPath, authPath }: Migrate
 			}
 			// Rule 1: the active lineage is excluded unconditionally.
 			if (label === legacy.active) {
-				excluded.add(label);
+				excluded.push({ label, rule: "active-lineage" });
 				continue;
 			}
 			// Rule 2: a profile sharing auth.json's grant is excluded independently.
 			if (builtin.refresh !== undefined && credential.refresh === builtin.refresh) {
-				excluded.add(label);
+				excluded.push({ label, rule: "builtin-grant" });
 				continue;
 			}
 			if (!isValidLabel(label)) {
@@ -168,7 +181,8 @@ export function migrateLegacyProfiles({ backend, legacyPath, authPath }: Migrate
 			store.providers.anthropic = { profiles: importable, aliases };
 		}
 
-		const excludedList = [...excluded].sort();
+		const sortedExcluded = [...excluded].sort((a, b) => (a.label < b.label ? -1 : a.label > b.label ? 1 : 0));
+		const excludedList = sortedExcluded.map((entry) => entry.label);
 		const notice =
 			`Imported ${imported.length} dormant profile(s) from claude-profiles.json: ${imported.sort().join(", ") || "(none)"}. ` +
 			(excludedList.length > 0
@@ -176,7 +190,7 @@ export function migrateLegacyProfiles({ backend, legacyPath, authPath }: Migrate
 				: "");
 
 		return {
-			result: { outcome: "imported", imported: imported.sort(), excluded: excludedList, notice },
+			result: { outcome: "imported", imported: imported.sort(), excluded: sortedExcluded, notice },
 			next: encodeStore(store),
 		};
 	});
