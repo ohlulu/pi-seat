@@ -100,6 +100,8 @@ Review of T043..T045 returned APPROVE with three P2 findings, all in the T044 ex
 
 - [x] T050 [REQ-008, REQ-010] Review remediation: dry-run reads the store via the no-lock/no-chmod foreign snapshot (was: backend read that fchmods 0600 and locks — P1); snapshot assertions extended to mode + directory listing with a 0644 regression; `/seat usage` → view added to REQ-010/AC-018 (P2 scope disposition: spec catches up, behavior kept). Verify: `bun test test/store/migrate.test.ts` → GREEN
 
+- [x] T051 [REQ-007] Dogfooding fix: login interaction auto-opens the platform browser on auth_url/device_code (vendored shell-free launcher, NOTICE attribution), renders the URL as an OSC 8 clickable link, keeps the explicit stored-profile completion notice (AC-021); test deps inject a no-op opener so tests never launch a real browser. Verify: `bun test test/extension/commands.test.ts` → GREEN
+
 ## Human Acceptance
 
 - [ ] H001 [AC-003] Two real pi sessions with `PI_SEAT=work` / `PI_SEAT=personal` in tmux: requests attributed to the pinned accounts, store default unchanged
