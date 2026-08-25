@@ -119,6 +119,41 @@ describe("AC-008: every failing step aborts before any provider request", () => 
 	});
 });
 
+describe("T034 regression: block binds to the credential the refresh actually sent", () => {
+	test("stale entry read + locked re-read divergence → block holds, dead token not re-sent", async () => {
+		// The coordinator's entry read sees rt-old; by the time ensureFreshProfile
+		// re-reads (fast path + locked), a concurrent replacement wrote rt-new —
+		// which is ALSO dead. The block must bind to rt-new (the token actually
+		// sent), or the next turn "clears" it and re-sends a dead token forever.
+		const h = makeHarness(cred("rt-new", EXPIRED_EXPIRES), {
+			refresh: (c) => {
+				throw new Error(`invalid_grant for ${c.refresh}`);
+			},
+		});
+		// Delegating backend: the FIRST read (coordinator entry) reports rt-old.
+		const realRead = h.backend.read.bind(h.backend);
+		let entryReadServed = false;
+		h.backend.read = <T>(reader: (current: string | undefined) => T): T => {
+			if (!entryReadServed) {
+				entryReadServed = true;
+				return realRead((current) => reader(current?.replaceAll("rt-new", "rt-old")));
+			}
+			return realRead(reader);
+		};
+
+		await runTurn(h);
+		expect(h.aborts).toHaveLength(1);
+		expect(h.counters.refresh).toBe(1); // sent rt-new once
+
+		// Next turn: the store still holds rt-new. The block must match it and
+		// keep the provider closed WITHOUT another refresh attempt.
+		await runTurn(h);
+		expect(h.aborts).toHaveLength(2);
+		expect(h.counters.refresh).toBe(1); // no re-send of the dead token
+		expect(h.runtime.streamCalls).toBe(0);
+	});
+});
+
 describe("transient failure recovers automatically next turn", () => {
 	test("network blip on turn 1, success on turn 2", async () => {
 		let failOnce = true;

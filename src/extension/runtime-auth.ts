@@ -150,9 +150,20 @@ export class SeatRuntimeAuthCoordinator {
 				credentialForRedaction = credential;
 			} catch (error) {
 				if (error instanceof InvalidGrantError) {
-					const deadRefresh = store.providers[provider]?.profiles[label]?.refresh;
+					// Bind the block to the credential the refresh ACTUALLY sent
+					// (locked re-read), not this coordinator's entry read — they
+					// diverge under concurrent same-label replacement (T034).
+					const deadRefresh = error.sentRefresh ?? store.providers[provider]?.profiles[label]?.refresh;
 					if (deadRefresh !== undefined) {
 						this.blocked[provider] = { label, refresh: deadRefresh, reason: error.message };
+					}
+					if (error.sentAccess !== undefined && error.sentRefresh !== undefined) {
+						credentialForRedaction = {
+							type: "oauth",
+							refresh: error.sentRefresh,
+							access: error.sentAccess,
+							expires: 0,
+						};
 					}
 				}
 				throw error;

@@ -32,6 +32,14 @@ export interface RefreshCallback {
 /** Persistent failure: the grant is dead; re-login is required. */
 export class InvalidGrantError extends Error {
 	override name = "InvalidGrantError";
+	/**
+	 * Identity of the credential the refresh ACTUALLY sent — the locked
+	 * re-read's credential, which can differ from any unlocked read the caller
+	 * did earlier. Fail-closed blocks must bind to this, or a concurrent
+	 * same-label replacement unbinds the block and the dead token is re-sent.
+	 */
+	sentRefresh?: string;
+	sentAccess?: string;
 }
 
 /** Transient failure: response lost (timeout/network); old credential kept. */
@@ -96,7 +104,16 @@ export async function ensureFreshProfile(
 			return { result: { credential, refreshed: false } };
 		}
 
-		const rotated = await callWithTimeout(refresh, credential, options.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+		let rotated: SeatCredential;
+		try {
+			rotated = await callWithTimeout(refresh, credential, options.timeoutMs ?? DEFAULT_TIMEOUT_MS);
+		} catch (error) {
+			if (error instanceof InvalidGrantError) {
+				error.sentRefresh = credential.refresh;
+				error.sentAccess = credential.access;
+			}
+			throw error;
+		}
 		section.profiles[label] = rotated;
 		return { result: { credential: rotated, refreshed: true }, next: encodeStore(store) };
 	});
