@@ -82,6 +82,7 @@ read_when:
 | `src/store/storage.ts` | create — 改作 pi-accounts storage.ts：lock protocol（DEC-003）、0600、O_NOFOLLOW、atomic write | REQ-001, REQ-005 |
 | `src/store/refresh.ts` | create — locked single-flight refresh（extension 與 CLI 共用） | REQ-005 |
 | `src/store/migrate.ts` | create — claude-profiles.json 匯入（REQ-008 排除規則，lock 內 re-check） | REQ-008 |
+| `scripts/migrate-legacy.ts` | create — 手動 migration 進入點（dry-run 預設、`--apply`）；extension 不自動觸發 | REQ-008 |
 | `src/store/selector.ts` | create — selector grammar parse + resolution（pin > default > built-in）；extension 與 CLI 共用的純模組 | REQ-002, REQ-003 |
 | `src/extension/index.ts` | create — extension 入口：pin 解析、per-turn sync、`/seat` 指令、runtime feature detection | REQ-002, REQ-003 |
 | `src/extension/runtime-auth.ts` | create — 改作 pi-accounts：coordinator、overlay、abort-first fail-closed、verify、`closeOpenAICodexWebSocketSessions(sessionId)` invalidation | REQ-004, REQ-009 |
@@ -133,11 +134,11 @@ AC-to-test matrix（bun test，除另註明）：
 ## Migration / rollout
 
 1. repo 完成、全部測試綠。
-2. 一次性 cutover（先停止所有 pi session 與 seat 呼叫）：settings.json 掛上 extension、`bin/seat` 替換為 bun shim（Python 版移入 repo 的 `legacy/` 留檔）、extension 首次載入執行 REQ-008 migration。legacy 的 `use`/`save` 寫入路徑自此退役——不存在 legacy switcher 與 `seat.json` 同時可寫的期間（避免同一 grant 雙方 refresh 的 double-spend）。
+2. 一次性 cutover（先停止所有 pi session 與 seat 呼叫）：跑 `bun scripts/migrate-legacy.ts --apply` 執行 REQ-008 migration，接著 settings.json 掛上 extension、`bin/seat` 替換為 bun shim（Python 版移入 repo 的 `legacy/` 留檔）。legacy 的 `use`/`save` 寫入路徑自此退役——不存在 legacy switcher 與 `seat.json` 同時可寫的期間（避免同一 grant 雙方 refresh 的 double-spend）。
 3. `/seat login` 逐帳號建立新 grant（或使用 migration 匯入的 dormant profiles）。
 4. 驗證雙 session pin 工作流跑順一週。
 5. Rollback：停止所有 Pi/CLI process → settings.json 移除 package → 還原 Python `bin/seat`（git revert dotfiles）。注意：已 migrate 且用過的 profile，其 refresh token 已 rotate 進 `seat.json`，legacy 檔中是已 spent token，該帳號可能需重新 login/save。保留 `seat.json` 直到 rollback 驗證完成；最後跑 `seat status` 與一次 usage check 確認。
-6. Post-transition cleanup：步驟 3–4 驗證完成、rollback 窗口過後，移除 migration 路徑（`src/store/migrate.ts`、extension 的 first-load hook、對應測試）並同步攸除 REQ-008。它是一次性 upgrade path（服務對象只有本機的 Python seat legacy store，對其他使用者永遠 no-op），不是永久 compat contract。
+6. Post-transition cleanup：步驟 3–4 驗證完成、rollback 窗口過後，移除 migration 路徑（`src/store/migrate.ts`、`scripts/migrate-legacy.ts`、對應測試）並同步攸除 REQ-008。它是一次性 upgrade path（服務對象只有本機的 Python seat legacy store，對其他使用者永遠 no-op），不是永久 compat contract。
 
 ## Open questions
 

@@ -118,7 +118,7 @@ The CLI MAY refresh an expired stored credential on demand through the REQ-005 p
 
 ### REQ-008: Migration from claude-profiles.json
 
-On first load, IF `seat.json` does not exist AND `claude-profiles.json` does, the extension SHALL import legacy profiles with these exclusion rules, and SHALL retain the legacy file untouched for rollback:
+Migration runs only via the standalone operator script `scripts/migrate-legacy.ts` (bun; dry-run by default, `--apply` to execute). The extension SHALL NOT migrate automatically — legacy import is a one-machine, one-time operator action, not runtime behavior. IF `seat.json` does not exist AND `claude-profiles.json` does, the script SHALL import legacy profiles with these exclusion rules, and SHALL retain the legacy file untouched for rollback:
 
 1. 無條件排除 legacy `active` label 指向的 profile——Pi refresh 會 rotate token，byte-equality 認不出已 rotated 的 active lineage。
 2. 額外排除 refresh token 與 auth.json 當下 anthropic credential 相同的 profile。
@@ -128,7 +128,8 @@ migration 後以訊息告知：被排除的帳號仍以 Pi 內建登入身分可
 
 | AC | Given | When | Then |
 |---|---|---|---|
-| AC-014 | legacy fixture：`active` pointer 與 byte-equality 結果不一致 | extension 首次載入 | 兩條排除規則各自生效；dormant 匯入；active lineage 未匯入；legacy 檔案未動 |
+| AC-014 | legacy fixture：`active` pointer 與 byte-equality 結果不一致 | `migrate-legacy.ts --apply` | 兩條排除規則各自生效；dormant 匯入；active lineage 未匯入；legacy 檔案未動 |
+| AC-020 | 任意環境 | extension 載入 | 不發生任何 migration；`claude-profiles.json` 存在與否都不影響載入路徑 |
 
 ### REQ-009: Codex connection invalidation
 

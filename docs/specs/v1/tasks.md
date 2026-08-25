@@ -94,6 +94,10 @@ Review of T043..T045 returned APPROVE with three P2 findings, all in the T044 ex
 - [x] T047 [REQ-006] The extraction awaited the whole sequential walk before writing anything, so one 10s account timeout held back the bars of every account that had already answered. Output moves back onto the `onAccount` callback. Regression: second account blocked on a gate → the first account's block is on stdout while it is still in flight. Verify: `bun test test/cli/contract.test.ts` → GREEN
 - [x] T048 [REQ-010] The 80ms spinner interval kept firing after loading finished (waking only to return early), while the render cache was never invalidated — so the reset countdowns froze until the next keypress or resize. One timer at a time: spinner while fetching, a 20s countdown tick once loaded. Regression: after the fetch lands, the spinner handle is cleared, the idle handle is not, and advancing the clock plus one tick moves the countdown. Verify: `bun test test/extension/usage-view.test.ts` → GREEN
 
+## Phase 10: migration trigger extraction
+
+- [ ] T049 [REQ-008] Move the migration trigger out of the extension: create `scripts/migrate-legacy.ts` (dry-run by default printing what would import/skip and why, `--apply` executes via the existing `src/store/migrate.ts` logic and lock); delete the first-load hook from `src/extension/index.ts`; update the T019 smoke pass signal from migration-side-effect to command-registration; retarget AC-014 tests at the script and add AC-020 (extension load never migrates, with and without a legacy file present). Verify: `bun test test/store/migrate.test.ts test/extension && bun run smoke:extension` → GREEN + pass
+
 ## Human Acceptance
 
 - [ ] H001 [AC-003] Two real pi sessions with `PI_SEAT=work` / `PI_SEAT=personal` in tmux: requests attributed to the pinned accounts, store default unchanged
