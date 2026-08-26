@@ -105,18 +105,36 @@ export type ProfileUsageResult =
 	| { ok: true; label: string; usage: ClaudeUsage | CodexUsage; refreshed: boolean }
 	| { ok: false; label: string; error: string };
 
+export interface PreparedProfile {
+	credential: SeatCredential;
+	/** Every credential read or sent, so errors redact what was involved (T037/T042). */
+	secrets: string[];
+	refreshed: boolean;
+}
+
+export type ProfilePrepareResult =
+	| { ok: true; label: string; prepared: PreparedProfile }
+	| { ok: false; label: string; error: string };
+
 /**
- * Usage for one stored profile: locked refresh when expired (AC-010), then
- * the provider's usage endpoint. One account's failure is never fatal — the
- * caller renders the error inline.
+ * Phase 1 of a profile's usage: bring the stored credential up to date through
+ * the REQ-005 locked single-flight path (AC-010).
+ *
+ * Split from the endpoint call because this half touches the store lock and
+ * the other half does not. Two of these MUST NOT overlap inside one process:
+ * `backend.read` acquires the lock SYNCHRONOUSLY (Atomics.wait spin), while
+ * `withLockAsync` holds it across the refresh round trip — so a second
+ * concurrent call freezes the very event loop the first one needs in order to
+ * finish and release, and both then fail on the 5s sync-lock timeout. Callers
+ * walking several profiles MUST await these one at a time (DEC-011).
  */
-export async function profileUsage(
+export async function prepareProfile(
 	backend: SeatStorageBackend,
 	provider: ProviderId,
 	label: string,
 	refresh: RefreshCallback,
 	options: UsageFetchOptions = {},
-): Promise<ProfileUsageResult> {
+): Promise<ProfilePrepareResult> {
 	// Collected up front so even refresh-time failures redact the credential
 	// that was involved (T037); rotated secrets are added as they appear.
 	const secrets: string[] = [];
@@ -135,15 +153,51 @@ export async function profileUsage(
 			onAttempt: (sent) => secrets.push(sent.access, sent.refresh),
 		});
 		secrets.push(outcome.credential.access, outcome.credential.refresh);
-		const usage =
-			provider === "anthropic"
-				? await fetchClaudeUsage(outcome.credential.access, options)
-				: await fetchCodexUsage(outcome.credential, options);
-		return { ok: true, label, usage, refreshed: outcome.refreshed };
+		return { ok: true, label, prepared: { credential: outcome.credential, secrets, refreshed: outcome.refreshed } };
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
 		return { ok: false, label, error: redactTokenText(message, secrets) };
 	}
+}
+
+/**
+ * Phase 2: the provider's usage endpoint for an already-prepared credential.
+ * Touches no store state and takes no lock, so any number of these may be in
+ * flight at once (DEC-011).
+ */
+export async function fetchPreparedUsage(
+	provider: ProviderId,
+	label: string,
+	prepared: PreparedProfile,
+	options: UsageFetchOptions = {},
+): Promise<ProfileUsageResult> {
+	try {
+		const usage =
+			provider === "anthropic"
+				? await fetchClaudeUsage(prepared.credential.access, options)
+				: await fetchCodexUsage(prepared.credential, options);
+		return { ok: true, label, usage, refreshed: prepared.refreshed };
+	} catch (error) {
+		const message = error instanceof Error ? error.message : String(error);
+		return { ok: false, label, error: redactTokenText(message, prepared.secrets) };
+	}
+}
+
+/**
+ * Usage for one stored profile: locked refresh when expired (AC-010), then
+ * the provider's usage endpoint. One account's failure is never fatal — the
+ * caller renders the error inline.
+ */
+export async function profileUsage(
+	backend: SeatStorageBackend,
+	provider: ProviderId,
+	label: string,
+	refresh: RefreshCallback,
+	options: UsageFetchOptions = {},
+): Promise<ProfileUsageResult> {
+	const result = await prepareProfile(backend, provider, label, refresh, options);
+	if (!result.ok) return result;
+	return fetchPreparedUsage(provider, label, result.prepared, options);
 }
 
 export type BuiltinUsageResult =

@@ -11,7 +11,15 @@ import { PROVIDER_IDS, type ProviderId, type SeatStore } from "../store/schema.t
 import type { RefreshCallback } from "../store/refresh.ts";
 import type { SeatStorageBackend } from "../store/storage.ts";
 import { resolveSelection, type Selection } from "../store/selector.ts";
-import { builtinUsage, profileUsage, type UsageFetchOptions } from "./fetch.ts";
+import {
+	builtinUsage,
+	fetchPreparedUsage,
+	prepareProfile,
+	type BuiltinUsageResult,
+	type ProfilePrepareResult,
+	type ProfileUsageResult,
+	type UsageFetchOptions,
+} from "./fetch.ts";
 import { planLayout, type Layout } from "./layout.ts";
 import {
 	accountLine,
@@ -131,82 +139,124 @@ function settleAccount(promise: Promise<UsageAccount | undefined>): Promise<Sett
 	);
 }
 
-/**
- * Every stored profile plus each provider's built-in snapshot, in render
- * order. `onAccount` fires as each account resolves so a live view can paint
- * incrementally; the returned array is the same sequence.
- *
- * Every fetch is launched before any is awaited (DEC-011). Awaiting inside the
- * walk made total latency the SUM of every account's round trip — measured at
- * ~540ms per account for ~2.2s over 4 accounts, against ~30ms of local work —
- * so the wall clock grew linearly with the number of stored profiles.
- * Concurrency comes from the launch; ordering comes from the drain, never from
- * settle order, because AC-011a pins rendering against golden fixtures and
- * DEC-009 needs a stable sequence under the view's cursor.
- *
- * Contending on the store lock is not a new risk: ensureFreshProfile's fast
- * path takes no lock at all for a credential that is still fresh, and an
- * expired one serializes on the REQ-005 single-flight lock exactly as it did
- * when this walk was sequential.
- */
-export async function collectUsage(
-	deps: UsageCollectDeps,
-	onAccount?: (account: UsageAccount) => void,
-): Promise<UsageAccount[]> {
-	const store = deps.store;
-	const fetchOptions = deps.fetchOptions ?? {};
-	const pending: Promise<SettledAccount>[] = [];
+/** One account in walk order, before anything has been fetched for it. */
+type Slot =
+	| { kind: "profile"; provider: ProviderId; label: string; aliases: string[] }
+	| { kind: "builtin"; provider: ProviderId };
 
+/** Walk order, derived from the store snapshot alone — no I/O, no lock. */
+function planSlots(deps: UsageCollectDeps): Slot[] {
+	const slots: Slot[] = [];
 	for (const provider of PROVIDER_IDS) {
-		const section = store.providers[provider];
-		const selection = resolveSelection(store, provider, deps.pins[provider]);
+		const section = deps.store.providers[provider];
+		const selection = resolveSelection(deps.store, provider, deps.pins[provider]);
 		const activeLabel = selection.source === "builtin" ? undefined : selection.label;
 
-		const fetchProfile = async (label: string): Promise<UsageAccount> => {
-			const aliases = Object.keys(section?.aliases ?? {})
-				.filter((alias) => section?.aliases[alias] === label)
-				.sort();
-			const result = await profileUsage(deps.backend, provider, label, deps.refreshFor(provider), fetchOptions);
-			const common = { provider, kind: "profile", name: label, label, aliases } as const;
-			return result.ok
-				? { ...common, note: planNote(provider, result.usage), result: { ok: true, usage: result.usage } }
-				: { ...common, note: "unavailable", result: { ok: false, hint: result.error, failed: true } };
-		};
-
-		const live = selection.source === "builtin";
-		const fetchBuiltin = async (): Promise<UsageAccount | undefined> => {
-			const builtin = await builtinUsage(deps.authPath, provider, fetchOptions);
-			if (builtin === undefined) return undefined;
-			const common = { provider, kind: "builtin" as const, name: builtinName(provider), aliases: [] };
-			if ("ok" in builtin && builtin.ok) {
-				return { ...common, note: planNote(provider, builtin.usage) || "built-in", result: { ok: true, usage: builtin.usage } };
-			}
-			if ("expired" in builtin) {
-				return {
-					...common,
-					note: "token expired",
-					result: { ok: false, hint: "run pi once to refresh it — seat never touches Pi's grant", failed: false },
-				};
-			}
-			const hint = "error" in builtin ? builtin.error : "unavailable";
-			return { ...common, note: "unavailable", result: { ok: false, hint, failed: true } };
-		};
-
 		// The effective selection leads its section: it is the account the user
-		// opened the report to read. Ordering the WALK rather than the output also
-		// means it is the first one DRAINED, so it still paints first in a live
-		// view — and now without waiting on anything, since every account ahead of
-		// it in wall-clock terms is already in flight beside it.
+		// opened the report to read, so it is also the first one emitted.
 		const labels = Object.keys(section?.profiles ?? {});
 		const ordered =
 			activeLabel !== undefined && labels.includes(activeLabel)
 				? [activeLabel, ...labels.filter((label) => label !== activeLabel)]
 				: labels; // a dangling default/pin names no stored profile — nothing to hoist
 
-		if (live) pending.push(settleAccount(fetchBuiltin()));
-		for (const label of ordered) pending.push(settleAccount(fetchProfile(label)));
-		if (!live) pending.push(settleAccount(fetchBuiltin()));
+		const profiles: Slot[] = ordered.map((label) => ({
+			kind: "profile",
+			provider,
+			label,
+			aliases: Object.keys(section?.aliases ?? {})
+				.filter((alias) => section?.aliases[alias] === label)
+				.sort(),
+		}));
+		const builtin: Slot = { kind: "builtin", provider };
+
+		if (selection.source === "builtin") slots.push(builtin, ...profiles);
+		else slots.push(...profiles, builtin);
 	}
+	return slots;
+}
+
+function profileAccount(slot: Slot & { kind: "profile" }, result: ProfileUsageResult): UsageAccount {
+	const common = { provider: slot.provider, kind: "profile", name: slot.label, label: slot.label, aliases: slot.aliases } as const;
+	return result.ok
+		? { ...common, note: planNote(slot.provider, result.usage), result: { ok: true, usage: result.usage } }
+		: { ...common, note: "unavailable", result: { ok: false, hint: result.error, failed: true } };
+}
+
+function builtinAccount(provider: ProviderId, builtin: BuiltinUsageResult): UsageAccount | undefined {
+	if (builtin === undefined) return undefined;
+	const common = { provider, kind: "builtin" as const, name: builtinName(provider), aliases: [] };
+	if ("ok" in builtin && builtin.ok) {
+		return { ...common, note: planNote(provider, builtin.usage) || "built-in", result: { ok: true, usage: builtin.usage } };
+	}
+	if ("expired" in builtin) {
+		return {
+			...common,
+			note: "token expired",
+			result: { ok: false, hint: "run pi once to refresh it — seat never touches Pi's grant", failed: false },
+		};
+	}
+	const hint = "error" in builtin ? builtin.error : "unavailable";
+	return { ...common, note: "unavailable", result: { ok: false, hint, failed: true } };
+}
+
+/**
+ * Every stored profile plus each provider's built-in snapshot, in render
+ * order. `onAccount` fires as each account resolves so a live view can paint
+ * incrementally; the returned array is the same sequence.
+ *
+ * Two phases, because the two halves of an account's usage have opposite
+ * concurrency constraints (DEC-011):
+ *
+ * 1. SERIAL — credential preparation. `prepareProfile` takes the store lock,
+ *    and `backend.read` acquires it with a SYNCHRONOUS Atomics.wait spin while
+ *    `withLockAsync` holds it across a refresh round trip. Overlapping these
+ *    self-deadlocks in a single process: the second profile's sync acquire
+ *    freezes the event loop that the first one needs to finish and release,
+ *    and both die on the 5s timeout. Costs nothing when credentials are fresh.
+ * 2. CONCURRENT — usage endpoints. These touch no store state and take no
+ *    lock, and they are the whole latency: awaiting them inside the walk made
+ *    total time the SUM of every round trip (~540ms each, ~2.2s over 4
+ *    accounts, against ~30ms of local work), growing linearly with profile
+ *    count.
+ *
+ * Ordering comes from the drain, never from settle order, because AC-011a pins
+ * rendering against golden fixtures and DEC-009 needs a stable sequence under
+ * the view's cursor.
+ */
+export async function collectUsage(
+	deps: UsageCollectDeps,
+	onAccount?: (account: UsageAccount) => void,
+): Promise<UsageAccount[]> {
+	const fetchOptions = deps.fetchOptions ?? {};
+	const slots = planSlots(deps);
+
+	// Phase 1, strictly one at a time. See the lock note above.
+	const prepared: (ProfilePrepareResult | undefined)[] = [];
+	for (const slot of slots) {
+		prepared.push(
+			slot.kind === "profile"
+				? await prepareProfile(deps.backend, slot.provider, slot.label, deps.refreshFor(slot.provider), fetchOptions)
+				: undefined,
+		);
+	}
+
+	// Phase 2, all at once.
+	const pending = slots.map((slot, index): Promise<SettledAccount> => {
+		if (slot.kind === "builtin") {
+			return settleAccount(builtinUsage(deps.authPath, slot.provider, fetchOptions).then((b) => builtinAccount(slot.provider, b)));
+		}
+		const result = prepared[index];
+		if (result === undefined || !result.ok) {
+			// Preparation already failed; nothing to fetch, but the account still
+			// renders its error in place.
+			const error = result === undefined ? "credential unavailable" : result.error;
+			return settleAccount(Promise.resolve(profileAccount(slot, { ok: false, label: slot.label, error })));
+		}
+		return settleAccount(
+			fetchPreparedUsage(slot.provider, slot.label, result.prepared, fetchOptions).then((r) => profileAccount(slot, r)),
+		);
+	});
 
 	const accounts: UsageAccount[] = [];
 	for (const entry of pending) {

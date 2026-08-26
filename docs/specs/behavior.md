@@ -180,5 +180,5 @@ Destructive operations (`rm`, `login`) SHALL NOT be reachable from the view：�
 
 ## Related
 
-- [architecture.md §Decisions](../architecture.md#decisions) ← DEC-001..007：本契約背後的技術決策（vendored pi-accounts、lock protocol、per-turn overlay）
+- [architecture.md §Decisions](../architecture.md#decisions) ← 本契約背後的技術決策（vendored pi-accounts、lock protocol、per-turn overlay、report chrome 與 usage walk 的併發模型）。每條 DEC 自帶 Satisfies，以那邊為準——此處不重述 ID 區間，否則每新增一條 DEC 就會漏更
 - [architecture.md §Lock protocol (DEC-003)](../architecture.md#dec-003-store-schema-v1-與-lock-protocol) ← REQ-001/REQ-005 的 store 安全性實作依據
