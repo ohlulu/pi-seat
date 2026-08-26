@@ -89,7 +89,7 @@ Ownership fencing——lock compromised 後禁止 commit，失鎖狀態下寫入
 - Choice: provider section header 與帳號 block 的組裝集中在 `src/usage/report.ts` 的 `UsageReportRows`：`account()` 回傳一個帳號的列，順手補上它所開啟 section 的 header；`rest()` 補上沒有任何帳號開啟的 section。
 - Rationale: 兩個呼叫端的形狀不同——CLI 邊拿到邊印，沒辦法往前看哪一個帳號開啟了 section；view 每次 render 都拿到完整陣列。純函數只能服務後者，兩邊各自追蹤 “上一個 provider” 則是兩份會漂移的狀態機。一個只往前走的 cursor 兩者都能用：CLI 建一個並串流到底，view 每次 `buildRows` 建一個並一次走完（`buildRows` 本來就被 width cache 包著）。
 - Section 本身（`usageSections`）是 store snapshot 的純函數，與 fetch 路徑脫鉤：view 能在第一幀就畫出 header，且無帳號可測的 provider 不會因為沒有 account event 而消失。
-- Ordering 排在 walk 而不是輸出：`collectUsage` 先跑 effective selection，所以它也是第一個發出請求、第一個畫上畫面的帳號。
+- Ordering 排在 walk 而不是輸出：`collectUsage` 把 effective selection 排在該 section 之首，所以它是第一個被收割、第一個畫上畫面的帳號（DEC-011 之前也同時是第一個發出請求的；併發之後全部同時發車，順序由收割決定）。
 - 寬度：section title 與 rule 是 DEC-007 口徑中的 “constant chrome”，rule 以 `layout.width - 1` 產生並走同一條 `emitLine` 剪裁；render probe 的 2–200 掃描涵蓋它們。
 - Satisfies: REQ-006, REQ-010。
 
@@ -110,9 +110,21 @@ Ownership fencing——lock compromised 後禁止 commit，失鎖狀態下寫入
 - 這是一條 smoke 節目上的盲點：tmux 不協商 Kitty protocol，所以 `scripts/smoke-usage-view.sh` 無論如何都是綠的。覆蓋靠的是 `usage-view.test.ts` 裡對兩種 encoding 都斷言的 regression test（以 `setKittyProtocolActive` 切換）。
 - Satisfies: REQ-010。
 
+### DEC-011: Usage walk 分兩階段——credential 序列、endpoint 併發
+
+- Choice: `collectUsage` 先以 store snapshot 算出 walk order（`planSlots`，無 I/O 無 lock），然後：**Phase 1 序列**逐個 `prepareProfile` 把 credential 迫新；**Phase 2 併發**一次發出所有 usage endpoint 請求，再依 walk order 逐一 await 並 emit。每個 promise 在**發車當下**就掛上 rejection handler。
+- Alternatives: (a) 全程逐帳號 await（原實作）；(b) **全程併發**（refresh 與 fetch 一起發車）；(c) 依 settle order emit；(d) 加 usage response cache（TTL）。
+- Rationale: (a) 總延遲是所有 round trip 的**總和**，隨 profile 數線性成長——實測 4 個帳號各 ~540ms 共 ~2.2s，而本機運算只佔 ~30ms；兩階段化後 ~0.9s。(b) **會 self-deadlock**，見下一條。(c) 破壞穩定 render order，AC-011a 的 golden fixtures 釘死它，DEC-009 的游標也需要穩定序列。(d) usage meter 是 freshness-critical 顯示——它回答的就是「現在還剩多少額度」，TTL 內任何 session 燒 token 都會讓快取說謊，而那對 TTL 不可觀測；且 cold path 一樣慢，還多一個存放 account-identifiable 資料的檔案要對齊 DEC-003 的整套保護。瓶頸是序列化不是重複查詢，所以只修序列化。
+- **Phase 1 為何必須序列（這是本條的核心）**：`backend.read` 以 `acquireLockSyncWithRetry` **同步**取 lock（`Atomics.wait` 自旋，`DEFAULT_SYNC_LOCK_TIMEOUT_MS` 5s），而 `withLockAsync` 在 refresh 的網路往返期間**持續持有** lock（AC-009、single-flight 要的就是這個）。兩者重疊時：第二個 profile 的同步取鎖**凍住 event loop**，而持鎖那方的 refresh response callback 正需要這條 event loop 才能完成並釋放——雙方卡死，直到 5s timeout。實測：兩個 profile（一過期一新鮮）全程併發 → 10.3s 且第二個帳號 `Lock file is already being held`；兩階段 → 309ms 雙方正常。「fast path 不取鎖」是錯的：`ensureFreshProfile` 的 fast path 確實不進 `withLockAsync`，但它走 `backend.read`，而讀取路徑本身就取 lock（見 DEC-003 與 REQ-002 的 AC-020）。
+- Phase 2 可以併發：`fetchPreparedUsage` 只拿已備好的 credential 打 endpoint，不碰 store、不取鎖。`builtinUsage` 讀的是 `auth.json` 的獨立唯讀快照（不是 seat.json 的 lock），同樣安全。
+- Ordering 不變：effective selection 仍排在 section 之首，仍是第一個 emit 的帳號（DEC-008、DEC-009 的既有語意）。
+- Unhandled-rejection hazard: 收割是依序 await，若前面的帳號 reject，後面仍在飛的 promise 就永遠不會被 await。`builtinUsage` 確實可能 reject——它在自己的 try block 外呼叫 `readForeignFileNoFollow`，遇到非 regular `auth.json` 會 throw。因此 handler 必須在發車時就掛上，錯誤留到它在序列版中原本會浮出的位置再 re-throw。
+- Regression 鎖在 `test/usage/report.test.ts`，且必須用**真的** `FileSeatStorageBackend`——這個 deadlock 是 file lock 的性質，`InMemorySeatStorageBackend`（其他 collectUsage 測試用的）絕對看不到。三個測試同時釘住兩個相反約束：refresh 不可重疊、endpoint 必須重疊、順序不變。
+- Satisfies: REQ-006, REQ-010。
+
 ## Related
 
 - [specs/behavior.md §Store](./specs/behavior.md#store) ← store、refresh、login 的行為契約（DEC-001/003/005 的 Satisfies 對象）
 - [specs/behavior.md §Selection & runtime](./specs/behavior.md#selection--runtime) ← pin、default、fail-closed overlay、Codex invalidation 的行為契約（DEC-002 與 per-turn lifecycle）
-- [specs/behavior.md §Usage](./specs/behavior.md#usage) ← usage CLI 與 in-session view 的行為契約（DEC-004/007/008/009/010）
+- [specs/behavior.md §Usage](./specs/behavior.md#usage) ← usage CLI 與 in-session view 的行為契約（DEC-004/007/008/009/010/011）
 - [RELEASING.md §Facts](./RELEASING.md#facts) ← DEC-006 部署形態對應的發佈 facts 與程序
