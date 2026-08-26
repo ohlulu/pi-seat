@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.1.1] - 2026-08-26
+
+### Changed
+
+- Releases are now published by CI via npm trusted publishing (OIDC) on tag push; no functional changes.
+
 ## [0.1.0] - 2026-08-26
 
 Initial release.
