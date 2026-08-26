@@ -3,8 +3,8 @@
  *
  * Loading is read-only with respect to the store: the PI_SEAT pin is parsed
  * once at setup (with aliases resolved to labels) and is immutable for the
- * session (DEC-002). Legacy migration is NOT part of loading (AC-020) — it is
- * an operator action, `bun scripts/migrate-legacy.ts`.
+ * session (DEC-002). Loading never writes to the store (AC-020): a session
+ * start must never turn into a store mutation.
  *
  * Fail-closed wiring (AC-004): any PI_SEAT error — malformed, unknown
  * provider, duplicate provider, unknown label — records a startup error that

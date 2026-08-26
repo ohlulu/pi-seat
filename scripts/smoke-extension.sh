@@ -3,7 +3,8 @@
 # PI_CODING_AGENT_DIR seeded with fixture legacy + auth files.
 #
 # Pass signal: the extension registers its /seat command (T049 — it used to be
-# the migration side effect, which the extension no longer performs). The legacy
+# the migration side effect; the migration subsystem has since been removed
+# entirely). The legacy
 # fixture stays in the sandbox on purpose: AC-020 says a legacy file next to the
 # store must not turn a session start into a write, so "sandbox seat.json was
 # NOT created" is now part of the pass signal.
@@ -26,8 +27,9 @@ for f in "${LIVE_FILES[@]}"; do BEFORE+=("$(hash_or_absent "$LIVE_DIR/$f")"); do
 SANDBOX=$(mktemp -d)
 trap 'rm -rf "$SANDBOX"' EXIT
 
-# The exact fixture the migration path used to import from: `active` = work,
-# auth.json byte-matching work, one dormant profile that WOULD be importable.
+# The exact fixture the retired migration path imported from: `active` = work,
+# auth.json byte-matching work, one dormant profile that would have been
+# importable. Kept: AC-020's invariant is about a legacy file merely existing.
 cat > "$SANDBOX/claude-profiles.json" <<'EOF'
 {"active":"work","profiles":{"work":{"type":"oauth","refresh":"rt-work","access":"at-work","expires":1900000000000},"dormant":{"type":"oauth","refresh":"rt-dormant","access":"at-dormant","expires":1900000000000}},"aliases":{"d":"dormant","w":"work"},"identities":{}}
 EOF
@@ -74,7 +76,7 @@ if (!names.includes("seat")) {
 
 # AC-020: a legacy file was sitting right there and load still wrote nothing.
 if [[ -f "$SANDBOX/seat.json" ]]; then
-	fail "extension load created seat.json — migration must be operator-triggered only"
+	fail "extension load created seat.json — loading must never write to the store"
 fi
 
 [[ "$(hash_or_absent "$SANDBOX/claude-profiles.json")" == "$LEGACY_BEFORE" ]] || fail "sandbox legacy file was modified"

@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Removed
+
+- The legacy migration subsystem: `scripts/migrate-legacy.ts`, `src/store/migrate.ts`, and their tests. It was a one-time upgrade path importing dormant profiles from the retired private Python seat's `claude-profiles.json`; only the operator's machines ever had that file, both have completed migration, so the path is removed rather than deprecated (REQ-008 is marked retired in the spec). For every other user it was always a no-op.
+
 ## [0.1.1] - 2026-08-26
 
 ### Changed

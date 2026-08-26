@@ -26,7 +26,9 @@ Sandbox rule: any task that loads the extension or exercises migration runs unde
 - [x] T008 [REQ-005] Create `src/store/refresh.ts`: locked single-flight refresh (acquire, re-read, refresh only if still expired, write back) with an injected refresh-callback interface (the DI seam for all refresh tests) and lost-response semantics (timeout keeps old credential; `invalid_grant` signals persistent failure). Verify: `bun run typecheck` → clean. Depends: T005
 - [x] T009 [REQ-005] AC-009 test: parent test starts an ephemeral HTTP mock OAuth server and passes its URL plus store path to two Bun child processes refreshing the same expired credential → endpoint called exactly once, both processes read the same rotated credential. Plus lost-response branch: injected timeout → store byte-identical, next attempt proceeds. Verify: `bun test test/store/refresh-singleflight.test.ts` → GREEN. Depends: T008
 
-## Phase 3: REQ-008 — migration
+## Phase 3: REQ-008 — migration (retired)
+
+> Retired: the migration subsystem built here was removed after both operator machines completed migration (REQ-008 is marked retired in requirements.md). The tasks below are a historical record of the build.
 
 - [x] T010 [REQ-008] Create `src/store/migrate.ts`: import with the three exclusion rules (unconditional legacy `active`, refresh-token match vs auth.json, fail-closed on missing/dangling/ambiguous `active`), executed inside the lock with re-check, legacy file untouched. Verify: `bun run typecheck` → clean. Depends: T005
 - [x] T011 [REQ-008] AC-014 tests: fixture where legacy `active` pointer and byte-equality disagree → both rules fire independently; ambiguous fixture → fail-closed with `/seat login` message; existing `seat.json` → migration is a no-op; legacy file absent → no-op; successful import emits the built-in-login notice; legacy file byte-identical throughout. Verify: `bun test test/store/migrate.test.ts` → GREEN. Depends: T010
@@ -94,7 +96,9 @@ Review of T043..T045 returned APPROVE with three P2 findings, all in the T044 ex
 - [x] T047 [REQ-006] The extraction awaited the whole sequential walk before writing anything, so one 10s account timeout held back the bars of every account that had already answered. Output moves back onto the `onAccount` callback. Regression: second account blocked on a gate → the first account's block is on stdout while it is still in flight. Verify: `bun test test/cli/contract.test.ts` → GREEN
 - [x] T048 [REQ-010] The 80ms spinner interval kept firing after loading finished (waking only to return early), while the render cache was never invalidated — so the reset countdowns froze until the next keypress or resize. One timer at a time: spinner while fetching, a 20s countdown tick once loaded. Regression: after the fetch lands, the spinner handle is cleared, the idle handle is not, and advancing the clock plus one tick moves the countdown. Verify: `bun test test/extension/usage-view.test.ts` → GREEN
 
-## Phase 10: migration trigger extraction
+## Phase 10: migration trigger extraction (retired)
+
+> Retired: `scripts/migrate-legacy.ts` and the AC-014/AC-020 tests created here were removed with the migration subsystem; the T019 smoke's command-registration pass signal and no-store-write assertion survive in `scripts/smoke-extension.sh`.
 
 - [x] T049 [REQ-008] Move the migration trigger out of the extension: create `scripts/migrate-legacy.ts` (dry-run by default printing what would import/skip and why, `--apply` executes via the existing `src/store/migrate.ts` logic and lock); delete the first-load hook from `src/extension/index.ts`; update the T019 smoke pass signal from migration-side-effect to command-registration; retarget AC-014 tests at the script and add AC-020 (extension load never migrates, with and without a legacy file present). Verify: `bun test test/store/migrate.test.ts test/extension && bun run smoke:extension` → GREEN + pass
 

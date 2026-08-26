@@ -31,7 +31,6 @@
 	},
 	"files": [
 		"src",
-		"scripts/migrate-legacy.ts",
 		"LICENSE",
 		"NOTICE",
 		"README*.md",

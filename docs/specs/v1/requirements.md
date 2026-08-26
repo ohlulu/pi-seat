@@ -15,7 +15,7 @@ read_when:
 
 ### REQ-001: Exclusive credential store
 
-The system SHALL store named OAuth profiles for `anthropic` and `openai-codex` in an exclusive store file. The system SHALL never mutate `auth.json`, and SHALL never copy an `auth.json` credential into the store. Read-only access to `auth.json` is limited to two enumerated uses: the built-in usage snapshot (REQ-006) and the migration equality comparison (REQ-008); the snapshot content SHALL never be persisted into `seat.json`.
+The system SHALL store named OAuth profiles for `anthropic` and `openai-codex` in an exclusive store file. The system SHALL never mutate `auth.json`, and SHALL never copy an `auth.json` credential into the store. Read-only access to `auth.json` is limited to exactly one enumerated use: the built-in usage snapshot (REQ-006); the snapshot content SHALL never be persisted into `seat.json`. The second enumerated use — the migration equality comparison of the retired REQ-008 — was removed with the migration subsystem, so the credential-file read surface has narrowed to the snapshot alone.
 
 store 路徑：`$PI_CODING_AGENT_DIR/seat.json`（未設 env 時為 `~/.pi/agent/seat.json`），權限 0600，atomic write，cross-process file lock。每個 named profile 持有獨立的 OAuth grant——credential 永不與 auth.json 複製共享，因為 Anthropic refresh token 是 single-use，共享 grant 必然導致 double-spend。
 
@@ -119,7 +119,9 @@ Login 互動對齊 Pi 內建 `/login` 體驗：WHEN the provider flow yields an 
 | AC-013 | label 與既有 profile 重名 | login | 確認後才覆蓋（destructive confirm） |
 | AC-021 | login flow 發出 auth_url / device_code 事件 | 事件抵達 | browser opener 被呼叫恰一次（失敗不中斷 flow）；notify 含可點擊 URL；完成時有具名 success/failure 訊息 |
 
-### REQ-008: Migration from claude-profiles.json
+### REQ-008: Migration from claude-profiles.json — RETIRED
+
+> Retired: the migration subsystem (`scripts/migrate-legacy.ts`, `src/store/migrate.ts`, and their tests) was removed after both operator machines completed migration — no other user ever had a `claude-profiles.json`. The clause is kept below so the absent code is not mistaken for an oversight and rebuilt.
 
 Migration runs only via the standalone operator script `scripts/migrate-legacy.ts` (bun; dry-run by default, `--apply` to execute). The extension SHALL NOT migrate automatically — legacy import is a one-machine, one-time operator action, not runtime behavior. IF `seat.json` does not exist AND `claude-profiles.json` does, the script SHALL import legacy profiles with these exclusion rules, and SHALL retain the legacy file untouched for rollback:
 
@@ -131,8 +133,8 @@ migration 後以訊息告知：被排除的帳號仍以 Pi 內建登入身分可
 
 | AC | Given | When | Then |
 |---|---|---|---|
-| AC-014 | legacy fixture：`active` pointer 與 byte-equality 結果不一致 | `migrate-legacy.ts --apply` | 兩條排除規則各自生效；dormant 匯入；active lineage 未匯入；legacy 檔案未動 |
-| AC-020 | 任意環境 | extension 載入 | 不發生任何 migration；`claude-profiles.json` 存在與否都不影響載入路徑 |
+| AC-014 (retired) | legacy fixture：`active` pointer 與 byte-equality 結果不一致 | `migrate-legacy.ts --apply` | 兩條排除規則各自生效；dormant 匯入；active lineage 未匯入；legacy 檔案未動（測試已隨 migration 子系統移除） |
+| AC-020 (retired) | 任意環境 | extension 載入 | 不發生任何 migration；`claude-profiles.json` 存在與否都不影響載入路徑（專屬測試已移除；「載入不寫 store」的 invariant 由 `scripts/smoke-extension.sh` 繼續斷言） |
 
 ### REQ-009: Codex connection invalidation
 

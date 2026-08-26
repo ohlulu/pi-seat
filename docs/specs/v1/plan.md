@@ -39,7 +39,7 @@ read_when:
 - Lock protocol（所有 process 必須一致）：
   - `realpath: false`（預設 `realpath: true` 在 target 不存在時 ENOENT，first-create 會炸；Pi 自身的 auth-storage 同樣設定）。
   - 統一 `stale` / `update` 參數與 lock path。
-  - first-load / migration 條件在取得 lock 後重查（lock 內 re-check）。
+  - first-load / migration 條件在取得 lock 後重查（lock 內 re-check）。（migration 路徑已 retired；first-load re-check 仍適用。）
   - lock compromised 後禁止 commit——失鎖狀態下寫入會覆蓋另一 process 的 rotated credential。
   - temp file 以 0600 / O_EXCL 建於 `dirname(seat.json)`，同 volume rename 完成 atomic write。
 - Alternatives: 沿用 claude-profiles.json 格式（無 provider 維度、identities 欄位已無用途）。
@@ -81,8 +81,8 @@ read_when:
 | `src/store/schema.ts` | create — schema v1 types + parse/validate（own-property） | REQ-001 |
 | `src/store/storage.ts` | create — 改作 pi-accounts storage.ts：lock protocol（DEC-003）、0600、O_NOFOLLOW、atomic write | REQ-001, REQ-005 |
 | `src/store/refresh.ts` | create — locked single-flight refresh（extension 與 CLI 共用） | REQ-005 |
-| `src/store/migrate.ts` | create — claude-profiles.json 匯入（REQ-008 排除規則，lock 內 re-check） | REQ-008 |
-| `scripts/migrate-legacy.ts` | create — 手動 migration 進入點（dry-run 預設、`--apply`）；extension 不自動觸發 | REQ-008 |
+| `src/store/migrate.ts` | create — claude-profiles.json 匯入（REQ-008 排除規則，lock 內 re-check）；已於 post-transition cleanup（下方 step 6）移除 | REQ-008 (retired) |
+| `scripts/migrate-legacy.ts` | create — 手動 migration 進入點（dry-run 預設、`--apply`）；extension 不自動觸發；已於 post-transition cleanup 移除 | REQ-008 (retired) |
 | `src/store/selector.ts` | create — selector grammar parse + resolution（pin > default > built-in）；extension 與 CLI 共用的純模組 | REQ-002, REQ-003 |
 | `src/extension/index.ts` | create — extension 入口：pin 解析、per-turn sync、`/seat` 指令、runtime feature detection | REQ-002, REQ-003 |
 | `src/extension/runtime-auth.ts` | create — 改作 pi-accounts：coordinator、overlay、abort-first fail-closed、verify、`closeOpenAICodexWebSocketSessions(sessionId)` invalidation | REQ-004, REQ-009 |
@@ -118,13 +118,13 @@ AC-to-test matrix（bun test，除另註明）：
 | AC-011a | golden fixtures：width 2–200 掃描逐列比對 Python golden |
 | AC-011b | width ≥ 40 semantic assertions：account name / meter label / percent 存在、截斷帶 ellipsis |
 | AC-012 / 013 | fake OAuth adapter login flow；重名 → confirm 後才覆蓋 |
-| AC-014 | migration fixture（經 `migrate-legacy.ts`）：legacy `active` pointer 與 byte-equality 不一致 → 兩條排除規則各自生效；ambiguous fixture → fail-closed；dry-run 磁碟零變動 |
+| AC-014 (retired) | migration fixture（經 `migrate-legacy.ts`）：legacy `active` pointer 與 byte-equality 不一致 → 兩條排除規則各自生效；ambiguous fixture → fail-closed；dry-run 磁碟零變動（測試已隨 migration 子系統移除） |
 | AC-015 | injected invalidator spy：identity A→B 恰一次、A→A 零次、close 完成後才回報切換成功 |
 | AC-016 | pinned session `use` → default 寫入 + pin 維持 + 提示訊息 |
 | AC-017 | `use <selector> -a <alias>` → default 與 alias 同一次 mutation 寫入；衝突/非法 alias → 拒絕且 store 未動（extension + CLI） |
 | AC-018 | TUI：`/seat` 開 view、bars 與 default/pin header 渲染、esc/q 關閉；render probe width 2–200 raw + guarded 皆無溢出；tmux smoke |
 | AC-019 | 非 TUI（`ctx.mode !== "tui"`）：文字輸出、不開 component、不 hang |
-| AC-020 | extension 載入（legacy 檔存在與不存在）→ 不建 seat.json、無 migration 訊息；smoke 以 command registration 為 pass signal |
+| AC-020 (retired) | extension 載入（legacy 檔存在與不存在）→ 不建 seat.json、無 migration 訊息；smoke 以 command registration 為 pass signal（專屬測試已移除；「載入不寫 store」斷言留在 smoke-extension.sh） |
 | NFR-001 | `hyperfine 'seat status --plain'`，process-cold p95 ≤ 150ms，run count 固定於 repo script |
 | NFR-002 | LICENSE / NOTICE 存在性檢查 |
 
@@ -142,7 +142,7 @@ AC-to-test matrix（bun test，除另註明）：
 3. `/seat login` 逐帳號建立新 grant（或使用 migration 匯入的 dormant profiles）。
 4. 驗證雙 session pin 工作流跑順一週。
 5. Rollback：停止所有 Pi/CLI process → settings.json 移除 package → 還原 Python `bin/seat`（git revert dotfiles）。注意：已 migrate 且用過的 profile，其 refresh token 已 rotate 進 `seat.json`，legacy 檔中是已 spent token，該帳號可能需重新 login/save。保留 `seat.json` 直到 rollback 驗證完成；最後跑 `seat status` 與一次 usage check 確認。
-6. Post-transition cleanup：步驟 3–4 驗證完成、rollback 窗口過後，移除 migration 路徑（`src/store/migrate.ts`、`scripts/migrate-legacy.ts`、對應測試）並同步攸除 REQ-008。它是一次性 upgrade path（服務對象只有本機的 Python seat legacy store，對其他使用者永遠 no-op），不是永久 compat contract。
+6. Post-transition cleanup：步驟 3–4 驗證完成、rollback 窗口過後，移除 migration 路徑（`src/store/migrate.ts`、`scripts/migrate-legacy.ts`、對應測試）並同步攸除 REQ-008。它是一次性 upgrade path（服務對象只有本機的 Python seat legacy store，對其他使用者永遠 no-op），不是永久 compat contract。—— 已執行：兩台 operator 機器（Air、mbp）完成 migration 並驗證後，migration 子系統已移除，REQ-008 標記 retired。
 
 ## Open questions
 
