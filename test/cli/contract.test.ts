@@ -152,6 +152,27 @@ describe("usage", () => {
 		expect(text).toContain("█");
 	});
 
+	test("AC-022: each provider gets a section header, and its active account leads the section", async () => {
+		// Store order is work, personal for anthropic and main, backup for codex;
+		// the pin and the codex default must each be hoisted to the top of their
+		// own section without disturbing the other provider's block.
+		const cli = makeCli({ piSeat: "p", codexDefault: "backup" }); // alias p → personal
+		expect(await cli.run()).toBe(0);
+
+		const at = (needle: string) => cli.out.findIndex((l) => l.startsWith(needle));
+		expect(at("ANTHROPIC · personal (pin)")).toBeGreaterThanOrEqual(0);
+		expect(at("OPENAI-CODEX · backup (default)")).toBeGreaterThan(at("ANTHROPIC · personal (pin)"));
+		expect(at("● personal")).toBeLessThan(at("○ work"));
+		expect(at("○ work")).toBeLessThan(at("OPENAI-CODEX"));
+		expect(at("● backup")).toBeLessThan(at("○ main"));
+		// A rule under each header, inside the width-1 budget.
+		expect(cli.out).toContain("─".repeat(79));
+		// --json is a machine contract: no chrome on stdout.
+		const json = makeCli({ piSeat: "p" });
+		expect(await json.run("usage", "--json")).toBe(0);
+		expect(json.out.join("\n")).not.toContain("ANTHROPIC");
+	});
+
 	test("endpoint failure → exit 1, diagnostics for --json go to stderr", async () => {
 		const cli = makeCli({ claude: boomUrl });
 		expect(await cli.run("usage", "--json")).toBe(1);

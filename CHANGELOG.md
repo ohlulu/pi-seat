@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Usage reports (`seat`, `seat usage`, and the in-session `/seat` view) now group accounts into one section per provider, each opened by a header naming that provider's effective selection (`ANTHROPIC · work (default)`) and a rule. A provider with nothing to meter still gets its header, so its selection state is never missing. The view's two-line top header is gone — that state now sits directly above the accounts it governs. `--json` output is unchanged.
+- Within each provider section, the effective selection (pin > default > built-in) is listed first instead of in store order. It is also fetched first, so in the live view it is the first block to paint.
+- Login now reports completion as `seat: login success — stored <provider> profile "<label>"`, in both the extension and the CLI. `notify(…, "info")` renders as one dim line indistinguishable from the flow's progress notices, so the word "success" is what separates them.
+
 ### Removed
 
 - The legacy migration subsystem: `scripts/migrate-legacy.ts`, `src/store/migrate.ts`, and their tests. It was a one-time upgrade path importing dormant profiles from the retired private Python seat's `claude-profiles.json`; only the operator's machines ever had that file, both have completed migration, so the path is removed rather than deprecated (REQ-008 is marked retired in the spec). For every other user it was always a no-op.

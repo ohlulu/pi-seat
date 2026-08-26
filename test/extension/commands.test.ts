@@ -136,7 +136,7 @@ describe("AC-018 / AC-019: /seat status routing", () => {
 
 		for (let i = 0; i < 20; i += 1) await new Promise((r) => setTimeout(r, 1));
 		const frame = f.customs[0]!.render(100).join("\n");
-		expect(frame).toContain("anthropic: work (pin)"); // REQ-010 header
+		expect(frame).toContain("ANTHROPIC · work (pin)"); // REQ-010 section header
 		expect(frame).toContain("█"); // meters actually drawn
 		expect(frame).toContain("esc/q close");
 
@@ -358,7 +358,9 @@ describe("AC-021: login opens the browser and reports completion", () => {
 		);
 		expect(opened).toEqual(["https://example.test/authorize"]);
 		expect(f.notices.some((n) => n.includes("https://example.test/authorize"))).toBe(true);
-		expect(f.notices.some((n) => n.includes('stored anthropic profile "work"'))).toBe(true);
+		// AC-021: the completion notice says success in words — notify("info") is one
+		// dim line, so nothing else distinguishes it from the progress notices above.
+		expect(f.notices.some((n) => n.includes('login success — stored anthropic profile "work"'))).toBe(true);
 	});
 
 	test("device_code → opener called with verification URI, code shown", async () => {

@@ -10,7 +10,7 @@
 import { PROVIDER_IDS, type ProviderId, type SeatStore } from "../store/schema.ts";
 import type { RefreshCallback } from "../store/refresh.ts";
 import type { SeatStorageBackend } from "../store/storage.ts";
-import { resolveSelection } from "../store/selector.ts";
+import { resolveSelection, type Selection } from "../store/selector.ts";
 import { builtinUsage, profileUsage, type UsageFetchOptions } from "./fetch.ts";
 import type { Layout } from "./layout.ts";
 import {
@@ -18,6 +18,7 @@ import {
 	hintLine,
 	renderClaudeUsage,
 	renderCodexUsage,
+	sectionLines,
 	type ClaudeUsage,
 	type CodexUsage,
 	type RenderOptions,
@@ -73,6 +74,33 @@ function planNote(provider: ProviderId, usage: ClaudeUsage | CodexUsage): string
 	return provider === "anthropic" ? "" : String((usage as CodexUsage).plan_type ?? "");
 }
 
+// --- sections ---------------------------------------------------------------
+
+export interface UsageSection {
+	provider: ProviderId;
+	/** This process's effective selection for the provider (pin > default > built-in). */
+	selection: Selection;
+}
+
+/**
+ * The provider sections, in walk order. Pure over the store snapshot, so a
+ * view can paint its headers before a single usage request has landed — and so
+ * a provider with no accounts at all still says what it is using.
+ */
+export function usageSections(store: SeatStore, pins: Partial<Record<ProviderId, string>>): UsageSection[] {
+	return PROVIDER_IDS.map((provider) => ({ provider, selection: resolveSelection(store, provider, pins[provider]) }));
+}
+
+/** One wording for an effective selection, shared by `seat status`, the section
+ * header and the view. */
+export function selectionSummary(selection: Selection): string {
+	return selection.source === "builtin" ? "Pi built-in login" : `${selection.label} (${selection.source})`;
+}
+
+export function renderSectionHeader(layout: Layout, section: UsageSection, options: RenderOptions): string[] {
+	return sectionLines(layout, `${section.provider.toUpperCase()} · ${selectionSummary(section.selection)}`, options);
+}
+
 /**
  * Every stored profile plus each provider's built-in snapshot, in render
  * order. `onAccount` fires as each account resolves so a live view can paint
@@ -96,7 +124,7 @@ export async function collectUsage(
 		const selection = resolveSelection(store, provider, deps.pins[provider]);
 		const activeLabel = selection.source === "builtin" ? undefined : selection.label;
 
-		for (const label of Object.keys(section?.profiles ?? {})) {
+		const emitProfile = async (label: string): Promise<void> => {
 			const aliases = Object.keys(section?.aliases ?? {})
 				.filter((alias) => section?.aliases[alias] === label)
 				.sort();
@@ -105,28 +133,43 @@ export async function collectUsage(
 			const common = { provider, kind: "profile", name: label, label, aliases, live } as const;
 			if (result.ok) emit({ ...common, note: planNote(provider, result.usage), result: { ok: true, usage: result.usage } });
 			else emit({ ...common, note: "unavailable", result: { ok: false, hint: result.error, failed: true } });
-		}
+		};
 
-		const builtin = await builtinUsage(deps.authPath, provider, fetchOptions);
-		if (builtin === undefined) continue;
 		const live = selection.source === "builtin";
-		const name = builtinName(provider);
-		if ("ok" in builtin && builtin.ok) {
-			emit({ provider, kind: "builtin", name, aliases: [], live, note: planNote(provider, builtin.usage) || "built-in", result: { ok: true, usage: builtin.usage } });
-		} else if ("expired" in builtin) {
-			emit({
-				provider,
-				kind: "builtin",
-				name,
-				aliases: [],
-				live,
-				note: "token expired",
-				result: { ok: false, hint: "run pi once to refresh it — seat never touches Pi's grant", failed: false },
-			});
-		} else {
-			const hint = "error" in builtin ? builtin.error : "unavailable";
-			emit({ provider, kind: "builtin", name, aliases: [], live, note: "unavailable", result: { ok: false, hint, failed: true } });
-		}
+		const emitBuiltin = async (): Promise<void> => {
+			const builtin = await builtinUsage(deps.authPath, provider, fetchOptions);
+			if (builtin === undefined) return;
+			const name = builtinName(provider);
+			if ("ok" in builtin && builtin.ok) {
+				emit({ provider, kind: "builtin", name, aliases: [], live, note: planNote(provider, builtin.usage) || "built-in", result: { ok: true, usage: builtin.usage } });
+			} else if ("expired" in builtin) {
+				emit({
+					provider,
+					kind: "builtin",
+					name,
+					aliases: [],
+					live,
+					note: "token expired",
+					result: { ok: false, hint: "run pi once to refresh it — seat never touches Pi's grant", failed: false },
+				});
+			} else {
+				const hint = "error" in builtin ? builtin.error : "unavailable";
+				emit({ provider, kind: "builtin", name, aliases: [], live, note: "unavailable", result: { ok: false, hint, failed: true } });
+			}
+		};
+
+		// The effective selection leads its section: it is the account the user
+		// opened the report to read. Ordering the WALK rather than the output also
+		// means it is the first one fetched, so it paints first in a live view.
+		const labels = Object.keys(section?.profiles ?? {});
+		const ordered =
+			activeLabel !== undefined && labels.includes(activeLabel)
+				? [activeLabel, ...labels.filter((label) => label !== activeLabel)]
+				: labels; // a dangling default/pin names no stored profile — nothing to hoist
+
+		if (live) await emitBuiltin();
+		for (const label of ordered) await emitProfile(label);
+		if (!live) await emitBuiltin();
 	}
 
 	return accounts;
@@ -148,4 +191,48 @@ export function renderAccountBlock(layout: Layout, account: UsageAccount, option
 		lines.push(hintLine(layout, account.result.hint, options));
 	}
 	return lines;
+}
+
+/**
+ * Assembles the report's rows in walk order, opening each provider section the
+ * first time it is needed.
+ *
+ * Stateful because the CLI paints accounts as they land and cannot look ahead
+ * to know which account opens a section; the view hands it the whole array and
+ * gets the same rows, so the two surfaces cannot drift.
+ */
+export class UsageReportRows {
+	private opened = 0;
+
+	constructor(
+		private readonly sections: readonly UsageSection[],
+		private readonly layout: Layout,
+		private readonly options: RenderOptions,
+	) {}
+
+	/** One account's rows, preceded by the headers of any section it opens. */
+	account(account: UsageAccount): string[] {
+		const rows = this.openThrough(this.sections.findIndex((s) => s.provider === account.provider));
+		// A header already separates its own first account; a blank line after the
+		// rule would leave the rule floating above nothing.
+		if (rows.length === 0) rows.push("");
+		rows.push(...renderAccountBlock(this.layout, account, this.options));
+		return rows;
+	}
+
+	/** Headers for the sections no account opened — a provider with nothing to
+	 * meter still has to say what it is using. Call once, after the walk. */
+	rest(): string[] {
+		return this.openThrough(this.sections.length - 1);
+	}
+
+	private openThrough(index: number): string[] {
+		const rows: string[] = [];
+		while (this.opened <= index) {
+			const section = this.sections[this.opened]!;
+			this.opened += 1;
+			rows.push("", ...renderSectionHeader(this.layout, section, this.options));
+		}
+		return rows;
+	}
 }

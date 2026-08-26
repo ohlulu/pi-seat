@@ -13,6 +13,7 @@ import type { SeatStorageBackend } from "../store/storage.ts";
 import { decodeStore } from "../store/storage.ts";
 import { parseSelector, resolveSelection } from "../store/selector.ts";
 import type { UsageFetchOptions } from "../usage/fetch.ts";
+import { selectionSummary } from "../usage/report.ts";
 import { adapterFor, toRefreshCallback, type SeatProviderAdapter } from "./oauth.ts";
 import { openBrowser, type BrowserOpener } from "./open-browser.ts";
 import { UsageView } from "./usage-view.ts";
@@ -177,8 +178,10 @@ async function handleLogin(rest: string[], ctx: ExtensionCommandContext, deps: S
 		loginProfile(store, selector, credential, aliases, { confirmedOverwrite }),
 	);
 	if (result.action !== "stored") throw new CommandError("login raced another mutation; try again");
+	// "success" is spelled out because notify("info") renders as one dim line: the
+	// word is the only thing distinguishing a completed login from progress noise.
 	ctx.ui.notify(
-		`seat: stored ${result.provider} profile "${result.label}"${aliases.length > 0 ? ` (aliases: ${aliases.join(", ")})` : ""}${result.overwrote ? " (overwrote previous grant)" : ""}`,
+		`seat: login success — stored ${result.provider} profile "${result.label}"${aliases.length > 0 ? ` (aliases: ${aliases.join(", ")})` : ""}${result.overwrote ? " (overwrote previous grant)" : ""}`,
 		"info",
 	);
 }
@@ -325,11 +328,7 @@ function statusText(deps: SeatCommandDeps): string {
 	for (const adapter of deps.adapters) {
 		const pin = deps.pins[adapter.id];
 		const selection = resolveSelection(store, adapter.id, pin);
-		const detail =
-			selection.source === "builtin"
-				? "Pi built-in login"
-				: `${selection.label} (${selection.source})`;
-		lines.push(`${adapter.id}: ${detail}`);
+		lines.push(`${adapter.id}: ${selectionSummary(selection)}`);
 	}
 	return `seat status\n${lines.join("\n")}`;
 }

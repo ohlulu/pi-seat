@@ -97,7 +97,7 @@ done
 PANE=$(tmux capture-pane -p -t "$SESSION")
 grep -qF "█" <<<"$PANE" || { echo "$PANE" >&2; fail "no meter bars in the view"; }
 grep -qF "42%" <<<"$PANE" || { echo "$PANE" >&2; fail "the mocked percentage is missing"; }
-grep -qF "anthropic: work (default)" <<<"$PANE" || { echo "$PANE" >&2; fail "default/pin header is missing"; }
+grep -qF "ANTHROPIC · work (default)" <<<"$PANE" || { echo "$PANE" >&2; fail "provider section header is missing"; }
 grep -qi "exceeds terminal width" <<<"$PANE" && { echo "$PANE" >&2; fail "renderer reported an overflowing row"; }
 
 tmux send-keys -t "$SESSION" "q"
