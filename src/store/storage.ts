@@ -271,10 +271,13 @@ export class FileSeatStorageBackend implements SeatStorageBackend {
 	private stillOwnsLock(ownership: LockOwnership | undefined): boolean {
 		if (ownership === undefined) return false;
 		try {
-			// rmdir while we hold the fd drops the link count to zero: our lock was
-			// removed, no matter what occupies the path now. The held fd also pins
-			// the inode, so no successor's mkdir can be handed our inode number —
-			// this is what makes the identity comparison below filesystem-agnostic.
+			// Link-count semantics are filesystem-specific: after rmdir with the fd
+			// held, Linux (ext4/tmpfs) reports nlink 0, but APFS still reports 2 —
+			// so this check catches removal directly only where the filesystem says
+			// so, and the identity comparison below is the cross-filesystem guard.
+			// The held fd pins the inode, so no successor's mkdir can be handed our
+			// inode number; a removed-then-replaced lock therefore always fails the
+			// (dev, ino) comparison, and a removed-and-gone lock fails the lstat.
 			if (fstatSync(ownership.fd, { bigint: true }).nlink === 0n) return false;
 			// lstat, not stat: a link planted at the lock path must not be followed
 			// into something stat-identical to the directory we acquired.
