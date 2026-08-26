@@ -89,7 +89,7 @@ Ownership fencing——lock compromised 後禁止 commit，失鎖狀態下寫入
 - Choice: provider section header 與帳號 block 的組裝集中在 `src/usage/report.ts` 的 `UsageReportRows`：`account()` 回傳一個帳號的列，順手補上它所開啟 section 的 header；`rest()` 補上沒有任何帳號開啟的 section。
 - Rationale: 兩個呼叫端的形狀不同——CLI 邊拿到邊印，沒辦法往前看哪一個帳號開啟了 section；view 每次 render 都拿到完整陣列。純函數只能服務後者，兩邊各自追蹤 “上一個 provider” 則是兩份會漂移的狀態機。一個只往前走的 cursor 兩者都能用：CLI 建一個並串流到底，view 每次 `buildRows` 建一個並一次走完（`buildRows` 本來就被 width cache 包著）。
 - Section 本身（`usageSections`）是 store snapshot 的純函數，與 fetch 路徑脫鉤：view 能在第一幀就畫出 header，且無帳號可測的 provider 不會因為沒有 account event 而消失。
-- Ordering 排在 walk 而不是輸出：`collectUsage` 先跑 effective selection，所以它也是第一個發出請求、第一個畫上畫面的帳號。
+- Ordering 排在 walk 而不是輸出：`collectUsage` 把 effective selection 排在該 section 之首，所以它是第一個被收割、第一個畫上畫面的帳號（DEC-011 之前也同時是第一個發出請求的；併發之後全部同時發車，順序由收割決定）。
 - 寬度：section title 與 rule 是 DEC-007 口徑中的 “constant chrome”，rule 以 `layout.width - 1` 產生並走同一條 `emitLine` 剪裁；render probe 的 2–200 掃描涵蓋它們。
 - Satisfies: REQ-006, REQ-010。
 
@@ -110,9 +110,19 @@ Ownership fencing——lock compromised 後禁止 commit，失鎖狀態下寫入
 - 這是一條 smoke 節目上的盲點：tmux 不協商 Kitty protocol，所以 `scripts/smoke-usage-view.sh` 無論如何都是綠的。覆蓋靠的是 `usage-view.test.ts` 裡對兩種 encoding 都斷言的 regression test（以 `setKittyProtocolActive` 切換）。
 - Satisfies: REQ-010。
 
+### DEC-011: Usage walk 併發發車、依序收割
+
+- Choice: `collectUsage` 先把所有帳號的 fetch 發出去，再依 walk order 逐一 await 並 emit。每個 promise 在**發車當下**就掛上 rejection handler，不是等到收割才處理。
+- Alternatives: (a) 維持逐帳號 await（原實作）；(b) 依 settle order emit，誰先回誰先畫；(c) 加 usage response cache（TTL）。
+- Rationale: (a) 總延遲是所有 round trip 的**總和**，隨 profile 數線性成長——實測 4 個帳號各 ~540ms 共 ~2.2s，而本機運算只佔 ~30ms；改併發後 ~0.85s。(b) 破壞穩定 render order，AC-011a 的 golden fixtures 釘死它，DEC-009 的游標也需要在切換之間有穩定序列。(c) usage meter 是 freshness-critical 顯示——它回答的就是「現在還剩多少額度」，TTL 內任何 session 燒 token 都會讓快取說謊，而那對 TTL 不可觀測；且 cold path 一樣慢，還多一個存放 account-identifiable 資料的檔案要對齊 DEC-003 的整套保護。瓶頸是序列化不是重複查詢，所以修序列化。
+- Ordering 不變：effective selection 仍排在 section 之首，仍是第一個 emit 的帳號（DEC-008、DEC-009 的既有語意）。差別只在它不再需要等待任何前序帳號的網路往返。
+- Lock safety: 併發不會加劇 store lock 競爭。`ensureFreshProfile` 的 unlocked fast path 對未過期 credential 完全不取 lock（常見路徑純網路併發）；真的過期時照樣序列化在 REQ-005 的 single-flight lock 上，與序列版同耗時——沒有加速，也沒有 regression。`backend.read` 是同步的，JS 單執行緒下不可能交錯。
+- Unhandled-rejection hazard: 收割是依序 await，若前面的帳號 reject，後面仍在飛的 promise 就永遠不會被 await。`builtinUsage` 確實可能 reject——它在自己的 try block 外呼叫 `readForeignFileNoFollow`，遇到非 regular `auth.json` 會 throw。因此 handler 必須在發車時就掛上，錯誤留到它在序列版中原本會浮出的位置再 re-throw。
+- Satisfies: REQ-006, REQ-010。
+
 ## Related
 
 - [specs/behavior.md §Store](./specs/behavior.md#store) ← store、refresh、login 的行為契約（DEC-001/003/005 的 Satisfies 對象）
 - [specs/behavior.md §Selection & runtime](./specs/behavior.md#selection--runtime) ← pin、default、fail-closed overlay、Codex invalidation 的行為契約（DEC-002 與 per-turn lifecycle）
-- [specs/behavior.md §Usage](./specs/behavior.md#usage) ← usage CLI 與 in-session view 的行為契約（DEC-004/007/008/009/010）
+- [specs/behavior.md §Usage](./specs/behavior.md#usage) ← usage CLI 與 in-session view 的行為契約（DEC-004/007/008/009/010/011）
 - [RELEASING.md §Facts](./RELEASING.md#facts) ← DEC-006 部署形態對應的發佈 facts 與程序

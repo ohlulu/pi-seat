@@ -114,73 +114,109 @@ export function isLive(sections: readonly UsageSection[], account: UsageAccount)
 	return selection.source !== "builtin" && selection.label === account.label;
 }
 
+/** One account's fetch, resolved without rejecting. See `collectUsage`. */
+type SettledAccount = { value: UsageAccount | undefined } | { error: unknown };
+
+/**
+ * Attach the rejection handler at LAUNCH, not at drain. The drain awaits in
+ * order, so an account that fails early would otherwise leave every
+ * still-in-flight account behind it unawaited — an unhandled rejection.
+ * `builtinUsage` really can reject: it calls readForeignFileNoFollow outside
+ * its own try block, which throws on a non-regular auth.json.
+ */
+function settleAccount(promise: Promise<UsageAccount | undefined>): Promise<SettledAccount> {
+	return promise.then(
+		(value) => ({ value }),
+		(error: unknown) => ({ error }),
+	);
+}
+
 /**
  * Every stored profile plus each provider's built-in snapshot, in render
  * order. `onAccount` fires as each account resolves so a live view can paint
  * incrementally; the returned array is the same sequence.
+ *
+ * Every fetch is launched before any is awaited (DEC-011). Awaiting inside the
+ * walk made total latency the SUM of every account's round trip — measured at
+ * ~540ms per account for ~2.2s over 4 accounts, against ~30ms of local work —
+ * so the wall clock grew linearly with the number of stored profiles.
+ * Concurrency comes from the launch; ordering comes from the drain, never from
+ * settle order, because AC-011a pins rendering against golden fixtures and
+ * DEC-009 needs a stable sequence under the view's cursor.
+ *
+ * Contending on the store lock is not a new risk: ensureFreshProfile's fast
+ * path takes no lock at all for a credential that is still fresh, and an
+ * expired one serializes on the REQ-005 single-flight lock exactly as it did
+ * when this walk was sequential.
  */
 export async function collectUsage(
 	deps: UsageCollectDeps,
 	onAccount?: (account: UsageAccount) => void,
 ): Promise<UsageAccount[]> {
-	const accounts: UsageAccount[] = [];
-	const emit = (account: UsageAccount): void => {
-		accounts.push(account);
-		onAccount?.(account);
-	};
-
 	const store = deps.store;
 	const fetchOptions = deps.fetchOptions ?? {};
+	const pending: Promise<SettledAccount>[] = [];
 
 	for (const provider of PROVIDER_IDS) {
 		const section = store.providers[provider];
 		const selection = resolveSelection(store, provider, deps.pins[provider]);
 		const activeLabel = selection.source === "builtin" ? undefined : selection.label;
 
-		const emitProfile = async (label: string): Promise<void> => {
+		const fetchProfile = async (label: string): Promise<UsageAccount> => {
 			const aliases = Object.keys(section?.aliases ?? {})
 				.filter((alias) => section?.aliases[alias] === label)
 				.sort();
 			const result = await profileUsage(deps.backend, provider, label, deps.refreshFor(provider), fetchOptions);
 			const common = { provider, kind: "profile", name: label, label, aliases } as const;
-			if (result.ok) emit({ ...common, note: planNote(provider, result.usage), result: { ok: true, usage: result.usage } });
-			else emit({ ...common, note: "unavailable", result: { ok: false, hint: result.error, failed: true } });
+			return result.ok
+				? { ...common, note: planNote(provider, result.usage), result: { ok: true, usage: result.usage } }
+				: { ...common, note: "unavailable", result: { ok: false, hint: result.error, failed: true } };
 		};
 
 		const live = selection.source === "builtin";
-		const emitBuiltin = async (): Promise<void> => {
+		const fetchBuiltin = async (): Promise<UsageAccount | undefined> => {
 			const builtin = await builtinUsage(deps.authPath, provider, fetchOptions);
-			if (builtin === undefined) return;
-			const name = builtinName(provider);
+			if (builtin === undefined) return undefined;
+			const common = { provider, kind: "builtin" as const, name: builtinName(provider), aliases: [] };
 			if ("ok" in builtin && builtin.ok) {
-				emit({ provider, kind: "builtin", name, aliases: [], note: planNote(provider, builtin.usage) || "built-in", result: { ok: true, usage: builtin.usage } });
-			} else if ("expired" in builtin) {
-				emit({
-					provider,
-					kind: "builtin",
-					name,
-					aliases: [],
+				return { ...common, note: planNote(provider, builtin.usage) || "built-in", result: { ok: true, usage: builtin.usage } };
+			}
+			if ("expired" in builtin) {
+				return {
+					...common,
 					note: "token expired",
 					result: { ok: false, hint: "run pi once to refresh it — seat never touches Pi's grant", failed: false },
-				});
-			} else {
-				const hint = "error" in builtin ? builtin.error : "unavailable";
-				emit({ provider, kind: "builtin", name, aliases: [], note: "unavailable", result: { ok: false, hint, failed: true } });
+				};
 			}
+			const hint = "error" in builtin ? builtin.error : "unavailable";
+			return { ...common, note: "unavailable", result: { ok: false, hint, failed: true } };
 		};
 
 		// The effective selection leads its section: it is the account the user
 		// opened the report to read. Ordering the WALK rather than the output also
-		// means it is the first one fetched, so it paints first in a live view.
+		// means it is the first one DRAINED, so it still paints first in a live
+		// view — and now without waiting on anything, since every account ahead of
+		// it in wall-clock terms is already in flight beside it.
 		const labels = Object.keys(section?.profiles ?? {});
 		const ordered =
 			activeLabel !== undefined && labels.includes(activeLabel)
 				? [activeLabel, ...labels.filter((label) => label !== activeLabel)]
 				: labels; // a dangling default/pin names no stored profile — nothing to hoist
 
-		if (live) await emitBuiltin();
-		for (const label of ordered) await emitProfile(label);
-		if (!live) await emitBuiltin();
+		if (live) pending.push(settleAccount(fetchBuiltin()));
+		for (const label of ordered) pending.push(settleAccount(fetchProfile(label)));
+		if (!live) pending.push(settleAccount(fetchBuiltin()));
+	}
+
+	const accounts: UsageAccount[] = [];
+	for (const entry of pending) {
+		const settled = await entry;
+		// Re-thrown where a sequential walk would have surfaced it, so callers
+		// still see the first failure in render order.
+		if ("error" in settled) throw settled.error;
+		if (settled.value === undefined) continue;
+		accounts.push(settled.value);
+		onAccount?.(settled.value);
 	}
 
 	return accounts;
