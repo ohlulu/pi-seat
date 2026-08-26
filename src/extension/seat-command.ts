@@ -20,6 +20,7 @@ import { UsageView } from "./usage-view.ts";
 import {
 	CommandError,
 	DEFAULT_KEYWORD,
+	describeUseResult,
 	loginProfile,
 	removeSelection,
 	renameProfile,
@@ -132,15 +133,7 @@ async function handleUse(rest: string[], ctx: ExtensionCommandContext, deps: Sea
 	const USAGE = "usage: /seat use <selector> [-a <alias>]…";
 	const { selector, aliases } = parseSelectorWithAliases(rest, USAGE);
 	const result = runMutation(deps.backend, (store) => useSelection(store, selector, aliases));
-
-	const pinned = deps.pins[result.provider];
-	const suffix = pinned !== undefined ? ` — this session keeps its pin (${pinned})` : "";
-	if (result.action === "clear") {
-		ctx.ui.notify(`seat: ${result.provider} default cleared; Pi built-in login applies${suffix}`, "info");
-	} else {
-		const attached = result.attachedAliases.length > 0 ? ` (alias ${result.attachedAliases.join(", ")} → ${result.label})` : "";
-		ctx.ui.notify(`seat: ${result.provider} default is now "${result.label}"${attached}${suffix}`, "info");
-	}
+	ctx.ui.notify(`seat: ${describeUseResult(result, deps.pins)}`, "info");
 }
 
 async function handleLogin(rest: string[], ctx: ExtensionCommandContext, deps: SeatCommandDeps): Promise<void> {

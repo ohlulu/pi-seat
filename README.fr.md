@@ -45,10 +45,10 @@ Dans une session Pi :
 /seat login work        # crée un nouveau grant OAuth, stocké sous "work"
 /seat use work          # fait de "work" le défaut global
 /seat use work -a w     # …et pointe l'alias "w" dessus
-/seat status            # usage, défaut et pin — esc ou q pour fermer
+/seat status            # usage, défaut et pin — ↑↓ sélectionner, enter basculer, esc/q fermer
 ```
 
-`/seat` et `/seat status` ouvrent une vue d'usage interactive dans une session TUI, et retombent sur du texte partout ailleurs (RPC, `pi -p`).
+`/seat` et `/seat status` ouvrent une vue d'usage interactive dans une session TUI, et retombent sur du texte partout ailleurs (RPC, `pi -p`). Dans la vue, `↑↓`/`jk` déplacent la sélection et `enter` fait du compte surligné le défaut de ce fournisseur — choisir une ligne built-in rend le fournisseur à la connexion intégrée de Pi.
 
 Épinglez une session à un compte (prioritaire sur le défaut, pour cette session uniquement) :
 

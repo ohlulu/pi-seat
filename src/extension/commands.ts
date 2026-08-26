@@ -133,6 +133,22 @@ export function useSelection(store: SeatStore, selectorInput: string, aliases: r
 	};
 }
 
+/**
+ * The one sentence `use` reports, wherever it was invoked from — the extension
+ * command, the CLI, or the in-session view. AC-016's "default updated, session
+ * keeps its pin" clause is the reason this is shared rather than inlined three
+ * times: it is the only feedback a pinned session gets that the command did
+ * anything at all, since the selection it is running under does not move.
+ */
+export function describeUseResult(result: UseResult, pins: Partial<Record<ProviderId, string>>): string {
+	const pinned = pins[result.provider];
+	const suffix = pinned !== undefined ? ` — this session keeps its pin (${pinned})` : "";
+	if (result.action === "clear") return `${result.provider} default cleared; Pi built-in login applies${suffix}`;
+	const attached =
+		result.attachedAliases.length > 0 ? ` (alias ${result.attachedAliases.join(", ")} → ${result.label})` : "";
+	return `${result.provider} default is now "${result.label}"${attached}${suffix}`;
+}
+
 // --- login ------------------------------------------------------------------
 
 export type LoginResult = MutationOutcome &
