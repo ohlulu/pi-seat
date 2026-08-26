@@ -108,6 +108,6 @@ Review of T043..T045 returned APPROVE with three P2 findings, all in the T044 ex
 
 ## Human Acceptance
 
-- [ ] H001 [AC-003] Two real pi sessions with `PI_SEAT=work` / `PI_SEAT=personal` in tmux: requests attributed to the pinned accounts, store default unchanged
-- [ ] H002 [AC-012] Real browser OAuth `/seat login` completes for both providers; profiles appear in store, `auth.json` untouched
-- [ ] H003 [AC-011b] Side-by-side visual check vs Python seat at common terminal widths: bars, spinner, CJK alignment feel identical
+- [x] H001 [AC-003] Two real pi sessions with `PI_SEAT=work` / `PI_SEAT=personal` in tmux: requests attributed to the pinned accounts, store default unchanged
+- [x] H002 [AC-012] Real browser OAuth `/seat login` completes for both providers; profiles appear in store, `auth.json` untouched
+- [x] H003 [AC-011b] Side-by-side visual check vs Python seat at common terminal widths: bars, spinner, CJK alignment feel identical
