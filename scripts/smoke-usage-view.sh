@@ -39,8 +39,9 @@ trap cleanup EXIT
 EXPIRES=$(( ($(date +%s) + 86400) * 1000 ))
 RESETS=$(date -u -r $(( $(date +%s) + 9000 )) +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d "+150 minutes" +%Y-%m-%dT%H:%M:%SZ)
 
+# Two profiles: navigation and enter-to-switch need somewhere to move to.
 cat > "$SANDBOX/seat.json" <<EOF
-{"version":1,"providers":{"anthropic":{"default":"work","profiles":{"work":{"type":"oauth","refresh":"rt-work","access":"at-work","expires":$EXPIRES}},"aliases":{"w":"work"}}}}
+{"version":1,"providers":{"anthropic":{"default":"work","profiles":{"work":{"type":"oauth","refresh":"rt-work","access":"at-work","expires":$EXPIRES},"spare":{"type":"oauth","refresh":"rt-spare","access":"at-spare","expires":$EXPIRES}},"aliases":{"w":"work"}}}}
 EOF
 chmod 600 "$SANDBOX/seat.json"
 echo '{}' > "$SANDBOX/auth.json"
@@ -99,6 +100,19 @@ grep -qF "█" <<<"$PANE" || { echo "$PANE" >&2; fail "no meter bars in the view
 grep -qF "42%" <<<"$PANE" || { echo "$PANE" >&2; fail "the mocked percentage is missing"; }
 grep -qF "ANTHROPIC · work (default)" <<<"$PANE" || { echo "$PANE" >&2; fail "provider section header is missing"; }
 grep -qi "exceeds terminal width" <<<"$PANE" && { echo "$PANE" >&2; fail "renderer reported an overflowing row"; }
+
+# AC-023 in a REAL terminal: only here do actual arrow-key bytes reach
+# handleInput (a unit test hands it a string it chose itself), and only here
+# does the gutter meet Pi's differential renderer.
+grep -qF "▌ ● work (w)" <<<"$PANE" || { echo "$PANE" >&2; fail "the cursor did not start on the live account"; }
+tmux send-keys -t "$SESSION" Down
+wait_for "▌ ○ spare" 5 || { tmux capture-pane -p -t "$SESSION" >&2; fail "Down did not move the selection"; }
+tmux send-keys -t "$SESSION" Enter
+wait_for "ANTHROPIC · spare (default)" 5 || { tmux capture-pane -p -t "$SESSION" >&2; fail "Enter did not switch the default"; }
+STORED=$(bun -e "console.log(JSON.parse(require('fs').readFileSync('$SANDBOX/seat.json','utf8')).providers.anthropic.default)")
+[[ "$STORED" == "spare" ]] || fail "the switch never reached seat.json (default is '$STORED')"
+PANE=$(tmux capture-pane -p -t "$SESSION")
+grep -qi "exceeds terminal width" <<<"$PANE" && { echo "$PANE" >&2; fail "renderer overflowed after the switch"; }
 
 tmux send-keys -t "$SESSION" "q"
 for _ in $(seq 1 50); do

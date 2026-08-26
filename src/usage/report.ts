@@ -12,16 +12,18 @@ import type { RefreshCallback } from "../store/refresh.ts";
 import type { SeatStorageBackend } from "../store/storage.ts";
 import { resolveSelection, type Selection } from "../store/selector.ts";
 import { builtinUsage, profileUsage, type UsageFetchOptions } from "./fetch.ts";
-import type { Layout } from "./layout.ts";
+import { planLayout, type Layout } from "./layout.ts";
 import {
 	accountLine,
 	hintLine,
+	prefixLine,
 	renderClaudeUsage,
 	renderCodexUsage,
 	sectionLines,
 	type ClaudeUsage,
 	type CodexUsage,
 	type RenderOptions,
+	type Segment,
 } from "./render.ts";
 
 /** Display name of a provider's built-in (auth.json) credential. */
@@ -43,10 +45,6 @@ export interface UsageAccount {
 	/** Store label, absent for the built-in snapshot. */
 	label?: string;
 	aliases: string[];
-	/** This account is the provider's effective selection for this process.
-	 * A fact about the selection, not about health — the liveness dot is a
-	 * rendering decision made in renderAccountBlock. */
-	live: boolean;
 	/** Trailing state word on the account header. */
 	note: string;
 	result: UsageAccountResult;
@@ -102,6 +100,21 @@ export function renderSectionHeader(layout: Layout, section: UsageSection, optio
 }
 
 /**
+ * Is this account the provider's effective selection under `sections`?
+ *
+ * Derived, never stored on the account: the in-session view mutates the
+ * default while its meters are already on screen, and a flag frozen at fetch
+ * time would leave the dot on the account the user just switched away from
+ * until the whole report was fetched again.
+ */
+export function isLive(sections: readonly UsageSection[], account: UsageAccount): boolean {
+	const selection = sections.find((s) => s.provider === account.provider)?.selection;
+	if (selection === undefined) return false;
+	if (account.kind === "builtin") return selection.source === "builtin";
+	return selection.source !== "builtin" && selection.label === account.label;
+}
+
+/**
  * Every stored profile plus each provider's built-in snapshot, in render
  * order. `onAccount` fires as each account resolves so a live view can paint
  * incrementally; the returned array is the same sequence.
@@ -128,9 +141,8 @@ export async function collectUsage(
 			const aliases = Object.keys(section?.aliases ?? {})
 				.filter((alias) => section?.aliases[alias] === label)
 				.sort();
-			const live = label === activeLabel;
 			const result = await profileUsage(deps.backend, provider, label, deps.refreshFor(provider), fetchOptions);
-			const common = { provider, kind: "profile", name: label, label, aliases, live } as const;
+			const common = { provider, kind: "profile", name: label, label, aliases } as const;
 			if (result.ok) emit({ ...common, note: planNote(provider, result.usage), result: { ok: true, usage: result.usage } });
 			else emit({ ...common, note: "unavailable", result: { ok: false, hint: result.error, failed: true } });
 		};
@@ -141,20 +153,19 @@ export async function collectUsage(
 			if (builtin === undefined) return;
 			const name = builtinName(provider);
 			if ("ok" in builtin && builtin.ok) {
-				emit({ provider, kind: "builtin", name, aliases: [], live, note: planNote(provider, builtin.usage) || "built-in", result: { ok: true, usage: builtin.usage } });
+				emit({ provider, kind: "builtin", name, aliases: [], note: planNote(provider, builtin.usage) || "built-in", result: { ok: true, usage: builtin.usage } });
 			} else if ("expired" in builtin) {
 				emit({
 					provider,
 					kind: "builtin",
 					name,
 					aliases: [],
-					live,
 					note: "token expired",
 					result: { ok: false, hint: "run pi once to refresh it — seat never touches Pi's grant", failed: false },
 				});
 			} else {
 				const hint = "error" in builtin ? builtin.error : "unavailable";
-				emit({ provider, kind: "builtin", name, aliases: [], live, note: "unavailable", result: { ok: false, hint, failed: true } });
+				emit({ provider, kind: "builtin", name, aliases: [], note: "unavailable", result: { ok: false, hint, failed: true } });
 			}
 		};
 
@@ -176,10 +187,10 @@ export async function collectUsage(
 }
 
 /** Header row plus the provider's meter block, or the failure hint. */
-export function renderAccountBlock(layout: Layout, account: UsageAccount, options: RenderOptions): string[] {
+export function renderAccountBlock(layout: Layout, account: UsageAccount, options: RenderOptions, live: boolean): string[] {
 	// The dot claims a working credential, so a failed account never lights up
 	// even when the selection points at it.
-	const dot = account.live && account.result.ok;
+	const dot = live && account.result.ok;
 	const lines = [accountLine(layout, account.name, account.aliases, dot, account.note, options)];
 	if (account.result.ok) {
 		lines.push(
@@ -194,6 +205,18 @@ export function renderAccountBlock(layout: Layout, account: UsageAccount, option
 }
 
 /**
+ * A left gutter on every account row, for an interactive view's selection
+ * marker. Section headers keep the full width — they are not selectable.
+ */
+export interface ReportGutter {
+	/** Columns reserved. Account rows are laid out at `width - cells`, which is
+	 * what makes prefixing them safe. */
+	cells: number;
+	/** Marker for the account at `index` (walk order); pad it to `cells`. */
+	marker: (index: number) => Segment;
+}
+
+/**
  * Assembles the report's rows in walk order, opening each provider section the
  * first time it is needed.
  *
@@ -203,12 +226,23 @@ export function renderAccountBlock(layout: Layout, account: UsageAccount, option
  */
 export class UsageReportRows {
 	private opened = 0;
+	private index = 0;
+	private readonly headerLayout: Layout;
+	private readonly accountLayout: Layout;
+	private readonly gutter: ReportGutter | undefined;
 
 	constructor(
 		private readonly sections: readonly UsageSection[],
-		private readonly layout: Layout,
+		width: number,
 		private readonly options: RenderOptions,
-	) {}
+		gutter?: ReportGutter,
+	) {
+		// Below the gutter's own width there is no content left to mark, and a
+		// marker on a zero-width row is just an overflow. Drop it instead.
+		this.gutter = gutter !== undefined && width > gutter.cells + 1 ? gutter : undefined;
+		this.headerLayout = planLayout(width);
+		this.accountLayout = planLayout(width - (this.gutter?.cells ?? 0));
+	}
 
 	/** One account's rows, preceded by the headers of any section it opens. */
 	account(account: UsageAccount): string[] {
@@ -216,7 +250,12 @@ export class UsageReportRows {
 		// A header already separates its own first account; a blank line after the
 		// rule would leave the rule floating above nothing.
 		if (rows.length === 0) rows.push("");
-		rows.push(...renderAccountBlock(this.layout, account, this.options));
+		const index = this.index;
+		this.index += 1;
+		const block = renderAccountBlock(this.accountLayout, account, this.options, isLive(this.sections, account));
+		const gutter = this.gutter;
+		if (gutter === undefined) rows.push(...block);
+		else for (const line of block) rows.push(prefixLine(gutter.marker(index), line, this.options.color));
 		return rows;
 	}
 
@@ -231,7 +270,7 @@ export class UsageReportRows {
 		while (this.opened <= index) {
 			const section = this.sections[this.opened]!;
 			this.opened += 1;
-			rows.push("", ...renderSectionHeader(this.layout, section, this.options));
+			rows.push("", ...renderSectionHeader(this.headerLayout, section, this.options));
 		}
 		return rows;
 	}

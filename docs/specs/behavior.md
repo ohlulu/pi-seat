@@ -147,10 +147,17 @@ WHEN `/seat` runs with no arguments, or `/seat status` or `/seat usage` runs, in
 
 渲染復用 `src/usage` 純模組，含 [REQ-006](#req-006-usage-meters-in-the-cli) 的 report structure——default/pin 狀態就是每個 section header 的內容，不另立頂部 header。Section 是 store snapshot 的純函數，所以 header 在第一幀就到位，不等最慢的帳號。View 開啟期間的 refresh 仍走 [REQ-005](#req-005-single-flight-refresh) 路徑。
 
+The view SHALL let the user move a selection between accounts with `↑`/`↓` (and `k`/`j`) and apply the highlighted account with `enter`, which is exactly [REQ-003](#req-003-global-default-selection)'s `use`：帳號列對應 `use <provider>:<label>`，built-in 列對應 `use <provider>:default`（清除該 provider 的 default，還給 Pi 內建登入）。選取是 clamped（不繞回），涵蓋整個帳號區塊而非單一列，並在 refresh 後跟隨同一個帳號。
+
+Switching from the view SHALL NOT refetch usage——liveness 是 store 的事實，不是計量結果的事實；重讀 store 就足以讓點移位。Walk order SHALL NOT be re-sorted in place（重排會把區塊從游標底下抽走），下一次 refresh 或重開才收斂。WHERE the target provider has an env pin, the view SHALL show [AC-016](#req-003-global-default-selection) 的 pin notice inline——pin 不可變，點不會動，那列文字是使用者唯一的回饋。
+
+Destructive operations (`rm`, `login`) SHALL NOT be reachable from the view：它們需要巳狀對話框，而巳狀 `ctx.ui.custom()` 漏帶 `{ overlay: true }` 會讓 base component 的 promise 永不 resolve（見 `pi.md` extension gotchas）。`use` 非破壞性且可逆，不需確認。
+
 | AC | Given | When | Then |
 |---|---|---|---|
 | AC-018 | TUI session | `/seat`、`/seat status` 或 `/seat usage` | view 開啟並渲染 usage bars，default/pin 狀態出現在對應 provider 的 section header；`esc` 與 `q` 都關閉 view |
 | AC-019 | 非 TUI session（RPC / `pi -p`） | `/seat status` | 文字輸出，不開 component，不 hang |
+| AC-023 | view 已載入，provider 有多個帳號 | `↓` 移到另一個帳號後按 `enter` | store default 更新為該帳號；section header 與 live dot 隨之更新；**零新增 usage 請求**；區塊不改排序。Pinned session：default 寫入但點不動，並顯示 pin notice |
 
 ## Non-functional
 

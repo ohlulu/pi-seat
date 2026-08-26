@@ -93,9 +93,19 @@ Ownership fencing——lock compromised 後禁止 commit，失鎖狀態下寫入
 - 寬度：section title 與 rule 是 DEC-007 口徑中的 “constant chrome”，rule 以 `layout.width - 1` 產生並走同一條 `emitLine` 剪裁；render probe 的 2–200 掃描涵蓋它們。
 - Satisfies: REQ-006, REQ-010。
 
+### DEC-009: Selection gutter 全數帳號均攝；liveness 改為衍生
+
+- Choice: view 的選取標記是左側 2 欄 gutter（選取畫 `▌` + cyan，其餘留空），**所有**帳號列都攝這 2 欄；section header 不攝。帳號列以 `planLayout(width - cells)` 排版，標記才能安全前置。
+- Alternatives: （a）真的外框（左右各 2 欄）；（b）只把選取列反白、不加 gutter。
+- Rationale: Pi 自己的 `SelectList`（`docs/tui.md` Pattern 1）用 `selectedPrefix` + accent，`DynamicBorder` 框的是整個 dialog 而非單項——gutter 才是 host 的語彙。橫向代價也實量過：`planLayout` 的 tier 邊界在 60 / 43 / 38，2 欄把它們推到 62 / 45 / 40（AC-011b 的 ≥ 40 保證對應 `planLayout(38)`，仍在安全側），外框的 4 欄則不劃算。只給選取列 gutter 是錯的：游標一移，整片 bar 就左右跳。方案（b）零成本但單靠顏色傳達選取，單色終端失效。
+- `UsageAccount.live` 隨之移除，改為 `isLive(sections, account)` 在 render 時推導。View 能在 meters 已在螢幕上時改寫 default，而 fetch 時凍結的 flag 會讓點留在剛切走的帳號上直到整份重拿。順帶修正一個 `--json` 邊界：`active` 現在報 selection 所**命名**的 label，而非「有回應的那個」——dangling default 下回 null 會被讀成「built-in 生效」，但 runtime 實際是 fail-closed。
+- Ordering 不在切換後重排：重排會把區塊從游標底下抽走。與 DEC-008 的「ordering 是 walk 的決定」一致：順序屬於那一次 walk，下一次 refresh 才收斂。
+- 範圍停在 `use`：`rm` / `login` 需要巳狀 UI，而漏帶 `{ overlay: true }` 的巳狀 `ctx.ui.custom()` 會讓 base component 的 promise 永不 resolve（pi.md 實證 gotcha，無法從 session 內救回）。
+- Satisfies: REQ-010。
+
 ## Related
 
 - [specs/behavior.md §Store](./specs/behavior.md#store) ← store、refresh、login 的行為契約（DEC-001/003/005 的 Satisfies 對象）
 - [specs/behavior.md §Selection & runtime](./specs/behavior.md#selection--runtime) ← pin、default、fail-closed overlay、Codex invalidation 的行為契約（DEC-002 與 per-turn lifecycle）
-- [specs/behavior.md §Usage](./specs/behavior.md#usage) ← usage CLI 與 in-session view 的行為契約（DEC-004/007/008）
+- [specs/behavior.md §Usage](./specs/behavior.md#usage) ← usage CLI 與 in-session view 的行為契約（DEC-004/007/008/009）
 - [RELEASING.md §Facts](./RELEASING.md#facts) ← DEC-006 部署形態對應的發佈 facts 與程序

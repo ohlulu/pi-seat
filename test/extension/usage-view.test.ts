@@ -15,10 +15,18 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { emptyStore, type SeatCredential } from "../../src/store/schema.ts";
-import { InMemorySeatStorageBackend, encodeStore } from "../../src/store/storage.ts";
+import { InMemorySeatStorageBackend, decodeStore, encodeStore } from "../../src/store/storage.ts";
 import type { RefreshCallback } from "../../src/store/refresh.ts";
 import { SPINNER_FRAMES, SPINNER_INTERVAL_MS } from "../../src/usage/render.ts";
-import { IDLE_TICK_MS, LOADING_TEXT, UsageView, VIEW_LEGEND, VIEW_TITLE, type UsageViewDeps } from "../../src/extension/usage-view.ts";
+import {
+	IDLE_TICK_MS,
+	LOADING_TEXT,
+	MARK_SELECTED,
+	UsageView,
+	VIEW_LEGEND,
+	VIEW_TITLE,
+	type UsageViewDeps,
+} from "../../src/extension/usage-view.ts";
 
 const FRESH = Date.UTC(2026, 0, 15, 12, 0, 0) + 3_600_000;
 const NOW = () => new Date(Date.UTC(2026, 0, 15, 12, 0, 0));
@@ -41,11 +49,16 @@ let fixtureDir: string;
 let authPath: string;
 let emptyAuthPath: string;
 
+/** Every usage request the fixture server has answered. Enter must not add
+ * any: liveness is a store fact, not a metered one. */
+let fetches = 0;
+
 beforeAll(() => {
 	server = Bun.serve({
 		port: 0,
 		fetch: (req) => {
 			const path = new URL(req.url).pathname;
+			fetches += 1;
 			if (path === "/claude") return Response.json(CLAUDE_PAYLOAD);
 			if (path === "/codex") return Response.json(CODEX_PAYLOAD);
 			return new Response("boom", { status: 500 });
@@ -178,9 +191,10 @@ describe("AC-018: the view renders the meters plus default/pin state", () => {
 		expect(text).toContain("Claude"); // the built-in snapshot block
 		expect(text).toContain("█"); // bars actually rendered
 		expect(text).toContain("42%");
-		// The pinned account is the live one; the dot precedes its name.
-		expect(lines.some((l) => l.startsWith("● personal"))).toBe(true);
-		expect(lines.some((l) => l.startsWith("○ work (w)"))).toBe(true);
+		// The pinned account is the live one; the dot precedes its name, behind the
+		// selection gutter every account row now carries.
+		expect(lines.some((l) => l.endsWith("● personal"))).toBe(true);
+		expect(lines.some((l) => l.endsWith("○ work (w)"))).toBe(true);
 		expect(lines.at(-1)).toContain(VIEW_LEGEND);
 	});
 
@@ -194,8 +208,8 @@ describe("AC-018: the view renders the meters plus default/pin state", () => {
 		const lines = h.view.render(100);
 		const header = lines.indexOf("ANTHROPIC · personal (pin)");
 		expect(header).toBeGreaterThanOrEqual(0);
-		expect(lines.findIndex((l) => l.startsWith("● personal"))).toBeLessThan(
-			lines.findIndex((l) => l.startsWith("○ work")),
+		expect(lines.findIndex((l) => l.includes("● personal"))).toBeLessThan(
+			lines.findIndex((l) => l.includes("○ work")),
 		);
 		// The rule spans the block and stops inside the width budget.
 		expect(lines[header + 1]).toBe("─".repeat(99));
@@ -228,6 +242,111 @@ describe("AC-018: the view renders the meters plus default/pin state", () => {
 		expect(text).toContain("unavailable");
 		expect(text).toContain("HTTP 500");
 		expect(text).toContain(VIEW_LEGEND); // the view still stands
+	});
+});
+
+describe("AC-023: arrow-key selection and enter-to-switch", () => {
+	const marked = (lines: string[]): string[] => lines.filter((l) => l.startsWith(MARK_SELECTED));
+	const nameOf = (line: string): string => line.slice(MARK_SELECTED.length).trim();
+
+	test("the cursor starts on the live account and moves with ↑↓ / jk, clamped at both ends", async () => {
+		// Store order is work, personal; `personal` is the default, so the walk
+		// puts it first and the cursor is on it without the user doing anything.
+		const h = makeView({ default: "personal", auth: authPath });
+		h.view.start();
+		await h.settle();
+
+		expect(nameOf(marked(h.view.render(100))[0]!)).toBe("● personal");
+		// The marker covers the WHOLE block, not just its header row.
+		expect(marked(h.view.render(100))).toHaveLength(3); // header + two meters
+
+		h.view.handleInput("\x1b[B");
+		expect(nameOf(marked(h.view.render(100))[0]!)).toBe("○ work (w)");
+		h.view.handleInput("j");
+		expect(nameOf(marked(h.view.render(100))[0]!)).toBe("○ Claude · built-in");
+		h.view.handleInput("\x1bOB"); // application cursor mode, last account
+		expect(nameOf(marked(h.view.render(100))[0]!)).toBe("○ Claude · built-in");
+
+		h.view.handleInput("k");
+		h.view.handleInput("\x1b[A");
+		h.view.handleInput("\x1bOA"); // clamps at the top
+		expect(nameOf(marked(h.view.render(100))[0]!)).toBe("● personal");
+	});
+
+	test("enter switches the default and moves the dot without refetching", async () => {
+		const h = makeView({ default: "personal", auth: emptyAuthPath });
+		h.view.start();
+		await h.settle();
+		const before = fetches;
+
+		h.view.handleInput("\x1b[B"); // onto `work`
+		h.view.handleInput("\r");
+		await h.settle();
+
+		const lines = h.view.render(100);
+		expect(lines.some((l) => l.includes("● work (w)"))).toBe(true);
+		expect(lines.some((l) => l.includes("○ personal"))).toBe(true);
+		expect(lines).toContain(`ANTHROPIC · work (default)`); // the header follows too
+		expect(lines.join("\n")).toContain('anthropic default is now "work"');
+		// The store is what changed; the meters on screen are still valid.
+		expect(fetches).toBe(before);
+		expect(h.backend.read((c) => decodeStore(c)).providers.anthropic?.default).toBe("work");
+		// The block stays where the cursor put it — re-sorting under the cursor is
+		// exactly what the walk order must not do mid-session.
+		expect(nameOf(marked(lines)[0]!)).toBe("● work (w)");
+	});
+
+	test("AC-016 in the view: a pinned session writes the default, keeps the pin, and says so", async () => {
+		const h = makeView({ pins: { anthropic: "personal" }, auth: emptyAuthPath });
+		h.view.start();
+		await h.settle();
+
+		h.view.handleInput("\x1b[B"); // onto `work`
+		h.view.handleInput("\r");
+		await h.settle();
+
+		const lines = h.view.render(100);
+		expect(h.backend.read((c) => decodeStore(c)).providers.anthropic?.default).toBe("work");
+		// The pin is immutable for the session (DEC-002), so the dot CANNOT move.
+		// Without the notice the view would look broken in exactly the sessions
+		// multi-account management matters most.
+		expect(lines.some((l) => l.includes("● personal"))).toBe(true);
+		expect(lines.some((l) => l.includes("○ work (w)"))).toBe(true);
+		expect(lines).toContain("ANTHROPIC · personal (pin)");
+		expect(lines.join("\n")).toContain('anthropic default is now "work" — this session keeps its pin (personal)');
+	});
+
+	test("enter on the built-in row clears that provider's default", async () => {
+		const h = makeView({ default: "work", profiles: { work: cred("rt-w") }, aliases: {}, auth: authPath });
+		h.view.start();
+		await h.settle();
+
+		h.view.handleInput("\x1b[B"); // onto the Claude built-in row
+		expect(nameOf(marked(h.view.render(100))[0]!)).toBe("○ Claude · built-in");
+		h.view.handleInput("\r");
+		await h.settle();
+
+		const lines = h.view.render(100);
+		expect(h.backend.read((c) => decodeStore(c)).providers.anthropic?.default).toBeUndefined();
+		expect(lines).toContain("ANTHROPIC · Pi built-in login");
+		expect(lines.some((l) => l.includes("● Claude"))).toBe(true);
+		expect(lines.join("\n")).toContain("anthropic default cleared; Pi built-in login applies");
+	});
+
+	test("the cursor follows its account across a refresh, and keys are inert while loading", async () => {
+		const h = makeView({ default: "personal", auth: emptyAuthPath });
+		h.view.start();
+		// Mid-load: nothing to move over yet, and enter must not mutate the store.
+		h.view.handleInput("\x1b[B");
+		h.view.handleInput("\r");
+		expect(h.backend.read((c) => decodeStore(c)).providers.anthropic?.default).toBe("personal");
+		await h.settle();
+
+		h.view.handleInput("\x1b[B"); // onto `work`
+		expect(nameOf(marked(h.view.render(100))[0]!)).toBe("○ work (w)");
+		h.view.handleInput("r");
+		await h.settle();
+		expect(nameOf(marked(h.view.render(100))[0]!)).toBe("○ work (w)");
 	});
 });
 

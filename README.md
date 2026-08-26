@@ -45,10 +45,10 @@ Inside a Pi session:
 /seat login work        # mint a new OAuth grant, store it as "work"
 /seat use work          # make "work" the global default
 /seat use work -a w     # …and point the alias "w" at it
-/seat status            # usage meters, default and pin — press esc or q to close
+/seat status            # usage meters, default and pin — ↑↓ select, enter switch, esc/q close
 ```
 
-`/seat` and `/seat status` open an interactive usage view in a TUI session, and fall back to plain text everywhere else (RPC, `pi -p`).
+`/seat` and `/seat status` open an interactive usage view in a TUI session, and fall back to plain text everywhere else (RPC, `pi -p`). In the view, `↑↓`/`jk` move between accounts and `enter` makes the highlighted one that provider's default — selecting a built-in row hands the provider back to Pi's own login.
 
 Pin a session to an account (overrides the default, this session only):
 

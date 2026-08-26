@@ -21,10 +21,17 @@ import { homedir } from "node:os";
 import { PROVIDER_IDS, type ProviderId, type SeatStore } from "../store/schema.ts";
 import { FileSeatStorageBackend, decodeStore, type SeatStorageBackend } from "../store/storage.ts";
 import { SelectorError, parseSelector, resolvePins, resolveSelection } from "../store/selector.ts";
-import { CommandError, loginProfile, removeSelection, renameProfile, runMutation, useSelection } from "../extension/commands.ts";
+import {
+	CommandError,
+	describeUseResult,
+	loginProfile,
+	removeSelection,
+	renameProfile,
+	runMutation,
+	useSelection,
+} from "../extension/commands.ts";
 import { adapterFor, createSeatProviderAdapters, toRefreshCallback, type SeatProviderAdapter } from "../extension/oauth.ts";
 import type { UsageFetchOptions } from "../usage/fetch.ts";
-import { planLayout } from "../usage/layout.ts";
 import { UsageReportRows, collectUsage, selectionSummary, usageSections } from "../usage/report.ts";
 import type { RenderOptions } from "../usage/render.ts";
 
@@ -206,12 +213,7 @@ function cmdUse(rest: string[], usage: string, deps: CliDeps): number {
 	const { selector, aliases } = parseSelectorWithAliases(rest, usage);
 	const result = runMutation(deps.backend, (store) => useSelection(store, selector, aliases));
 	const pins = reportingPins(loadStore(deps), deps);
-	const suffix = pins[result.provider] !== undefined ? ` — this session keeps its pin (${pins[result.provider]})` : "";
-	if (result.action === "clear") deps.io.err(`seat: ${result.provider} default cleared; Pi built-in login applies${suffix}`);
-	else {
-		const attached = result.attachedAliases.length > 0 ? ` (alias ${result.attachedAliases.join(", ")} → ${result.label})` : "";
-		deps.io.err(`seat: ${result.provider} default is now "${result.label}"${attached}${suffix}`);
-	}
+	deps.io.err(`seat: ${describeUseResult(result, pins)}`);
 	return EXIT_OK;
 }
 
@@ -390,11 +392,11 @@ async function cmdUsage(rest: string[], deps: CliDeps): Promise<number> {
 	// the one it fetched usage for.
 	const store = loadStore(deps);
 	const pins = reportingPins(store, deps);
-	const layout = planLayout(deps.termWidth);
 	const renderOptions: RenderOptions = { color: deps.color && !asJson, now: deps.now ?? (() => new Date()) };
 	// Provider sections come from the same snapshot as the walk, so a header can
 	// never describe a selection the bars underneath do not belong to.
-	const rows = new UsageReportRows(usageSections(store, pins), layout, renderOptions);
+	const sections = usageSections(store, pins);
+	const rows = new UsageReportRows(sections, deps.termWidth, renderOptions);
 
 	// REQ-006: every stored profile, the built-in login credential, and Codex.
 	// Both providers walk the same path (T039); the walk itself lives in
@@ -429,7 +431,11 @@ async function cmdUsage(rest: string[], deps: CliDeps): Promise<number> {
 		const json: Record<string, unknown> = {};
 		for (const provider of PROVIDER_IDS) {
 			const mine = accounts.filter((a) => a.provider === provider);
-			const activeLabel = mine.find((a) => a.kind === "profile" && a.live)?.label ?? null;
+			const selection = sections.find((s) => s.provider === provider)?.selection;
+			// The label the selection NAMES, not the one that happened to answer: a
+			// default pointing at a deleted profile is what the runtime fails closed
+			// on, so reporting null there would read as "built-in is active".
+			const activeLabel = selection === undefined || selection.source === "builtin" ? null : selection.label;
 			const profileJson: Record<string, unknown> = {};
 			for (const account of mine) {
 				if (account.kind === "profile" && account.result.ok) profileJson[account.name] = account.result.usage;

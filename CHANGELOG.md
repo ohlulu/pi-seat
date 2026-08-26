@@ -2,11 +2,16 @@
 
 ## [Unreleased]
 
+### Added
+
+- The in-session `/seat` view is now interactive: `↑↓` (or `k`/`j`) move a selection between accounts and `enter` makes the highlighted one that provider's default, equivalent to `/seat use <provider>:<label>`. Selecting a built-in row runs `use <provider>:default`, handing the provider back to Pi's own login. Switching does not refetch usage — liveness is derived from the store, so re-reading it is enough to move the dot — and the blocks are not re-sorted under the cursor; the order settles on the next refresh. In a `PI_SEAT`-pinned session the pin is immutable, so the dot cannot move: the view states inline that the default was written and the session keeps its pin. Destructive operations (`rm`, `login`) stay out of the view and remain commands.
+
 ### Changed
 
 - Usage reports (`seat`, `seat usage`, and the in-session `/seat` view) now group accounts into one section per provider, each opened by a header naming that provider's effective selection (`ANTHROPIC · work (default)`) and a rule. A provider with nothing to meter still gets its header, so its selection state is never missing. The view's two-line top header is gone — that state now sits directly above the accounts it governs. `--json` output is unchanged.
 - Within each provider section, the effective selection (pin > default > built-in) is listed first instead of in store order. It is also fetched first, so in the live view it is the first block to paint.
 - Login now reports completion as `seat: login success — stored <provider> profile "<label>"`, in both the extension and the CLI. `notify(…, "info")` renders as one dim line indistinguishable from the flow's progress notices, so the word "success" is what separates them.
+- `seat usage --json`: a provider's `active` now reports the label the selection *names* rather than the one that answered. A default or pin pointing at a deleted profile previously reported `null`, which reads as "the built-in login is active" — the runtime actually fails that provider closed.
 
 ### Removed
 

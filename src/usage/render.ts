@@ -19,6 +19,7 @@ export const DIM = "\x1b[2m";
 export const RED = "\x1b[31m";
 export const YELLOW = "\x1b[33m";
 export const GREEN = "\x1b[32m";
+export const CYAN = "\x1b[36m";
 export const RESET = "\x1b[0m";
 
 export const SPINNER_FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
@@ -52,6 +53,16 @@ export function emitLine(segments: readonly Segment[], width: number, color: boo
 		used += cellWidth(clipped);
 	}
 	return parts.join("").trimEnd();
+}
+
+/**
+ * Prepend a fixed-width marker to an already-emitted row. Safe only because
+ * the row was laid out at `width - marker cells`: this adds cells to a line
+ * that is already at its budget, so the subtraction has to happen upstream.
+ */
+export function prefixLine(marker: Segment, line: string, color: boolean): string {
+	const [text, code] = marker;
+	return colorize(code, text, color) + line;
 }
 
 /** Python's round(): half rounds to the nearest EVEN integer. */
