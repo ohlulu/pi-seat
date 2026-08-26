@@ -10,8 +10,8 @@
  */
 
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { visibleWidth } from "@earendil-works/pi-tui";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { setKittyProtocolActive, visibleWidth } from "@earendil-works/pi-tui";
+import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { emptyStore, type SeatCredential } from "../../src/store/schema.ts";
@@ -25,6 +25,10 @@ import {
 	UsageView,
 	VIEW_LEGEND,
 	VIEW_TITLE,
+	isCloseKey,
+	isDownKey,
+	isEnterKey,
+	isUpKey,
 	type UsageViewDeps,
 } from "../../src/extension/usage-view.ts";
 
@@ -245,8 +249,9 @@ describe("AC-018: the view renders the meters plus default/pin state", () => {
 	});
 });
 
+const marked = (lines: string[]): string[] => lines.filter((l) => l.startsWith(MARK_SELECTED));
+
 describe("AC-023: arrow-key selection and enter-to-switch", () => {
-	const marked = (lines: string[]): string[] => lines.filter((l) => l.startsWith(MARK_SELECTED));
 	const nameOf = (line: string): string => line.slice(MARK_SELECTED.length).trim();
 
 	test("the cursor starts on the live account and moves with ↑↓ / jk, clamped at both ends", async () => {
@@ -331,6 +336,73 @@ describe("AC-023: arrow-key selection and enter-to-switch", () => {
 		expect(lines).toContain("ANTHROPIC · Pi built-in login");
 		expect(lines.some((l) => l.includes("● Claude"))).toBe(true);
 		expect(lines.join("\n")).toContain("anthropic default cleared; Pi built-in login applies");
+	});
+
+	test("keys are recognized in CSI-u form too — Pi negotiates the Kitty protocol", async () => {
+		// Pi asks for Kitty keyboard flags 1|2|4 at startup, so on Kitty / Ghostty /
+		// WezTerm esc arrives as `esc [ 27 u` and enter as `esc [ 13 u`. tmux does
+		// not negotiate it, so the TUI smoke is green either way and cannot catch
+		// this: only matching through pi-tui's matchesKey covers both encodings.
+		for (const active of [false, true]) {
+			setKittyProtocolActive(active);
+			try {
+				expect(isUpKey("\x1b[A")).toBe(true);
+				expect(isUpKey("\x1b[1;1A")).toBe(true);
+				expect(isDownKey("\x1b[B")).toBe(true);
+				expect(isEnterKey("\r")).toBe(true);
+				expect(isEnterKey("\x1b[13u")).toBe(true);
+				expect(isCloseKey("\x1b")).toBe(true);
+				expect(isCloseKey("\x1b[27u")).toBe(true);
+				expect(isCloseKey("q")).toBe(true);
+				// An arrow is still not a close, in either encoding.
+				expect(isCloseKey("\x1b[A")).toBe(false);
+				expect(isCloseKey("\x1b[1;1A")).toBe(false);
+				expect(isUpKey("\x1b")).toBe(false);
+				expect(isEnterKey("\x1b[27u")).toBe(false);
+			} finally {
+				setKittyProtocolActive(false);
+			}
+		}
+		// A live view still closes on the CSI-u escape.
+		setKittyProtocolActive(true);
+		try {
+			const h = makeView({ auth: emptyAuthPath });
+			h.view.start();
+			await h.settle();
+			h.view.handleInput("\x1b[13u"); // enter: switches, does not close
+			expect(h.closed).toBe(0);
+			h.view.handleInput("\x1b[27u");
+			expect(h.closed).toBe(1);
+		} finally {
+			setKittyProtocolActive(false);
+		}
+	});
+
+	test("a walk that throws part-way still leaves the cursor inside the list", async () => {
+		// readForeignFileNoFollow throws on a non-regular auth.json, and it runs
+		// OUTSIDE builtinUsage's try — so collectUsage propagates after the stored
+		// profiles have already streamed in. A cursor left past the survivors shows
+		// no marker and makes enter a silent no-op.
+		const symlinkAuth = join(fixtureDir, "auth-symlink.json");
+		rmSync(symlinkAuth, { force: true });
+		symlinkSync(authPath, symlinkAuth);
+
+		const h = makeView({ auth: authPath });
+		h.view.start();
+		await h.settle();
+		h.view.handleInput("\x1b[B");
+		h.view.handleInput("\x1b[B"); // onto the built-in row, the last account
+		expect(marked(h.view.render(100))[0]).toContain("Claude");
+
+		(h.view as unknown as { deps: { authPath: string } }).deps.authPath = symlinkAuth;
+		h.view.handleInput("r");
+		await h.settle();
+
+		const lines = h.view.render(100);
+		expect(lines.join("\n")).toContain("expected a regular file"); // the walk did throw
+		// The built-in row is gone; the cursor is clamped onto a surviving account.
+		expect(marked(lines).length).toBeGreaterThan(0);
+		expect(marked(lines)[0]).not.toContain("Claude");
 	});
 
 	test("the cursor follows its account across a refresh, and keys are inert while loading", async () => {

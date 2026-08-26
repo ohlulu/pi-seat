@@ -103,9 +103,16 @@ Ownership fencing——lock compromised 後禁止 commit，失鎖狀態下寫入
 - 範圍停在 `use`：`rm` / `login` 需要巳狀 UI，而漏帶 `{ overlay: true }` 的巳狀 `ctx.ui.custom()` 會讓 base component 的 promise 永不 resolve（pi.md 實證 gotcha，無法從 session 內救回）。
 - Satisfies: REQ-010。
 
+### DEC-010: Key 辨識一律走 pi-tui 的 `matchesKey`
+
+- Choice: view 的所有按鍵判定（esc / q / ↑ / ↓ / j / k / enter / r）呈給 `@earendil-works/pi-tui` 的 `matchesKey` 與 `Key`，不自己比對 escape sequence 字串。pi-tui 因此進入 peerDependencies / devDependencies（同 DEC-006 的 Pi 套件 pattern，由 pi runtime 提供）。
+- Rationale: Pi 在啟動時以 flags `1|2|4` 協商 Kitty keyboard protocol（pi-tui `Terminal.queryAndEnableKittyProtocol`）。協商成功的終端上，esc 以 `esc [ 27 u` 抵達、enter 以 `esc [ 13 u` 抵達，且 `\n` 不再是 enter 而是 shift+enter。手寫的 `data === "\x1b"` 在這些終端上全數失效，`matchesKey` 則同時涵蓋 legacy、application-cursor、modifyOtherKeys 與 CSI-u。
+- 這是一條 smoke 節目上的盲點：tmux 不協商 Kitty protocol，所以 `scripts/smoke-usage-view.sh` 無論如何都是綠的。覆蓋靠的是 `usage-view.test.ts` 裡對兩種 encoding 都斷言的 regression test（以 `setKittyProtocolActive` 切換）。
+- Satisfies: REQ-010。
+
 ## Related
 
 - [specs/behavior.md §Store](./specs/behavior.md#store) ← store、refresh、login 的行為契約（DEC-001/003/005 的 Satisfies 對象）
 - [specs/behavior.md §Selection & runtime](./specs/behavior.md#selection--runtime) ← pin、default、fail-closed overlay、Codex invalidation 的行為契約（DEC-002 與 per-turn lifecycle）
-- [specs/behavior.md §Usage](./specs/behavior.md#usage) ← usage CLI 與 in-session view 的行為契約（DEC-004/007/008/009）
+- [specs/behavior.md §Usage](./specs/behavior.md#usage) ← usage CLI 與 in-session view 的行為契約（DEC-004/007/008/009/010）
 - [RELEASING.md §Facts](./RELEASING.md#facts) ← DEC-006 部署形態對應的發佈 facts 與程序

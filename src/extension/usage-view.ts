@@ -24,6 +24,7 @@
  * can drive `render`/`handleInput` with no terminal.
  */
 
+import { Key, matchesKey } from "@earendil-works/pi-tui";
 import type { SeatStore } from "../store/schema.ts";
 import { decodeStore } from "../store/storage.ts";
 import { cellClip, stripAnsi, visibleCellWidth } from "../usage/cells.ts";
@@ -87,6 +88,20 @@ export interface UsageViewHooks {
  * cursor back to the top. */
 function accountKey(account: UsageAccount): string {
 	return `${account.provider}\u0000${account.kind}\u0000${account.label ?? ""}`;
+}
+
+/**
+ * Where the cursor lands after a reload: on the same account when it is still
+ * there, otherwise clamped into the new list so it always points at something.
+ */
+function restoreCursor(accounts: readonly UsageAccount[], previous: UsageAccount | undefined, current: number): number {
+	if (accounts.length === 0) return 0;
+	if (previous !== undefined) {
+		const key = accountKey(previous);
+		const found = accounts.findIndex((account) => accountKey(account) === key);
+		if (found >= 0) return found;
+	}
+	return Math.min(Math.max(0, current), accounts.length - 1);
 }
 
 export class UsageView {
@@ -171,13 +186,15 @@ export class UsageView {
 			});
 			if (this.disposed || generation !== this.generation) return;
 			this.accounts = accounts;
-			const key = previous === undefined ? undefined : accountKey(previous);
-			const restored = key === undefined ? -1 : accounts.findIndex((a) => accountKey(a) === key);
-			this.selected = restored >= 0 ? restored : 0;
 		} catch (error) {
 			if (this.disposed || generation !== this.generation) return;
 			this.error = error instanceof Error ? error.message : String(error);
 		}
+		// Placed after the catch, not on the success path: a walk that throws
+		// part-way (a foreign auth.json that is not a regular file is one real
+		// case) leaves the streamed accounts in place, and a cursor left pointing
+		// past them shows no marker and makes enter a silent no-op.
+		this.selected = restoreCursor(this.accounts, previous, this.selected);
 		this.loading = false;
 		this.retime();
 		this.changed();
@@ -304,23 +321,33 @@ export class UsageView {
 	}
 }
 
-/** esc or q closes (AC-018). Exact match, so `esc [ A` (an arrow key) is not a
- * close: an escape sequence arrives as one longer string. */
+/*
+ * Key recognition goes through pi-tui's matchesKey, never through literal
+ * comparison against escape sequences.
+ *
+ * Pi negotiates the Kitty keyboard protocol at startup with flags 1|2|4
+ * (see pi-tui's Terminal.queryAndEnableKittyProtocol). On a terminal that
+ * accepts it — Kitty, Ghostty, WezTerm — esc arrives as `esc [ 27 u` and enter
+ * as `esc [ 13 u`, not as `\x1b` and `\r`. tmux does not negotiate it, so the
+ * TUI smoke passes either way and cannot catch this class of bug on its own.
+ * matchesKey covers legacy, application-cursor, modifyOtherKeys and CSI-u in
+ * one place; it also knows that under Kitty a bare `\n` is shift+enter, not
+ * enter.
+ */
+
+/** esc or q closes (AC-018). */
 export function isCloseKey(data: string): boolean {
-	return data === "\x1b" || data === "q" || data === "Q";
+	return matchesKey(data, Key.escape) || matchesKey(data, "q") || matchesKey(data, "shift+q");
 }
 
-// Both cursor encodings: a terminal in application cursor mode sends `esc O A`
-// where normal mode sends `esc [ A`, and which one arrives is not ours to
-// choose. Recognizing only one makes the arrows work on some terminals only.
 export function isUpKey(data: string): boolean {
-	return data === "\x1b[A" || data === "\x1bOA" || data === "k";
+	return matchesKey(data, Key.up) || matchesKey(data, "k");
 }
 
 export function isDownKey(data: string): boolean {
-	return data === "\x1b[B" || data === "\x1bOB" || data === "j";
+	return matchesKey(data, Key.down) || matchesKey(data, "j");
 }
 
 export function isEnterKey(data: string): boolean {
-	return data === "\r" || data === "\n";
+	return matchesKey(data, Key.enter);
 }

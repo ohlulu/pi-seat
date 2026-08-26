@@ -24,7 +24,8 @@
 		"@types/proper-lockfile": "^4.1.4",
 		"typescript": "^5.7.0",
 		"@earendil-works/pi-coding-agent": "0.84.2",
-		"@earendil-works/pi-ai": "*"
+		"@earendil-works/pi-ai": "*",
+		"@earendil-works/pi-tui": "*"
 	},
 	"bin": {
 		"seat": "./src/cli/main.ts"
@@ -54,6 +55,7 @@
 	],
 	"peerDependencies": {
 		"@earendil-works/pi-ai": "*",
-		"@earendil-works/pi-coding-agent": "*"
+		"@earendil-works/pi-coding-agent": "*",
+		"@earendil-works/pi-tui": "*"
 	}
 }

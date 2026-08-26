@@ -151,6 +151,8 @@ The view SHALL let the user move a selection between accounts with `↑`/`↓` (
 
 Switching from the view SHALL NOT refetch usage——liveness 是 store 的事實，不是計量結果的事實；重讀 store 就足以讓點移位。Walk order SHALL NOT be re-sorted in place（重排會把區塊從游標底下抽走），下一次 refresh 或重開才收斂。WHERE the target provider has an env pin, the view SHALL show [AC-016](#req-003-global-default-selection) 的 pin notice inline——pin 不可變，點不會動，那列文字是使用者唯一的回饋。
 
+Key recognition SHALL go through pi-tui's `matchesKey`, never through literal escape-sequence comparison：Pi 協商 Kitty keyboard protocol（見 [architecture.md §DEC-010](../architecture.md#dec-010-key-辨識一律走-pi-tui-的-matcheskey)），協商成功的終端上 esc 與 enter 以 CSI-u 抵達。游標 SHALL always point at an existing account，包含 walk 中途抛錯、帳號清單變短的情況。
+
 Destructive operations (`rm`, `login`) SHALL NOT be reachable from the view：它們需要巳狀對話框，而巳狀 `ctx.ui.custom()` 漏帶 `{ overlay: true }` 會讓 base component 的 promise 永不 resolve（見 `pi.md` extension gotchas）。`use` 非破壞性且可逆，不需確認。
 
 | AC | Given | When | Then |
@@ -158,6 +160,8 @@ Destructive operations (`rm`, `login`) SHALL NOT be reachable from the view：�
 | AC-018 | TUI session | `/seat`、`/seat status` 或 `/seat usage` | view 開啟並渲染 usage bars，default/pin 狀態出現在對應 provider 的 section header；`esc` 與 `q` 都關閉 view |
 | AC-019 | 非 TUI session（RPC / `pi -p`） | `/seat status` | 文字輸出，不開 component，不 hang |
 | AC-023 | view 已載入，provider 有多個帳號 | `↓` 移到另一個帳號後按 `enter` | store default 更新為該帳號；section header 與 live dot 隨之更新；**零新增 usage 請求**；區塊不改排序。Pinned session：default 寫入但點不動，並顯示 pin notice |
+| AC-024 | 終端已協商 Kitty keyboard protocol（esc = `esc [ 27 u`、enter = `esc [ 13 u`） | 按下 esc / enter / ↑ / ↓ | 與 legacy encoding 行為完全相同。方向鍵不得被讀成 close |
+| AC-025 | reload 已串流出部分帳號後抛錯（例：auth.json 不是 regular file） | view 重畫 | 游標仍指向存活的帳號（同一帳號優先，否則 clamp）；marker 不得消失，`enter` 不得静默無效 |
 
 ## Non-functional
 

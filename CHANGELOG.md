@@ -6,6 +6,10 @@
 
 - The in-session `/seat` view is now interactive: `↑↓` (or `k`/`j`) move a selection between accounts and `enter` makes the highlighted one that provider's default, equivalent to `/seat use <provider>:<label>`. Selecting a built-in row runs `use <provider>:default`, handing the provider back to Pi's own login. Switching does not refetch usage — liveness is derived from the store, so re-reading it is enough to move the dot — and the blocks are not re-sorted under the cursor; the order settles on the next refresh. In a `PI_SEAT`-pinned session the pin is immutable, so the dot cannot move: the view states inline that the default was written and the session keeps its pin. Destructive operations (`rm`, `login`) stay out of the view and remain commands.
 
+### Fixed
+
+- The `/seat` view's keys are matched through pi-tui's `matchesKey` instead of literal escape-sequence comparison. Pi negotiates the Kitty keyboard protocol (flags 1|2|4) at startup, so on Kitty, Ghostty, or WezTerm `esc` arrives as `esc [ 27 u` and `enter` as `esc [ 13 u`: the previous comparison meant `esc` did not close the view on those terminals — a latent bug since the view shipped — and would have made the new `enter` inert there. tmux does not negotiate the protocol, which is why the TUI smoke never saw it; the regression test asserts both encodings.
+
 ### Changed
 
 - Usage reports (`seat`, `seat usage`, and the in-session `/seat` view) now group accounts into one section per provider, each opened by a header naming that provider's effective selection (`ANTHROPIC · work (default)`) and a rule. A provider with nothing to meter still gets its header, so its selection state is never missing. The view's two-line top header is gone — that state now sits directly above the accounts it governs. `--json` output is unchanged.
