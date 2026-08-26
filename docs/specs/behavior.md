@@ -1,21 +1,23 @@
 ---
-summary: pi-seat v1 requirements — exclusive credential store, session env pin, fail-closed runtime overlay, usage CLI contract
+summary: pi-seat behavior contract — exclusive credential store, session env pin, fail-closed runtime overlay, usage CLI and in-session view; REQ/AC ids are the stable anchors cited by src and test
 read_when:
   - Implementing or changing any pi-seat store, extension, or CLI behavior
-  - Verifying an implementation against acceptance criteria
+  - Resolving a REQ-### or AC-### id cited in code, tests, or scripts
 ---
 
-# pi-seat v1 — Requirements
+# pi-seat — Behavior
 
 ## Summary
 
-把 seat 重寫為 Pi extension + TS CLI 的 monorepo：credential 存放於獨佔 store（不再共享 auth.json），支援 per-session 帳號固定（env pin），並完整保留 seat 的 usage 圖表與命名習慣。
+pi-seat 是 Pi extension + TS CLI 的 monorepo：credential 存放於獨佔 store（不共享 `auth.json`），支援 per-session 帳號固定（env pin），並保留 seat 的 usage 圖表與命名習慣。
 
-## Requirements
+Id policy：`REQ-###` 與 `AC-###` 是被 `src/`、`test/`、`scripts/` 直接引用的 stable anchors — append-only，永不 renumber、永不改指涉。技術決策（`DEC-###`）在 [architecture.md](../architecture.md)。
+
+## Store
 
 ### REQ-001: Exclusive credential store
 
-The system SHALL store named OAuth profiles for `anthropic` and `openai-codex` in an exclusive store file. The system SHALL never mutate `auth.json`, and SHALL never copy an `auth.json` credential into the store. Read-only access to `auth.json` is limited to exactly one enumerated use: the built-in usage snapshot (REQ-006); the snapshot content SHALL never be persisted into `seat.json`. The second enumerated use — the migration equality comparison of the retired REQ-008 — was removed with the migration subsystem, so the credential-file read surface has narrowed to the snapshot alone.
+The system SHALL store named OAuth profiles for `anthropic` and `openai-codex` in an exclusive store file. The system SHALL never mutate `auth.json`, and SHALL never copy an `auth.json` credential into the store. Read-only access to `auth.json` is limited to exactly one enumerated use: the built-in usage snapshot ([REQ-006](#req-006-usage-meters-in-the-cli)); the snapshot content SHALL never be persisted into `seat.json`.
 
 store 路徑：`$PI_CODING_AGENT_DIR/seat.json`（未設 env 時為 `~/.pi/agent/seat.json`），權限 0600，atomic write，cross-process file lock。每個 named profile 持有獨立的 OAuth grant——credential 永不與 auth.json 複製共享，因為 Anthropic refresh token 是 single-use，共享 grant 必然導致 double-spend。
 
@@ -23,6 +25,32 @@ store 路徑：`$PI_CODING_AGENT_DIR/seat.json`（未設 env 時為 `~/.pi/agent
 |---|---|---|---|
 | AC-001 | 任一 seat 操作（login/use/rm/rename/usage） | 操作完成 | `auth.json` byte-identical 於操作前（no-write assertion） |
 | AC-002 | store 檔不存在 | 首次寫入 | 檔案以 0600 建立；讀取端拒絕 symlink |
+
+### REQ-005: Single-flight refresh
+
+All token refreshes — from the extension or the CLI — SHALL go through a locked store update: acquire lock, re-read, refresh only if still expired, write back, release. The system SHALL never issue two concurrent refresh requests for the same grant.
+
+Lost-response semantics：refresh 已 dispatch 但 response 遺失（timeout、crash）視為暫時性失敗，store 保留舊 credential；下一次嘗試重送同一 token。若 server 端已 commit rotation，重送得到 `invalid_grant`，流入 [REQ-004](#req-004-fail-closed-runtime-application) 的持久性 fail-closed，需重新 login。rotated token 從未被本地收到，此路徑下 grant 本已不可恢復——重送不會損害任何仍持有的 credential。（審查時提出的持久化 `refreshing` 狀態機被論證為同終態且多出誤鎖路徑，否決。）
+
+| AC | Given | When | Then |
+|---|---|---|---|
+| AC-009 | 兩個 OS process 同時對同一過期 credential 觸發 refresh | 並發執行 | OAuth refresh endpoint 只被呼叫一次；兩邊最終讀到同一顆 rotated credential |
+
+### REQ-007: Named login
+
+`/seat login <selector>` SHALL mint a new OAuth grant through the provider's own login flow and store it under the label. Capturing an existing `auth.json` credential into the store is forbidden：在獨佔 store 架構下，捕捉共享 grant 正是必須禁止的操作（見 [§Retired](#retired) 的 `save`）。
+
+保留 alias 習慣：`-a <alias>` repeatable；`rm`、`rename`、alias resolution 語意與 Python seat 相同。
+
+Login 互動對齊 Pi 內建 `/login` 體驗：WHEN the provider flow yields an auth URL or device code, the extension SHALL attempt to open the system browser (best-effort, never fatal) and SHALL render the URL as a clickable (OSC 8) link; completion SHALL be reported with an explicit success or failure notification naming the stored label.
+
+| AC | Given | When | Then |
+|---|---|---|---|
+| AC-012 | `/seat login work` 完成 OAuth | 登入成功 | store 新增 work profile；auth.json 未變 |
+| AC-013 | label 與既有 profile 重名 | login | 確認後才覆蓋（destructive confirm） |
+| AC-021 | login flow 發出 auth_url / device_code 事件 | 事件抵達 | browser opener 被呼叫恰一次（失敗不中斷 flow）；notify 含可點擊 URL；完成時有具名 success/failure 訊息 |
+
+## Selection & runtime
 
 ### REQ-002: Session-scoped pin via env var
 
@@ -37,10 +65,13 @@ Selector grammar（所有接受 selector 的指令與 `PI_SEAT` 共用）：
 5. malformed、unknown provider、duplicate provider、不存在的 label——一律於 session startup 明確報錯並 fail-closed，絕不部分套用。
 6. env 只在 extension init 讀一次；alias 於 init 一次解析為 label，之後不重解析。解析後的 profile 若在 session 中被刪除，per-turn 套用時 fail-closed。
 
+Extension 載入對 store 是 read-only：pin 與 alias 解析都不寫入 `seat.json`，session start 永不變成 store mutation（AC-020，由 `scripts/smoke-extension.sh` 斷言）。
+
 | AC | Given | When | Then |
 |---|---|---|---|
 | AC-003 | 兩個 pi session，`PI_SEAT=work` 與 `PI_SEAT=personal` | 同時運行 | 各自以指定帳號發請求，互不影響，store default 不變 |
 | AC-004 | `PI_SEAT=nosuch`（不存在的 label）或 malformed selector | session 啟動 | 該 provider fail-closed（turn 中止並報錯），絕不靜默改用其他帳號 |
+| AC-020 | 任意環境（store 檔與相鄰檔案存在與否皆同） | extension 載入 | 不發生任何 store 寫入；`seat.json` 不因載入而建立或改動 |
 
 ### REQ-003: Global default selection
 
@@ -66,15 +97,15 @@ fail-closed 狀態只存在記憶體，不落盤：暫時性失敗（網路抖�
 | AC-007 | refresh 失敗（模擬 invalid_grant） | turn 開始 | turn 中止並顯示原因；store 內 credential 未被刪除 |
 | AC-008 | overlay 流程任一步 throw（含 sentinel 安裝自身） | turn 開始 | turn 先被 abort，provider request 零次發出 |
 
-### REQ-005: Single-flight refresh
+### REQ-009: Codex connection invalidation
 
-All token refreshes — from the extension or the CLI — SHALL go through a locked store update: acquire lock, re-read, refresh only if still expired, write back, release. The system SHALL never issue two concurrent refresh requests for the same grant.
-
-Lost-response semantics：refresh 已 dispatch 但 response 遺失（timeout、crash）視為暫時性失敗，store 保留舊 credential；下一次嘗試重送同一 token。若 server 端已 commit rotation，重送得到 `invalid_grant`，流入 REQ-004 的持久性 fail-closed，需重新 login。rotated token 從未被本地收到，此路徑下 grant 本已不可恢復——重送不會損害任何仍持有的 credential。
+WHEN the active openai-codex account changes, the extension SHALL invalidate live Codex WebSocket connections so no request rides a stale credential.
 
 | AC | Given | When | Then |
 |---|---|---|---|
-| AC-009 | 兩個 OS process 同時對同一過期 credential 觸發 refresh | 並發執行 | OAuth refresh endpoint 只被呼叫一次；兩邊最終讀到同一顆 rotated credential |
+| AC-015 | codex 帳號切換 | 切換完成 | 既有 WebSocket 連線被關閉（close 完成後才回報切換成功），下一請求以新 credential 建立 |
+
+## Usage
 
 ### REQ-006: Usage meters in the CLI
 
@@ -97,7 +128,7 @@ Primary output 只走 stdout；diagnostics 與 prompts 只走 stderr。Exit code
 
 `seat status --plain` 契約：Anthropic-only、每列恰四個 tab-separated 欄位、無 header；`active` 表示本 process 的有效 Anthropic named selection（pin 優先於 default）；built-in login 時無 active row。Provider-aware 狀態由 human-readable status 與 `--json` 提供。
 
-The CLI MAY refresh an expired stored credential on demand through the REQ-005 path — dormant profile 的 usage 不再因 access token 過期而缺席。auth.json 的內建登入 credential 過期時，CLI SHALL NOT refresh it（那是 Pi 的 grant），僅提示。
+The CLI MAY refresh an expired stored credential on demand through the [REQ-005](#req-005-single-flight-refresh) path — dormant profile 的 usage 不再因 access token 過期而缺席。auth.json 的內建登入 credential 過期時，CLI SHALL NOT refresh it（那是 Pi 的 grant），僅提示。
 
 | AC | Given | When | Then |
 |---|---|---|---|
@@ -105,50 +136,11 @@ The CLI MAY refresh an expired stored credential on demand through the REQ-005 p
 | AC-011a | 終端寬度 2–200 掃描 | 渲染任何畫面 | 每列不溢出，且與 Python golden fixtures 完全一致 |
 | AC-011b | 終端寬度 ≥ 40 | 渲染任何畫面 | account name、meter label、percent 必須保留；截斷帶 ellipsis |
 
-### REQ-007: Named login replaces `save`
-
-`/seat login <selector>` SHALL mint a new OAuth grant through the provider's own login flow and store it under the label. The `save` command（捕捉 auth.json 現有 credential）is retired：在獨佔 store 架構下，捕捉共享 grant 正是必須禁止的操作。
-
-保留 alias 習慣：`-a <alias>` repeatable；`rm`、`rename`、alias resolution 語意與 Python seat 相同。
-
-Login 互動對齊 Pi 內建 `/login` 體驗：WHEN the provider flow yields an auth URL or device code, the extension SHALL attempt to open the system browser (best-effort, never fatal) and SHALL render the URL as a clickable (OSC 8) link; completion SHALL be reported with an explicit success or failure notification naming the stored label.
-
-| AC | Given | When | Then |
-|---|---|---|---|
-| AC-012 | `/seat login work` 完成 OAuth | 登入成功 | store 新增 work profile；auth.json 未變 |
-| AC-013 | label 與既有 profile 重名 | login | 確認後才覆蓋（destructive confirm） |
-| AC-021 | login flow 發出 auth_url / device_code 事件 | 事件抵達 | browser opener 被呼叫恰一次（失敗不中斷 flow）；notify 含可點擊 URL；完成時有具名 success/failure 訊息 |
-
-### REQ-008: Migration from claude-profiles.json — RETIRED
-
-> Retired: the migration subsystem (`scripts/migrate-legacy.ts`, `src/store/migrate.ts`, and their tests) was removed after both operator machines completed migration — no other user ever had a `claude-profiles.json`. The clause is kept below so the absent code is not mistaken for an oversight and rebuilt.
-
-Migration runs only via the standalone operator script `scripts/migrate-legacy.ts` (bun; dry-run by default, `--apply` to execute). The extension SHALL NOT migrate automatically — legacy import is a one-machine, one-time operator action, not runtime behavior. IF `seat.json` does not exist AND `claude-profiles.json` does, the script SHALL import legacy profiles with these exclusion rules, and SHALL retain the legacy file untouched for rollback:
-
-1. 無條件排除 legacy `active` label 指向的 profile——Pi refresh 會 rotate token，byte-equality 認不出已 rotated 的 active lineage。
-2. 額外排除 refresh token 與 auth.json 當下 anthropic credential 相同的 profile。
-3. `active` 欄位缺失、指向不存在的 profile、或比對結果 ambiguous → migration fail-closed，不猜測匯入，提示逐帳號 `/seat login`。
-
-migration 後以訊息告知：被排除的帳號仍以 Pi 內建登入身分可用，要成為 named profile 請跑一次 `/seat login`。
-
-| AC | Given | When | Then |
-|---|---|---|---|
-| AC-014 (retired) | legacy fixture：`active` pointer 與 byte-equality 結果不一致 | `migrate-legacy.ts --apply` | 兩條排除規則各自生效；dormant 匯入；active lineage 未匯入；legacy 檔案未動（測試已隨 migration 子系統移除） |
-| AC-020 (retired) | 任意環境 | extension 載入 | 不發生任何 migration；`claude-profiles.json` 存在與否都不影響載入路徑（專屬測試已移除；「載入不寫 store」的 invariant 由 `scripts/smoke-extension.sh` 繼續斷言） |
-
-### REQ-009: Codex connection invalidation
-
-WHEN the active openai-codex account changes, the extension SHALL invalidate live Codex WebSocket connections so no request rides a stale credential.
-
-| AC | Given | When | Then |
-|---|---|---|---|
-| AC-015 | codex 帳號切換 | 切換完成 | 既有 WebSocket 連線被關閉（close 完成後才回報切換成功），下一請求以新 credential 建立 |
-
 ### REQ-010: In-session usage view
 
 WHEN `/seat` runs with no arguments, or `/seat status` or `/seat usage` runs, in a TUI session, the extension SHALL open an interactive usage view rendering the same bars as the CLI (all stored profiles + built-in + Codex) plus the current default/pin state, and SHALL close on `esc` or `q`. WHERE the session is not TUI (`ctx.mode !== "tui"`；RPC、print mode), the command SHALL fall back to text output instead of opening a component.
 
-渲染復用 `src/usage` 純模組；view 開啟期間的 refresh 仍走 REQ-005 路徑。
+渲染復用 `src/usage` 純模組；view 開啟期間的 refresh 仍走 [REQ-005](#req-005-single-flight-refresh) 路徑。
 
 | AC | Given | When | Then |
 |---|---|---|---|
@@ -160,12 +152,17 @@ WHEN `/seat` runs with no arguments, or `/seat status` or `/seat usage` runs, in
 - NFR-001: CLI 冷啟至 `--plain` 輸出 process-cold p95 ≤ 150ms（hyperfine 量測，repo 內提供 benchmark command；prompt segment 可用性；bun 執行）。
 - NFR-002: 自 pi-accounts（MIT）改作的程式碼保留 attribution（LICENSE / NOTICE）。
 
-## Retired from Python seat (by design)
+## Retired
 
-- `save`（見 REQ-007）。
-- Identity attribution（server 端歸屬查詢、`whoami` 的網路路徑）：獨佔 store 下 credential 的 owner 由 login 時的命名決定，無歸屬問題可解。`whoami` 保留為離線指令：報告 store default 與（若在 pi session 內）當前 pin。
+已移除的行為，記錄在此以免被誤認為疏漏而重建：
+
+- REQ-008 — claude-profiles.json migration：一次性 operator upgrade path，兩台 operator 機器完成 migration 後整個子系統（script、store module、測試）移除。不要重建自動或手動 migration。
+- AC-014 — REQ-008 的 exclusion-rule 驗收，隨 migration 子系統一併移除。
+- `save`（捕捉 auth.json 現有 credential 進 store）：獨佔 store 架構下，捕捉共享 grant 正是必須禁止的操作（見 [REQ-007](#req-007-named-login)）。
+- Identity attribution（server 端歸屬查詢、`whoami` 的網路路徑）：獨佔 store 下 credential 的 owner 由 login 時的命名決定，無歸屬問題可解。`whoami` 保留為離線指令。
 - Pi lock 相容邏輯（45s stale window 對 auth.json.lock）：不再碰 auth.json，改為 store 自己的 lock。
 
 ## Related
 
-- [plan.md](./plan.md) ← Technical decisions, change map, verification matrix
+- [architecture.md §Decisions](../architecture.md#decisions) ← DEC-001..007：本契約背後的技術決策（vendored pi-accounts、lock protocol、per-turn overlay）
+- [architecture.md §Lock protocol (DEC-003)](../architecture.md#dec-003-store-schema-v1-與-lock-protocol) ← REQ-001/REQ-005 的 store 安全性實作依據

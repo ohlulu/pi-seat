@@ -2,7 +2,7 @@
  * Locked atomic storage for seat.json — adapted from pi-accounts storage.ts
  * (MIT, Copyright (c) 2026 narumiruna; see NOTICE).
  *
- * Lock protocol (plan.md DEC-003) — every process MUST use identical settings:
+ * Lock protocol (docs/architecture.md DEC-003) — every process MUST use identical settings:
  * - `realpath: false` (default `realpath: true` ENOENTs when the target does
  *   not exist yet, so first-create would fail; Pi's own auth-storage does the same).
  * - Shared `stale` / `update` params and lock path across sync and async paths.

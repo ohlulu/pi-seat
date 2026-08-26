@@ -1,5 +1,5 @@
 /**
- * seat.json store schema v1 (plan.md DEC-003).
+ * seat.json store schema v1 (docs/architecture.md DEC-003).
  *
  * Shape:
  *   { version: 1, providers: { <id>: { default?: label, profiles: { label: credential }, aliases: { alias: label } } } }

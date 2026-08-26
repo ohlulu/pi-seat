@@ -12,7 +12,7 @@
  * an invalid_grant blocks the provider until a replacement login rotates the
  * stored credential. Other providers are unaffected.
  *
- * Runtime access is pinned (plan.md, T015): a structural cast of
+ * Runtime access is pinned (docs/architecture.md §Pi compatibility): a structural cast of
  * `ctx.modelRegistry.runtime` yields the active ModelRuntime; we feature-detect
  * setRuntimeApiKey/removeRuntimeApiKey and never construct a separate runtime.
  * Verified against Pi 0.84.2; missing methods mean an incompatible Pi and the

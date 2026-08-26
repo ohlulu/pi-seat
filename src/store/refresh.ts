@@ -7,7 +7,7 @@
  * call on purpose: that is what makes concurrent refreshes of the same grant
  * single-flight across processes (AC-009).
  *
- * Lost-response semantics (plan.md Review Dispositions, amended P0):
+ * Lost-response semantics (docs/specs/behavior.md REQ-005):
  * - Timeout / network failure → transient. The store keeps the old credential;
  *   the next attempt re-sends the same refresh token.
  * - `invalid_grant` → persistent. The server has rotated (or revoked) the grant
