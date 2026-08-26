@@ -18,8 +18,24 @@
 
 ```sh
 pi install npm:pi-seat    # 拡張 — Pi に /seat を追加
-bun add -g pi-seat        # seat CLI を PATH に配置
 ```
+
+インストールはこれだけです。`/seat` はすべてのコマンドをカバーします: `login`、`use`、`rm`、`rename`、`status`、`whoami`、`usage`。
+
+<details>
+<summary>任意: seat CLI</summary>
+
+拡張は CLI を一切参照しないため、`/seat` には構造上できないことのためだけに導入します — shell プロンプト用の `--plain` / `--json` 出力と、Pi セッションを起動せずに使用量を見ること。
+
+`pi install` はすでに `~/.pi/agent/npm/node_modules/.bin/seat` に実行可能なバイナリを配置済みで、そのディレクトリが `PATH` にないだけです。`PATH` 上のディレクトリにリンクしてください:
+
+```sh
+ln -sf ~/.pi/agent/npm/node_modules/.bin/seat /usr/local/bin/seat
+```
+
+`bun add -g pi-seat` でも動作しますが、同じパッケージをもう一度ダウンロードするため、更新すべきインストールが 2 つになります。
+
+</details>
 
 <details>
 <summary>ソースからインストールする場合</summary>
@@ -28,11 +44,11 @@ bun add -g pi-seat        # seat CLI を PATH に配置
 git clone https://github.com/ohlulu/pi-seat.git && cd pi-seat && bun install
 ```
 
-`~/.pi/agent/settings.json` の `packages` にリポジトリのパスを追加し、`PATH` 上に `seat` シムを作成します:
+`~/.pi/agent/settings.json` の `packages` にリポジトリのパスを追加します。任意の CLI を使う場合は、`PATH` 上に `seat` シムを作成します:
 
 ```sh
-printf '#!/bin/sh\nexec bun /path/to/pi-seat/src/cli/main.ts "$@"\n' > ~/.pi/agent/bin/seat
-chmod +x ~/.pi/agent/bin/seat
+printf '#!/bin/sh\nexec bun /path/to/pi-seat/src/cli/main.ts "$@"\n' > /usr/local/bin/seat
+chmod +x /usr/local/bin/seat
 ```
 
 </details>

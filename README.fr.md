@@ -18,8 +18,24 @@ Gestionnaire multi-comptes pour [Pi](https://github.com/badlogic/pi-mono) : basc
 
 ```sh
 pi install npm:pi-seat    # extension — ajoute /seat à Pi
-bun add -g pi-seat        # CLI seat dans votre PATH
 ```
+
+L'installation s'arrête là. `/seat` couvre toutes les commandes : `login`, `use`, `rm`, `rename`, `status`, `whoami`, `usage`.
+
+<details>
+<summary>Optionnel : la CLI seat</summary>
+
+L'extension n'importe rien de la CLI ; ne l'installez donc que pour ce que `/seat` ne peut structurellement pas faire — la sortie `--plain` / `--json` pour un segment de prompt shell, et la consultation de l'usage sans ouvrir de session Pi.
+
+`pi install` a déjà placé un exécutable fonctionnel dans `~/.pi/agent/npm/node_modules/.bin/seat` ; ce répertoire n'est simplement pas dans votre `PATH`. Créez un lien vers un répertoire qui, lui, y figure :
+
+```sh
+ln -sf ~/.pi/agent/npm/node_modules/.bin/seat /usr/local/bin/seat
+```
+
+`bun add -g pi-seat` fonctionne aussi, mais télécharge le même paquet une seconde fois et vous laisse deux installations à maintenir à jour.
+
+</details>
 
 <details>
 <summary>Ou depuis les sources</summary>
@@ -28,11 +44,11 @@ bun add -g pi-seat        # CLI seat dans votre PATH
 git clone https://github.com/ohlulu/pi-seat.git && cd pi-seat && bun install
 ```
 
-Ajoutez le chemin du dépôt à `packages` dans `~/.pi/agent/settings.json`, puis créez le shim `seat` dans votre `PATH` :
+Ajoutez le chemin du dépôt à `packages` dans `~/.pi/agent/settings.json`. Pour la CLI optionnelle, créez le shim `seat` dans votre `PATH` :
 
 ```sh
-printf '#!/bin/sh\nexec bun /path/to/pi-seat/src/cli/main.ts "$@"\n' > ~/.pi/agent/bin/seat
-chmod +x ~/.pi/agent/bin/seat
+printf '#!/bin/sh\nexec bun /path/to/pi-seat/src/cli/main.ts "$@"\n' > /usr/local/bin/seat
+chmod +x /usr/local/bin/seat
 ```
 
 </details>

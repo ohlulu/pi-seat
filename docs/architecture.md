@@ -74,8 +74,10 @@ Ownership fencing——lock compromised 後禁止 commit，失鎖狀態下寫入
 
 ### DEC-006: 部署形態
 
-- Choice: repo 常駐 `~/Developer/ohlulu/pi-seat`；本機 dogfooding 以 local package path 載入（settings.json packages 條目 + working-tree CLI shim）；對外發佈 npm `pi-seat`（`pi install npm:pi-seat` + `bun add -g pi-seat`），Pi 套件以 peerDependencies `*` 由 pi runtime 提供（同 pi-accounts pattern）。發佈程序見 [RELEASING.md](./RELEASING.md)。
-- History: 原判斷「不發 npm（個人工具，發佈成本無收益）」，後由使用者拍板改為發佈。
+- Choice: repo 常駐 `~/Developer/ohlulu/pi-seat`；本機 dogfooding 以 local package path 載入（settings.json packages 條目）；對外發佈 npm `pi-seat`（`pi install npm:pi-seat`），Pi 套件以 peerDependencies `*` 由 pi runtime 提供（同 pi-accounts pattern）。發佈程序見 [RELEASING.md](./RELEASING.md)。
+- **CLI 是選配，不是安裝的一部分**：extension 對 `src/cli/` 零 import（唯一的 `spawn` 在 `open-browser.ts`，是 OAuth 開瀏覽器），且功能面完全對等——login / use / rm / rename / status / whoami / usage 兩邊都有。CLI 只多兩件 extension 結構上做不到的事：`--plain` / `--json`（NFR-001 的 prompt segment 用途，`--plain` 與 `--json` 在 extension 裡一次都沒出現），以及不開 session 查額度。
+- 取得 CLI 的建議方式是 link `pi install` 已經放好的 `~/.pi/agent/npm/node_modules/.bin/seat`（實測存在且可執行，shebang `#!/usr/bin/env bun`），而不是 `bun add -g pi-seat`——後者會下載同一個套件的第二份拷貝，唯一產出只是一個落在 PATH 上的 symlink，之後兩份都要各自更新。Pi 不把自己的 `.bin` 整個加進 PATH 是對的：那裡還有 `acorn`、`jiti`、`yaml` 這些傳遞依賴的 bin，整包曝露會污染 shell。README 也不得假設 `~/.pi/agent/bin` 存在或在 PATH 上——那是 operator 自訂目錄，實測兩台機器的 PATH 設定就不一致。
+- History: 原判斷「不發 npm（個人工具，發佈成本無收益）」，後由使用者拍板改為發佈。README 原本把 `bun add -g pi-seat` 與 `pi install` 並列為必要步驟，2026-08 改為選配：對只在 pi session 裡用 `/seat` 的使用者，那一行是純粹多餘的。
 
 ### DEC-007: In-session usage view 復用 usage 純模組
 

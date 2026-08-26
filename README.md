@@ -18,8 +18,24 @@ Named multi-account manager for [Pi](https://github.com/badlogic/pi-mono) — sw
 
 ```sh
 pi install npm:pi-seat    # extension — adds /seat to Pi
-bun add -g pi-seat        # seat CLI on your PATH
 ```
+
+That is the whole install. `/seat` covers every command: `login`, `use`, `rm`, `rename`, `status`, `whoami`, `usage`.
+
+<details>
+<summary>Optional: the seat CLI</summary>
+
+The extension imports nothing from the CLI, so add one only for what `/seat` structurally cannot do — `--plain` / `--json` output for a shell prompt segment, and reading usage without starting a Pi session.
+
+`pi install` already placed a working executable at `~/.pi/agent/npm/node_modules/.bin/seat`; it is simply not on your `PATH`. Link it into a directory that is:
+
+```sh
+ln -sf ~/.pi/agent/npm/node_modules/.bin/seat /usr/local/bin/seat
+```
+
+`bun add -g pi-seat` also works, but it downloads the same package a second time and leaves you two installs to keep in sync.
+
+</details>
 
 <details>
 <summary>From source instead</summary>
@@ -28,11 +44,11 @@ bun add -g pi-seat        # seat CLI on your PATH
 git clone https://github.com/ohlulu/pi-seat.git && cd pi-seat && bun install
 ```
 
-Add the repo path to `packages` in `~/.pi/agent/settings.json`, and put a `seat` shim on your `PATH`:
+Add the repo path to `packages` in `~/.pi/agent/settings.json`. For the optional CLI, put a `seat` shim on your `PATH`:
 
 ```sh
-printf '#!/bin/sh\nexec bun /path/to/pi-seat/src/cli/main.ts "$@"\n' > ~/.pi/agent/bin/seat
-chmod +x ~/.pi/agent/bin/seat
+printf '#!/bin/sh\nexec bun /path/to/pi-seat/src/cli/main.ts "$@"\n' > /usr/local/bin/seat
+chmod +x /usr/local/bin/seat
 ```
 
 </details>

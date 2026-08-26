@@ -18,8 +18,24 @@
 
 ```sh
 pi install npm:pi-seat    # extension — 在 Pi 裡加入 /seat
-bun add -g pi-seat        # seat CLI 裝到 PATH
 ```
+
+這就是完整安裝。`/seat` 涵蓋所有指令：`login`、`use`、`rm`、`rename`、`status`、`whoami`、`usage`。
+
+<details>
+<summary>選配：seat CLI</summary>
+
+Extension 完全不依賴 CLI，所以只有需要 `/seat` 結構上做不到的事情時才裝——`--plain` / `--json` 輸出（給 shell prompt segment 用），以及不開 Pi session 就看額度。
+
+`pi install` 已經在 `~/.pi/agent/npm/node_modules/.bin/seat` 放了一個可用的執行檔，只是那個目錄不在 `PATH` 上。把它 link 到 `PATH` 上的目錄即可：
+
+```sh
+ln -sf ~/.pi/agent/npm/node_modules/.bin/seat /usr/local/bin/seat
+```
+
+`bun add -g pi-seat` 也可以，但它會把同一個套件再下載一份，之後你有兩份安裝要各自更新。
+
+</details>
 
 <details>
 <summary>或從原始碼安裝</summary>
@@ -28,11 +44,11 @@ bun add -g pi-seat        # seat CLI 裝到 PATH
 git clone https://github.com/ohlulu/pi-seat.git && cd pi-seat && bun install
 ```
 
-把 repo 路徑加進 `~/.pi/agent/settings.json` 的 `packages`，並在 `PATH` 上建立 `seat` shim：
+把 repo 路徑加進 `~/.pi/agent/settings.json` 的 `packages`。選配的 CLI 則在 `PATH` 上建立 `seat` shim：
 
 ```sh
-printf '#!/bin/sh\nexec bun /path/to/pi-seat/src/cli/main.ts "$@"\n' > ~/.pi/agent/bin/seat
-chmod +x ~/.pi/agent/bin/seat
+printf '#!/bin/sh\nexec bun /path/to/pi-seat/src/cli/main.ts "$@"\n' > /usr/local/bin/seat
+chmod +x /usr/local/bin/seat
 ```
 
 </details>
