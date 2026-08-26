@@ -11,7 +11,7 @@ read_when:
 
 pi-seat 是 Pi extension + TS CLI 的 monorepo：credential 存放於獨佔 store（不共享 `auth.json`），支援 per-session 帳號固定（env pin），並保留 seat 的 usage 圖表與命名習慣。
 
-Id policy：`REQ-###` 與 `AC-###` 是被 `src/`、`test/`、`scripts/` 直接引用的 stable anchors — append-only，永不 renumber、永不改指涉。技術決策（`DEC-###`）在 [architecture.md](../architecture.md)。
+Id policy：`REQ-###` 與 `AC-###` 是被 `src/`、`test/`、`scripts/` 直接引用的 stable anchors — append-only，永不 renumber、永不改指涉。技術決策（`DEC-###`）在 [architecture.md §Decisions](../architecture.md#decisions)。
 
 ## Store
 
@@ -65,13 +65,13 @@ Selector grammar（所有接受 selector 的指令與 `PI_SEAT` 共用）：
 5. malformed、unknown provider、duplicate provider、不存在的 label——一律於 session startup 明確報錯並 fail-closed，絕不部分套用。
 6. env 只在 extension init 讀一次；alias 於 init 一次解析為 label，之後不重解析。解析後的 profile 若在 session 中被刪除，per-turn 套用時 fail-closed。
 
-Extension 載入對 store 是 read-only：pin 與 alias 解析都不寫入 `seat.json`，session start 永不變成 store mutation（AC-020，由 `scripts/smoke-extension.sh` 斷言）。
+Extension 載入對 store 的保證（AC-020）：載入永不建立 `seat.json`、永不改變 credential 內容、也永不執行任何 legacy 匯入——這條規則是 load-time 匯入專屬測試得以刪除的依據，由 `scripts/smoke-extension.sh` 對 store 缺席與 store 既存兩種情境斷言。載入不是字面上 side-effect-free：init 經由 store 的 read path 解析 pin，該路徑會短暫取得 file lock，並把既有檔案的 mode 重新收斂到 0600（刻意的 defense in depth——每次讀取都把持有 OAuth credential 的檔案硬化回 0600）。
 
 | AC | Given | When | Then |
 |---|---|---|---|
 | AC-003 | 兩個 pi session，`PI_SEAT=work` 與 `PI_SEAT=personal` | 同時運行 | 各自以指定帳號發請求，互不影響，store default 不變 |
 | AC-004 | `PI_SEAT=nosuch`（不存在的 label）或 malformed selector | session 啟動 | 該 provider fail-closed（turn 中止並報錯），絕不靜默改用其他帳號 |
-| AC-020 | 任意環境（store 檔與相鄰檔案存在與否皆同） | extension 載入 | 不發生任何 store 寫入；`seat.json` 不因載入而建立或改動 |
+| AC-020 | 任意環境（store 檔與相鄰檔案存在與否皆同） | extension 載入 | `seat.json` 不被建立；既有 store 的內容 byte-identical；無任何匯入。允許的 side effects 僅限 read path 的 transient lock 與 0600 mode 硬化 |
 
 ### REQ-003: Global default selection
 

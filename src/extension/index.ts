@@ -1,10 +1,12 @@
 /**
  * pi-seat extension entry (REQ-002, REQ-004).
  *
- * Loading is read-only with respect to the store: the PI_SEAT pin is parsed
- * once at setup (with aliases resolved to labels) and is immutable for the
- * session (DEC-002). Loading never writes to the store (AC-020): a session
- * start must never turn into a store mutation.
+ * Loading never creates the store, never changes credential content, and
+ * never runs a legacy import (AC-020). It is NOT literally side-effect-free:
+ * the init-time read() takes a transient store lock and re-hardens an
+ * existing seat.json to mode 0600 — deliberate defense in depth on a
+ * credential file. The PI_SEAT pin is parsed once at setup (with aliases
+ * resolved to labels) and is immutable for the session (DEC-002).
  *
  * Fail-closed wiring (AC-004): any PI_SEAT error — malformed, unknown
  * provider, duplicate provider, unknown label — records a startup error that

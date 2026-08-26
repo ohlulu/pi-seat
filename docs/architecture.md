@@ -8,7 +8,7 @@ read_when:
 
 # pi-seat — Architecture
 
-Id policy：`DEC-###` 是被 `src/` 與 `test/` 直接引用的 stable anchors — append-only，永不 renumber。行為契約（REQ / AC）在 [specs/behavior.md](./specs/behavior.md)。
+Id policy：`DEC-###` 是被 `src/` 與 `test/` 直接引用的 stable anchors — append-only，永不 renumber。行為契約（REQ / AC）在 [specs/behavior.md §Summary](./specs/behavior.md#summary)。
 
 ## Module layout
 
@@ -86,5 +86,7 @@ Ownership fencing——lock compromised 後禁止 commit，失鎖狀態下寫入
 
 ## Related
 
-- [specs/behavior.md](./specs/behavior.md) ← 行為契約：每個 DEC 的 Satisfies 指向這裡的 REQ / AC
-- [RELEASING.md](./RELEASING.md) ← DEC-006 部署形態的發佈程序
+- [specs/behavior.md §Store](./specs/behavior.md#store) ← store、refresh、login 的行為契約（DEC-001/003/005 的 Satisfies 對象）
+- [specs/behavior.md §Selection & runtime](./specs/behavior.md#selection--runtime) ← pin、default、fail-closed overlay、Codex invalidation 的行為契約（DEC-002 與 per-turn lifecycle）
+- [specs/behavior.md §Usage](./specs/behavior.md#usage) ← usage CLI 與 in-session view 的行為契約（DEC-004/007）
+- [RELEASING.md §Facts](./RELEASING.md#facts) ← DEC-006 部署形態對應的發佈 facts 與程序
