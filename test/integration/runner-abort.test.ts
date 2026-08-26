@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -14,6 +14,12 @@ import { join } from "node:path";
  */
 
 const EXTENSION = new URL("../../src/extension/index.ts", import.meta.url).pathname;
+
+// Hermetic pi resolution: the devDependency @earendil-works/pi-coding-agent
+// ships node_modules/.bin/pi, so CI runners without a global pi still work.
+// Fall back to $PATH pi for environments running tests without bun install.
+const LOCAL_PI = new URL("../../node_modules/.bin/pi", import.meta.url).pathname;
+const PI_BIN = existsSync(LOCAL_PI) ? LOCAL_PI : "pi";
 
 let server: ReturnType<typeof Bun.serve>;
 let providerHits = 0;
@@ -84,7 +90,7 @@ interface PiRun {
 
 async function runPiTurn(sandbox: string, extraEnv: Record<string, string>): Promise<PiRun> {
 	const proc = Bun.spawn(
-		["pi", "--mode", "rpc", "-ne", "-e", EXTENSION, "--no-session", "--model", "mockai/mock-1"],
+		[PI_BIN, "--mode", "rpc", "-ne", "-e", EXTENSION, "--no-session", "--model", "mockai/mock-1"],
 		{
 			env: { ...process.env, PI_CODING_AGENT_DIR: sandbox, ...extraEnv },
 			stdin: "pipe",
