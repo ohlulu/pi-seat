@@ -31,5 +31,5 @@ notes:
 
 ## Deviations
 
-- **No CI publisher.** The repo has no release workflow; the GitHub Release is created locally with `gh release create <version>` using the matching CHANGELOG section as body, immediately after the tag push. Reason: single-maintainer repo, no CI infrastructure yet.
-- **npm publish follows the tag.** `npm publish` runs locally after the tag and GitHub Release (release-flow excludes npm publishing from its scope; this repo publishes to npm as `pi-seat` so `pi install npm:pi-seat` works). Publish failure is retryable without moving the tag.
+- **CI also publishes to npm.** `.github/workflows/release.yml` runs on the tag push: gate → `npm publish` via OIDC trusted publishing (no token; trusted publisher configured on npmjs.com for ohlulu/pi-seat + release.yml) → GitHub Release from the matching CHANGELOG section. The local job ends at pushing the branch and tag. Reason: 2FA here is passkey-only (WebAuthn needs a browser), so local publish cannot be non-interactive.
+- **History**: 0.1.0 was published locally with a browser WebAuthn hop, before the workflow existed.
