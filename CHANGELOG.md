@@ -4,7 +4,11 @@
 
 ### Changed
 
-- Releases are now published by CI via npm trusted publishing (OIDC) on tag push; no functional changes.
+- Releases are now published by CI via npm trusted publishing (OIDC) on tag push.
+
+### Fixed
+
+- Lock-ownership fencing (DEC-003 "no commit after compromise") relied on inode identity, which filesystems that recycle inode numbers (ext4/tmpfs — i.e. Linux) defeat: a successor's recreated lock directory could reuse the captured inode and the fence silently passed. Ownership is now proven by an open handle on the acquired lock directory (the held fd pins the inode, so no recreated lock can reuse it) plus a link-count check that detects removal directly. 0.1.0 carries this latent bug on Linux; macOS (APFS never recycles inodes) is unaffected. The store is single-user local, so realistic impact is low.
 
 ## [0.1.0] - 2026-08-26
 
