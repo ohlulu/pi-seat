@@ -103,6 +103,19 @@ const NON_REMOVING_LOCKFILE_FS: LockfileFsAdapter = {
 	rmdirSync: (() => undefined) as unknown as typeof rmdirSync,
 };
 
+/**
+ * Proof of lock-directory ownership: an open handle on the very directory we
+ * acquired, plus its identity. Holding the fd keeps the inode alive in the
+ * kernel, so a successor's recreated lock can never be handed our inode — the
+ * inode-number snapshot this replaces was defeated by ext4/tmpfs inode
+ * recycling (APFS never recycles, which is why the fence only failed on Linux).
+ */
+type LockOwnership = {
+	fd: number;
+	dev: bigint;
+	ino: bigint;
+};
+
 export type StorageLockResult<T> = {
 	result: T;
 	/** When set, committed as the new file content before the lock is released. */
@@ -130,7 +143,7 @@ export class FileSeatStorageBackend implements SeatStorageBackend {
 	read<T>(reader: (current: string | undefined) => T): T {
 		if (!this.fileOrLockExistsForRead()) return reader(undefined);
 		let release: (() => void) | undefined;
-		let ownership: bigint | undefined;
+		let ownership: LockOwnership | undefined;
 		try {
 			release = this.acquireLockSyncWithRetry();
 			ownership = this.captureLockOwnership();
@@ -147,14 +160,14 @@ export class FileSeatStorageBackend implements SeatStorageBackend {
 	withLock<T>(mutator: (current: string | undefined) => StorageLockResult<T>): T {
 		this.ensureParentDirectory();
 		let release: (() => void) | undefined;
-		let ownership: bigint | undefined;
+		let ownership: LockOwnership | undefined;
 		try {
 			release = this.acquireLockSyncWithRetry();
 			ownership = this.captureLockOwnership();
 			const { result, next } = mutator(readPrivateRegularFileIfExists(this.filePath));
 			// DEC-003: no commit after compromise. If this writer was paused long
 			// enough for the lock to go stale and be taken over, the lock directory
-			// was recreated (new inode) — publishing now would overwrite the other
+			// was removed and recreated — publishing now would overwrite the other
 			// process's rotated credential. writePrivate fences the rename itself.
 			if (next !== undefined) this.writePrivate(next, ownership);
 			return result;
@@ -172,7 +185,7 @@ export class FileSeatStorageBackend implements SeatStorageBackend {
 	async withLockAsync<T>(mutator: (current: string | undefined) => Promise<StorageLockResult<T>>): Promise<T> {
 		this.ensureParentDirectory();
 		let release: (() => Promise<void>) | undefined;
-		let ownership: bigint | undefined;
+		let ownership: LockOwnership | undefined;
 		let compromisedError: Error | undefined;
 		const throwIfCompromised = () => {
 			if (compromisedError) throw compromisedError;
@@ -187,7 +200,7 @@ export class FileSeatStorageBackend implements SeatStorageBackend {
 			const { result, next } = await mutator(readPrivateRegularFileIfExists(this.filePath));
 			// DEC-003: never commit after compromise — the lock no longer excludes
 			// other writers, so this write could overwrite a rotated credential.
-			// onCompromised is the async detector; the synchronous inode check
+			// onCompromised is the async detector; the synchronous ownership check
 			// closes the window where the updater has not fired yet.
 			throwIfCompromised();
 			if (next !== undefined) this.writePrivate(next, ownership);
@@ -210,38 +223,70 @@ export class FileSeatStorageBackend implements SeatStorageBackend {
 	 * registered, so a refusing CLI process would otherwise delete the
 	 * successor's lock on the way out.
 	 */
-	private releaseOwnedLock<R>(release: (() => R) | undefined, ownership: bigint | undefined): R | undefined {
-		if (release === undefined) return undefined;
-		if (this.stillOwnsLock(ownership)) return release();
+	private releaseOwnedLock<R>(release: (() => R) | undefined, ownership: LockOwnership | undefined): R | undefined {
 		try {
-			lockfile.unlockSync(this.filePath, { fs: NON_REMOVING_LOCKFILE_FS, realpath: false });
-		} catch {
-			// proper-lockfile's own compromise detector may have dropped it already.
+			if (release === undefined) return undefined;
+			if (this.stillOwnsLock(ownership)) return release();
+			try {
+				lockfile.unlockSync(this.filePath, { fs: NON_REMOVING_LOCKFILE_FS, realpath: false });
+			} catch {
+				// proper-lockfile's own compromise detector may have dropped it already.
+			}
+			return undefined;
+		} finally {
+			if (ownership !== undefined) {
+				try {
+					closeSync(ownership.fd);
+				} catch {
+					// Closing a stale descriptor must never mask the release outcome.
+				}
+			}
 		}
-		return undefined;
 	}
 
-	/** Inode of our lock directory at acquisition; stale takeover recreates it. */
-	private captureLockOwnership(): bigint | undefined {
+	/**
+	 * Open handle on our lock directory at acquisition. Nothing is ever placed
+	 * INSIDE the directory: proper-lockfile releases with a non-recursive rmdir,
+	 * so any content would ENOTEMPTY the release and deadlock every later writer.
+	 */
+	private captureLockOwnership(): LockOwnership | undefined {
 		try {
-			return statSync(`${this.filePath}.lock`, { bigint: true }).ino;
+			const fd = openSync(
+				`${this.filePath}.lock`,
+				constants.O_RDONLY | (constants.O_DIRECTORY ?? 0) | (constants.O_NOFOLLOW ?? 0),
+			);
+			try {
+				const info = fstatSync(fd, { bigint: true });
+				return { fd, dev: info.dev, ino: info.ino };
+			} catch (error) {
+				closeSync(fd);
+				throw error;
+			}
 		} catch {
 			return undefined;
 		}
 	}
 
 	/** False whenever ownership cannot be PROVEN — unprovable means not ours. */
-	private stillOwnsLock(acquiredIno: bigint | undefined): boolean {
-		if (acquiredIno === undefined) return false;
+	private stillOwnsLock(ownership: LockOwnership | undefined): boolean {
+		if (ownership === undefined) return false;
 		try {
-			return statSync(`${this.filePath}.lock`, { bigint: true }).ino === acquiredIno;
+			// rmdir while we hold the fd drops the link count to zero: our lock was
+			// removed, no matter what occupies the path now. The held fd also pins
+			// the inode, so no successor's mkdir can be handed our inode number —
+			// this is what makes the identity comparison below filesystem-agnostic.
+			if (fstatSync(ownership.fd, { bigint: true }).nlink === 0n) return false;
+			// lstat, not stat: a link planted at the lock path must not be followed
+			// into something stat-identical to the directory we acquired.
+			const current = lstatSync(`${this.filePath}.lock`, { bigint: true });
+			return current.isDirectory() && current.dev === ownership.dev && current.ino === ownership.ino;
 		} catch {
 			return false;
 		}
 	}
 
-	private assertLockOwnership(acquiredIno: bigint | undefined): void {
-		if (!this.stillOwnsLock(acquiredIno)) {
+	private assertLockOwnership(ownership: LockOwnership | undefined): void {
+		if (!this.stillOwnsLock(ownership)) {
 			throw new Error(`seat store lock compromised for ${this.filePath}; commit refused to protect the other writer's rotation`);
 		}
 	}
@@ -289,7 +334,7 @@ export class FileSeatStorageBackend implements SeatStorageBackend {
 		}
 	}
 
-	private writePrivate(contents: string, ownership: bigint | undefined): void {
+	private writePrivate(contents: string, ownership: LockOwnership | undefined): void {
 		const tempPath = `${this.filePath}.${randomUUID()}.tmp`;
 		try {
 			// "wx" = O_EXCL: refuse to follow a pre-planted symlink or reuse a

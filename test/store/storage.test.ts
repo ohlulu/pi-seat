@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { emptyStore, type SeatCredential } from "../../src/store/schema.ts";
@@ -296,6 +296,35 @@ describe("DEC-003: no commit after compromise (T033, T040 regressions)", () => {
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}
+	});
+
+	test("inode recycling: fence trips even when the takeover's lock is stat-identical to ours", () => {
+		withTempDir((dir) => {
+			const path = join(dir, "seat.json");
+			new FileSeatStorageBackend(path).withLock(() => ({ result: undefined, next: storeWithProfile("rt-original") }));
+
+			const slowWriter = backend(dir);
+			expect(() =>
+				slowWriter.withLock(() => {
+					// ext4/tmpfs recycle inode numbers: after a stale takeover removes
+					// our lock dir, the successor's fresh mkdir can hand back the very
+					// inode we captured, so an inode-equality fence silently passes
+					// (the 0.1.x Linux CI failures — APFS never recycles, which is why
+					// macOS was always green). APFS cannot reproduce the reuse
+					// directly, so reproduce the identical stat picture instead: the
+					// dir the writer acquired is moved aside and the lock path made to
+					// resolve to it, i.e. stat() at the lock path reports exactly the
+					// captured (dev, ino) even though the lock occupying the path is
+					// no longer the acquisition the writer holds.
+					renameSync(`${path}.lock`, join(dir, "recycled-inode-lock"));
+					symlinkSync(join(dir, "recycled-inode-lock"), `${path}.lock`);
+					return { result: undefined, next: storeWithProfile("rt-stale-clobber") };
+				}),
+			).toThrow(/compromised/);
+
+			// The stale commit never landed.
+			expect(readFileSync(path, "utf8")).toBe(storeWithProfile("rt-original"));
+		});
 	});
 
 	test("read-only mutations never trip the ownership check", () => {
