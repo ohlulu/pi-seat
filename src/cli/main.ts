@@ -25,7 +25,7 @@ import { CommandError, loginProfile, removeSelection, renameProfile, runMutation
 import { adapterFor, createSeatProviderAdapters, toRefreshCallback, type SeatProviderAdapter } from "../extension/oauth.ts";
 import type { UsageFetchOptions } from "../usage/fetch.ts";
 import { planLayout } from "../usage/layout.ts";
-import { collectUsage, renderAccountBlock } from "../usage/report.ts";
+import { UsageReportRows, collectUsage, selectionSummary, usageSections } from "../usage/report.ts";
 import type { RenderOptions } from "../usage/render.ts";
 
 export const VERSION = "3.0.0";
@@ -312,7 +312,9 @@ async function cmdLogin(rest: string[], deps: CliDeps): Promise<number> {
 		loginProfile(store, selector, credential as never, aliases, { confirmedOverwrite }),
 	);
 	if (result.action !== "stored") throw new CommandError("login raced another mutation; try again");
-	deps.io.err(`seat: stored ${result.provider} profile "${result.label}"${result.overwrote ? " (overwrote previous grant)" : ""}`);
+	deps.io.err(
+		`seat: login success — stored ${result.provider} profile "${result.label}"${result.overwrote ? " (overwrote previous grant)" : ""}`,
+	);
 	return EXIT_OK;
 }
 
@@ -349,8 +351,7 @@ function cmdStatus(rest: string[], deps: CliDeps): number {
 	for (const provider of PROVIDER_IDS) {
 		const section = store.providers[provider];
 		const selection = resolveSelection(store, provider, pins[provider]);
-		const effective = selection.source === "builtin" ? "Pi built-in login" : `${selection.label} (${selection.source})`;
-		deps.io.out(`${provider}: ${effective}`);
+		deps.io.out(`${provider}: ${selectionSummary(selection)}`);
 		for (const label of Object.keys(section?.profiles ?? {})) {
 			const akas = Object.keys(section?.aliases ?? {})
 				.filter((a) => section?.aliases[a] === label)
@@ -391,6 +392,9 @@ async function cmdUsage(rest: string[], deps: CliDeps): Promise<number> {
 	const pins = reportingPins(store, deps);
 	const layout = planLayout(deps.termWidth);
 	const renderOptions: RenderOptions = { color: deps.color && !asJson, now: deps.now ?? (() => new Date()) };
+	// Provider sections come from the same snapshot as the walk, so a header can
+	// never describe a selection the bars underneath do not belong to.
+	const rows = new UsageReportRows(usageSections(store, pins), layout, renderOptions);
 
 	// REQ-006: every stored profile, the built-in login credential, and Codex.
 	// Both providers walk the same path (T039); the walk itself lives in
@@ -416,9 +420,10 @@ async function cmdUsage(rest: string[], deps: CliDeps): Promise<number> {
 					return;
 				}
 			}
-			if (!asJson) for (const line of ["", ...renderAccountBlock(layout, account, renderOptions)]) deps.io.out(line);
+			if (!asJson) for (const line of rows.account(account)) deps.io.out(line);
 		},
 	);
+	if (!asJson) for (const line of rows.rest()) deps.io.out(line);
 
 	if (asJson) {
 		const json: Record<string, unknown> = {};

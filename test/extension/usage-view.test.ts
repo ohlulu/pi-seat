@@ -160,16 +160,17 @@ function makeView(
 }
 
 describe("AC-018: the view renders the meters plus default/pin state", () => {
-	test("header names the effective selection; every stored profile gets a bar block", async () => {
+	test("section headers name the effective selection; every stored profile gets a bar block", async () => {
 		const h = makeView({ pins: { anthropic: "personal" }, auth: authPath });
 		h.view.start();
 		await h.settle();
 
 		const lines = h.view.render(100);
 		expect(lines[0]).toContain(VIEW_TITLE);
-		// REQ-010 header: default/pin state, using the same words as `seat status`.
-		expect(lines.join("\n")).toContain("anthropic: personal (pin)");
-		expect(lines.join("\n")).toContain("openai-codex: Pi built-in login");
+		// AC-022: default/pin state sits in each provider's section header, in the
+		// same words `seat status` uses.
+		expect(lines).toContain("ANTHROPIC · personal (pin)");
+		expect(lines).toContain("OPENAI-CODEX · Pi built-in login");
 
 		const text = lines.join("\n");
 		expect(text).toContain("work");
@@ -181,6 +182,26 @@ describe("AC-018: the view renders the meters plus default/pin state", () => {
 		expect(lines.some((l) => l.startsWith("● personal"))).toBe(true);
 		expect(lines.some((l) => l.startsWith("○ work (w)"))).toBe(true);
 		expect(lines.at(-1)).toContain(VIEW_LEGEND);
+	});
+
+	test("AC-022: the live account leads its section, and a provider with nothing to meter still gets a header", async () => {
+		// `work` is stored first but `personal` is the pin, so the pin must be the
+		// first account row under the anthropic header.
+		const h = makeView({ pins: { anthropic: "personal" }, auth: emptyAuthPath });
+		h.view.start();
+		await h.settle();
+
+		const lines = h.view.render(100);
+		const header = lines.indexOf("ANTHROPIC · personal (pin)");
+		expect(header).toBeGreaterThanOrEqual(0);
+		expect(lines.findIndex((l) => l.startsWith("● personal"))).toBeLessThan(
+			lines.findIndex((l) => l.startsWith("○ work")),
+		);
+		// The rule spans the block and stops inside the width budget.
+		expect(lines[header + 1]).toBe("─".repeat(99));
+		// No codex profile and no codex credential in auth.json: the section still
+		// reports what that provider is using.
+		expect(lines).toContain("OPENAI-CODEX · Pi built-in login");
 	});
 
 	test("a spinner row shows until the fetches land, then goes away", async () => {

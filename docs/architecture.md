@@ -84,9 +84,18 @@ Ownership fencing——lock compromised 後禁止 commit，失鎖狀態下寫入
 - Alternatives: statusbar 常駐元件（資訊密度不夠，且佔永久螢幕空間）。
 - Satisfies: REQ-010。
 
+### DEC-008: Report chrome 由一個 stateful row assembler 產出
+
+- Choice: provider section header 與帳號 block 的組裝集中在 `src/usage/report.ts` 的 `UsageReportRows`：`account()` 回傳一個帳號的列，順手補上它所開啟 section 的 header；`rest()` 補上沒有任何帳號開啟的 section。
+- Rationale: 兩個呼叫端的形狀不同——CLI 邊拿到邊印，沒辦法往前看哪一個帳號開啟了 section；view 每次 render 都拿到完整陣列。純函數只能服務後者，兩邊各自追蹤 “上一個 provider” 則是兩份會漂移的狀態機。一個只往前走的 cursor 兩者都能用：CLI 建一個並串流到底，view 每次 `buildRows` 建一個並一次走完（`buildRows` 本來就被 width cache 包著）。
+- Section 本身（`usageSections`）是 store snapshot 的純函數，與 fetch 路徑脫鉤：view 能在第一幀就畫出 header，且無帳號可測的 provider 不會因為沒有 account event 而消失。
+- Ordering 排在 walk 而不是輸出：`collectUsage` 先跑 effective selection，所以它也是第一個發出請求、第一個畫上畫面的帳號。
+- 寬度：section title 與 rule 是 DEC-007 口徑中的 “constant chrome”，rule 以 `layout.width - 1` 產生並走同一條 `emitLine` 剪裁；render probe 的 2–200 掃描涵蓋它們。
+- Satisfies: REQ-006, REQ-010。
+
 ## Related
 
 - [specs/behavior.md §Store](./specs/behavior.md#store) ← store、refresh、login 的行為契約（DEC-001/003/005 的 Satisfies 對象）
 - [specs/behavior.md §Selection & runtime](./specs/behavior.md#selection--runtime) ← pin、default、fail-closed overlay、Codex invalidation 的行為契約（DEC-002 與 per-turn lifecycle）
-- [specs/behavior.md §Usage](./specs/behavior.md#usage) ← usage CLI 與 in-session view 的行為契約（DEC-004/007）
+- [specs/behavior.md §Usage](./specs/behavior.md#usage) ← usage CLI 與 in-session view 的行為契約（DEC-004/007/008）
 - [RELEASING.md §Facts](./RELEASING.md#facts) ← DEC-006 部署形態對應的發佈 facts 與程序

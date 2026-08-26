@@ -24,13 +24,18 @@
  * can drive `render`/`handleInput` with no terminal.
  */
 
-import type { ProviderId, SeatStore } from "../store/schema.ts";
+import type { SeatStore } from "../store/schema.ts";
 import { decodeStore } from "../store/storage.ts";
-import { resolveSelection } from "../store/selector.ts";
-import { PROVIDER_IDS } from "../store/schema.ts";
 import { cellClip, stripAnsi, visibleCellWidth } from "../usage/cells.ts";
 import { planLayout } from "../usage/layout.ts";
-import { collectUsage, renderAccountBlock, type UsageAccount, type UsageCollectDeps } from "../usage/report.ts";
+import {
+	UsageReportRows,
+	collectUsage,
+	usageSections,
+	type UsageAccount,
+	type UsageCollectDeps,
+	type UsageSection,
+} from "../usage/report.ts";
 import {
 	BOLD,
 	DIM,
@@ -70,6 +75,7 @@ export interface UsageViewHooks {
 
 export class UsageView {
 	private accounts: UsageAccount[] = [];
+	private sections: UsageSection[] = [];
 	private store: SeatStore | undefined;
 	private loading = true;
 	private error: string | undefined;
@@ -126,10 +132,14 @@ export class UsageView {
 		this.loading = true;
 		this.error = undefined;
 		this.accounts = [];
+		this.sections = [];
 		this.retime();
 		try {
-			// Read once, so the header and the bars describe the same store.
+			// Read once, so the section headers and the bars describe the same store.
 			this.store = this.deps.backend.read((current) => decodeStore(current));
+			// Sections are pure over that snapshot, so the headers are on screen from
+			// the first frame instead of arriving with the slowest account.
+			this.sections = usageSections(this.store, this.deps.pins);
 			const accounts = await collectUsage({ ...this.deps, store: this.store }, (account) => {
 				// A reload started (or the view closed) while this fetch was in
 				// flight: its accounts belong to a screen nobody is looking at.
@@ -181,8 +191,6 @@ export class UsageView {
 		const row = (segments: readonly Segment[]): string => emitLine(segments, Math.max(0, width - 1), options.color);
 
 		const lines: string[] = [row([[VIEW_TITLE, BOLD]])];
-		for (const line of this.headerLines()) lines.push(row([["  ", undefined], [line, DIM]]));
-
 		if (this.loading) {
 			const spinner = SPINNER_FRAMES[this.frame % SPINNER_FRAMES.length] ?? "";
 			lines.push("", row([[`${spinner} ${LOADING_TEXT}`, DIM]]));
@@ -190,9 +198,12 @@ export class UsageView {
 		if (this.error !== undefined) {
 			lines.push("", row([[`seat: ${this.error}`, DIM]]));
 		}
-		for (const account of this.accounts) {
-			lines.push("", ...renderAccountBlock(layout, account, options));
-		}
+		// REQ-010's default/pin state lives in each provider's section header now,
+		// directly above the accounts that selection governs.
+		const rows = new UsageReportRows(this.sections, layout, options);
+		for (const account of this.accounts) lines.push(...rows.account(account));
+		lines.push(...rows.rest());
+
 		lines.push("", row([[VIEW_LEGEND, DIM]]));
 		return lines;
 	}
@@ -219,17 +230,6 @@ export class UsageView {
 			now: this.deps.now ?? (() => new Date()),
 			...(this.deps.timeZone !== undefined ? { timeZone: this.deps.timeZone } : {}),
 		};
-	}
-
-	/** The default/pin state REQ-010 asks the view to show alongside the bars. */
-	private headerLines(): string[] {
-		const store = this.store;
-		if (store === undefined) return this.error !== undefined ? [`store unreadable — ${this.error}`] : [];
-		return PROVIDER_IDS.map((provider: ProviderId) => {
-			const selection = resolveSelection(store, provider, this.deps.pins[provider]);
-			const detail = selection.source === "builtin" ? "Pi built-in login" : `${selection.label} (${selection.source})`;
-			return `${provider}: ${detail}`;
-		});
 	}
 }
 

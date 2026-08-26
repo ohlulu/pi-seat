@@ -12,6 +12,7 @@ export const BAR_FULL = "█";
 export const BAR_EMPTY = "░";
 export const DOT_LIVE = "●";
 export const DOT_DORMANT = "○";
+export const RULE = "─";
 
 export const BOLD = "\x1b[1m";
 export const DIM = "\x1b[2m";
@@ -111,6 +112,19 @@ export function accountLine(
 	if (aliases.length > 0) segments.push([` (${aliases.join(", ")})`, DIM]);
 	if (note) segments.push([` · ${note}`, DIM]);
 	return emitLine(segments, layout.width - 1, options.color);
+}
+
+/**
+ * A section title and the rule under it. The rule spans the same budget every
+ * other row is clipped to, so it marks the block's full width without being
+ * the one row that overflows.
+ */
+export function sectionLines(layout: Layout, title: string, options: RenderOptions): string[] {
+	const budget = Math.max(0, layout.width - 1);
+	return [
+		emitLine([[title, BOLD]], budget, options.color),
+		emitLine([[RULE.repeat(budget), DIM]], budget, options.color),
+	];
 }
 
 export function meterLine(

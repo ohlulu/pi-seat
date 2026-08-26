@@ -44,6 +44,8 @@ Lost-response semantics：refresh 已 dispatch 但 response 遺失（timeout、c
 
 Login 互動對齊 Pi 內建 `/login` 體驗：WHEN the provider flow yields an auth URL or device code, the extension SHALL attempt to open the system browser (best-effort, never fatal) and SHALL render the URL as a clickable (OSC 8) link; completion SHALL be reported with an explicit success or failure notification naming the stored label.
 
+成功通知 SHALL state success in words（`login success`）。`ctx.ui.notify(…, "info")` 在 TUI 渲染成一行 dim 小字，與登入過程中的 progress 通知外觀相同，文字本身是區別它們的唯一手段。CLI 的 stderr 訊息用同一句型。
+
 | AC | Given | When | Then |
 |---|---|---|---|
 | AC-012 | `/seat login work` 完成 OAuth | 登入成功 | store 新增 work profile；auth.json 未變 |
@@ -128,6 +130,8 @@ Primary output 只走 stdout；diagnostics 與 prompts 只走 stderr。Exit code
 
 `seat status --plain` 契約：Anthropic-only、每列恰四個 tab-separated 欄位、無 header；`active` 表示本 process 的有效 Anthropic named selection（pin 優先於 default）；built-in login 時無 active row。Provider-aware 狀態由 human-readable status 與 `--json` 提供。
 
+Report structure（human-readable usage 專用；`--json` 是機器契約，不帶任何 chrome）：帳號 SHALL be grouped into one section per provider, in `PROVIDER_IDS` order。每個 section 由一列 header（`ANTHROPIC · <effective selection>`）與一列 rule 開頭，header 使用與 `seat status` 相同的 selection 措辭（`<label> (pin|default)` 或 `Pi built-in login`）。Section SHALL be emitted for every provider, including one with no account to meter — 選擇狀態本身就是該 section 要傳達的資訊。Section 內，該 provider 的 effective selection SHALL be the first account；其餘帳號維持 store 順序，built-in snapshot 殿後。
+
 The CLI MAY refresh an expired stored credential on demand through the [REQ-005](#req-005-single-flight-refresh) path — dormant profile 的 usage 不再因 access token 過期而缺席。auth.json 的內建登入 credential 過期時，CLI SHALL NOT refresh it（那是 Pi 的 grant），僅提示。
 
 | AC | Given | When | Then |
@@ -135,16 +139,17 @@ The CLI MAY refresh an expired stored credential on demand through the [REQ-005]
 | AC-010 | 一個 dormant profile 的 access token 已過期 | `seat` | 該 profile 先被 refresh（走 lock），bar 正常渲染 |
 | AC-011a | 終端寬度 2–200 掃描 | 渲染任何畫面 | 每列不溢出，且與 Python golden fixtures 完全一致 |
 | AC-011b | 終端寬度 ≥ 40 | 渲染任何畫面 | account name、meter label、percent 必須保留；截斷帶 ellipsis |
+| AC-022 | 兩個 provider 各有 profile，anthropic 有 pin、codex 有 default，且 active 不是 store 的第一顆 | `seat` 或 `/seat` | 兩個 section header 依序出現並各自報出 effective selection；每個 section 的第一個帳號就是它的 effective selection；無帳號可測的 provider 仍然有 header；`--json` 輸出不含 section chrome |
 
 ### REQ-010: In-session usage view
 
 WHEN `/seat` runs with no arguments, or `/seat status` or `/seat usage` runs, in a TUI session, the extension SHALL open an interactive usage view rendering the same bars as the CLI (all stored profiles + built-in + Codex) plus the current default/pin state, and SHALL close on `esc` or `q`. WHERE the session is not TUI (`ctx.mode !== "tui"`；RPC、print mode), the command SHALL fall back to text output instead of opening a component.
 
-渲染復用 `src/usage` 純模組；view 開啟期間的 refresh 仍走 [REQ-005](#req-005-single-flight-refresh) 路徑。
+渲染復用 `src/usage` 純模組，含 [REQ-006](#req-006-usage-meters-in-the-cli) 的 report structure——default/pin 狀態就是每個 section header 的內容，不另立頂部 header。Section 是 store snapshot 的純函數，所以 header 在第一幀就到位，不等最慢的帳號。View 開啟期間的 refresh 仍走 [REQ-005](#req-005-single-flight-refresh) 路徑。
 
 | AC | Given | When | Then |
 |---|---|---|---|
-| AC-018 | TUI session | `/seat`、`/seat status` 或 `/seat usage` | view 開啟並渲染 usage bars 與 default/pin 狀態；`esc` 與 `q` 都關閉 view |
+| AC-018 | TUI session | `/seat`、`/seat status` 或 `/seat usage` | view 開啟並渲染 usage bars，default/pin 狀態出現在對應 provider 的 section header；`esc` 與 `q` 都關閉 view |
 | AC-019 | 非 TUI session（RPC / `pi -p`） | `/seat status` | 文字輸出，不開 component，不 hang |
 
 ## Non-functional
