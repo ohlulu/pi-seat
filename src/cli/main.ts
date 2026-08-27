@@ -34,8 +34,13 @@ import { adapterFor, createSeatProviderAdapters, toRefreshCallback, type SeatPro
 import type { UsageFetchOptions } from "../usage/fetch.ts";
 import { UsageReportRows, collectUsage, selectionSummary, usageSections } from "../usage/report.ts";
 import type { RenderOptions } from "../usage/render.ts";
+import pkg from "../../package.json" with { type: "json" };
 
-export const VERSION = "3.0.0";
+// Single source of truth: the manifest npm publishes and CI matches the tag
+// against. A hand-written copy here drifted from day one — it said 3.0.0 while
+// package.json said 1.0.0 — and nothing could catch it, because the only test
+// asserted the wrong value too.
+export const VERSION: string = pkg.version;
 const EXIT_OK = 0;
 const EXIT_FAIL = 1;
 const EXIT_USAGE = 2;

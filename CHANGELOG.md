@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- `seat --version` reported `3.0.0`. The CLI kept its own hand-written `VERSION` constant, unconnected to `package.json` — it has been wrong since the CLI was first written, when it said `3.0.0` against a manifest reading `1.0.0`, and it shipped that way in 0.1.0, 0.1.1 and 0.2.0. The constant now reads `package.json`, so the two cannot diverge. The existing test asserted `toContain("seat 3")`, which pinned the wrong value and would have failed on any correct one; it now asserts against the manifest.
+
 ## [0.2.0] - 2026-08-26
 
 ### Added

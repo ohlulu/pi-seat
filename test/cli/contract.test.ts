@@ -6,6 +6,7 @@ import { runCli, type CliDeps } from "../../src/cli/main.ts";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import pkg from "../../package.json" with { type: "json" };
 
 const FRESH = Date.now() + 3_600_000;
 
@@ -458,7 +459,10 @@ describe("stream separation", () => {
 		expect(await cli.run("--help")).toBe(0);
 		expect(await cli.run("--version")).toBe(0);
 		expect(cli.out.join("\n")).toContain("seat use <selector>");
-		expect(cli.out.join("\n")).toContain("seat 3");
+		// Bound to the manifest, not to a literal: the previous `toContain("seat 3")`
+		// pinned a version that never matched package.json, so it defended the bug
+		// instead of the contract.
+		expect(cli.out.join("\n")).toContain(`seat ${pkg.version}`);
 		expect(cli.errs).toEqual([]);
 	});
 });
