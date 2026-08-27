@@ -120,10 +120,19 @@ export default function seatExtension(pi: ExtensionAPI): void {
 			coordinator = new SeatRuntimeAuthCoordinator({ runtime, backend, adapters, pins });
 		}
 
-		await coordinator.syncTurn((reason) => {
-			ctx.abort();
-			notify(ctx, reason, "error");
-		});
+		// AC-031: only the provider this turn runs on may abort it. A seat profile
+		// that fails while idle is still blocked and sentinel-poisoned, and aborts
+		// the first turn that selects it.
+		await coordinator.syncTurn(
+			{
+				abort: (reason) => {
+					ctx.abort();
+					notify(ctx, reason, "error");
+				},
+				warn: (reason) => notify(ctx, reason, "error"),
+			},
+			ctx.model?.provider,
+		);
 	});
 }
 

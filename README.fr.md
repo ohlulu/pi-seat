@@ -7,7 +7,7 @@ Gestionnaire multi-comptes pour [Pi](https://github.com/badlogic/pi-mono) : basc
 - **Profils nommés** — `work`, `personal`, `team`… chacun détient son propre grant OAuth dans un store exclusif. Le `auth.json` de Pi n'est jamais modifié.
 - **Épinglage par session** — lancez deux sessions Pi sur deux comptes différents en même temps via la variable d'environnement `PI_SEAT`.
 - **Jauges d'utilisation** — barres d'utilisation sur 5 heures et hebdomadaires pour chaque profil, directement dans la CLI. La couleur traduit le rythme de consommation, pas le niveau : rouge lorsque le rythme actuel dépasse la limite avant la réinitialisation, jaune quand c'est juste, vert quand il reste de la marge.
-- **Fail-closed** — si une credential ne peut pas être rafraîchie et vérifiée, le tour est interrompu. Aucune requête ne part avec un compte périmé ou erroné.
+- **Fail-closed** — si une credential ne peut pas être rafraîchie et vérifiée, les tours de ce provider sont interrompus. Aucune requête ne part avec un compte périmé ou erroné, et un profil mort ne bloque jamais un tour qui tourne sur un autre provider.
 
 ## Prérequis
 

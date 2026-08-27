@@ -7,7 +7,7 @@
 - **命名 profile** — `work`、`personal`、`team`…每個 profile 持有獨立的 OAuth grant，存放在獨佔 store，永不寫入 Pi 的 `auth.json`。
 - **Session pin** — 透過 `PI_SEAT` 環境變數，同時開兩個 Pi session 各用不同帳號。
 - **用量圖表** — 每個 profile 的 5 小時與每週用量 bar，CLI 直接呈現。顏色看的是消耗速度而不是用量高低：照目前速度會在重置前超支就是紅色，接近超支是黃色，還有餘裕是綠色。
-- **Fail-closed** — credential 無法 refresh 並驗證時直接中止該 turn，絕不讓請求騎在過期或錯誤的帳號上。
+- **Fail-closed** — credential 無法 refresh 並驗證時，跑在該 provider 上的 turn 直接中止，絕不讓請求騎在過期或錯誤的帳號上；壞掉的 profile 也擋不住跑在其他 provider 上的 turn。
 
 ## 需求
 

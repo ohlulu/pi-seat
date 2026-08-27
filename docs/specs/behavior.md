@@ -97,12 +97,15 @@ Extension 載入對 store 的保證（AC-020）：載入永不建立 `seat.json`
 
 The extension SHALL apply the selected credential as a runtime provider overlay on every turn, following the sequence refresh → toAuth → apply → verify. IF any step fails — including sentinel installation itself — the extension SHALL abort that provider's turn first, then best-effort install a non-secret sentinel key. Abort SHALL never depend on the sentinel succeeding.
 
-fail-closed 狀態只存在記憶體，不落盤：暫時性失敗（網路抖動）下一個 turn 自動重試復原；持久性失敗（refresh token 死亡）持續擋住直到重新 login。其他 provider 不受影響。
+fail-closed 狀態只存在記憶體，不落盤：暫時性失敗（網路抖動）下一個 turn 自動重試復原；持久性失敗（refresh token 死亡）持續擋住直到重新 login。
+
+中止的範圍是「這個 turn 實際會用到的 provider」：兩個 provider 每個 turn 照樣同步、照樣安裝 sentinel、照樣記住 block，但只有 active model 所屬的 provider 失敗才 abort。壞掉的 anthropic profile 因此擋不住跑在 codex 或任何非 seat provider（cursor、google……）上的 turn——那條路本來就不需要這份 credential，而「額度沒了就換模型繼續做事」是這個設計要保住的逃生門。Active model 無法辨識時回到最保守的行為：任何失敗都 abort。
 
 | AC | Given | When | Then |
 |---|---|---|---|
 | AC-007 | refresh 失敗（模擬 invalid_grant） | turn 開始 | turn 中止並顯示原因；store 內 credential 未被刪除 |
 | AC-008 | overlay 流程任一步 throw（含 sentinel 安裝自身） | turn 開始 | turn 先被 abort，provider request 零次發出 |
+| AC-031 | anthropic profile 已死（invalid_grant） | turn 跑在非 anthropic 的 model 上 | turn 不中止、request 照發；anthropic 仍被 block 並裝上 sentinel，並以非致命訊息回報；下一個跑在 anthropic 上的 turn 才中止 |
 
 ### REQ-009: Codex connection invalidation
 

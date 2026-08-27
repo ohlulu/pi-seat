@@ -7,7 +7,7 @@ Gestor de múltiples cuentas para [Pi](https://github.com/badlogic/pi-mono): cam
 - **Perfiles con nombre** — `work`, `personal`, `team`… cada uno con su propio grant OAuth en un almacén exclusivo. El `auth.json` de Pi nunca se modifica.
 - **Fijación por sesión** — ejecuta dos sesiones de Pi con dos cuentas distintas a la vez mediante la variable de entorno `PI_SEAT`.
 - **Medidores de uso** — barras de uso de 5 horas y semanales para cada perfil, directamente en la CLI. El color refleja el ritmo de consumo, no el nivel: rojo cuando al ritmo actual se superará el límite antes de que se reinicie la ventana, amarillo cuando queda justo y verde cuando sobra margen.
-- **Fail-closed** — si una credencial no puede refrescarse y verificarse, el turno se aborta. Ninguna petición viaja con una cuenta obsoleta o equivocada.
+- **Fail-closed** — si una credencial no puede refrescarse y verificarse, se abortan los turnos de ese proveedor. Ninguna petición viaja con una cuenta obsoleta o equivocada, y un perfil muerto nunca bloquea un turno que corre en otro proveedor.
 
 ## Requisitos
 

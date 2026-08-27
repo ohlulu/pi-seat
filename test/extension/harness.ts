@@ -107,6 +107,8 @@ export interface Harness {
 	coordinator: SeatRuntimeAuthCoordinator;
 	counters: { refresh: number; toAuth: number };
 	aborts: string[];
+	/** Non-fatal failures: a provider this turn does not use failed closed. */
+	warnings: string[];
 	invalidations: number;
 }
 
@@ -122,7 +124,15 @@ export function makeHarness(config: HarnessConfig): Harness {
 	const runtime = new FakeRuntime();
 	const backend = seedBackend(config.sections);
 	const counters = { refresh: 0, toAuth: 0 };
-	const harness: Harness = { runtime, backend, coordinator: undefined as never, counters, aborts: [], invalidations: 0 };
+	const harness: Harness = {
+		runtime,
+		backend,
+		coordinator: undefined as never,
+		counters,
+		aborts: [],
+		warnings: [],
+		invalidations: 0,
+	};
 	harness.coordinator = new SeatRuntimeAuthCoordinator({
 		runtime,
 		backend,
@@ -143,12 +153,25 @@ export function makeHarness(config: HarnessConfig): Harness {
 	return harness;
 }
 
-/** One simulated turn: sync, then stream only if nothing aborted this turn. */
-export async function runTurn(h: Harness): Promise<void> {
+/**
+ * One simulated turn: sync, then stream only if nothing aborted this turn.
+ * `activeProvider` is the provider of the model this turn runs on; omitting it
+ * models a Pi build or state where the active model is unknown.
+ */
+export async function runTurn(h: Harness, activeProvider?: string): Promise<void> {
 	const before = h.aborts.length;
-	await h.coordinator.syncTurn((reason) => {
-		h.aborts.push(reason);
-		h.runtime.events.push("abort");
-	});
+	await h.coordinator.syncTurn(
+		{
+			abort: (reason) => {
+				h.aborts.push(reason);
+				h.runtime.events.push("abort");
+			},
+			warn: (reason) => {
+				h.warnings.push(reason);
+				h.runtime.events.push("warn");
+			},
+		},
+		activeProvider,
+	);
 	if (h.aborts.length === before) h.runtime.stream();
 }

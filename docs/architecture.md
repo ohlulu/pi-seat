@@ -16,7 +16,9 @@ Id policy：`DEC-###` 是被 `src/` 與 `test/` 直接引用的 stable anchors �
 
 ## Per-turn overlay lifecycle
 
-Pi 一次 agent loop 可有多個 turn，tool continuation 可能騎在過期或已切換的 credential 上——只在 `before_agent_start` sync（上游 pi-accounts 的做法）不滿足 [REQ-004](./specs/behavior.md#req-004-fail-closed-runtime-application)。本專案的 async `turn_start` handler 每個 turn 執行 selection → locked refresh → toAuth → overlay → verify；任一步失敗（含 sentinel 安裝自身）先無條件 `ctx.abort()`，再 best-effort 安裝 sentinel。
+Pi 一次 agent loop 可有多個 turn，tool continuation 可能騎在過期或已切換的 credential 上——只在 `before_agent_start` sync（上游 pi-accounts 的做法）不滿足 [REQ-004](./specs/behavior.md#req-004-fail-closed-runtime-application)。本專案的 async `turn_start` handler 每個 turn 執行 selection → locked refresh → toAuth → overlay → verify；任一步失敗（含 sentinel 安裝自身）先 `ctx.abort()`，再 best-effort 安裝 sentinel。
+
+Abort 的範圍綁在 `ctx.model?.provider`：兩個 provider 照樣每個 turn 同步（overlay 保溫、block 記錄、sentinel 安裝全部不變），但只有 active model 所屬的 provider 失敗才偷走這個 turn，其餘走非致命的 notify。這是 REQ-004 的範圍限定而非退讓：失敗的 provider 下一次被選中時的保證逐字不變，而 dead grant 不再擋住根本不需要它的 turn。`ctx.model` 無法辨識時退回「任何失敗都 abort」的保守默認。
 
 Selection resolution 是本專案唯一的新核心邏輯：`env pin > store default > Pi built-in`，pin（含 alias→label 解析）在 extension init 讀一次 `PI_SEAT`，天生 session-scoped。
 
