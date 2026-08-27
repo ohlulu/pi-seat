@@ -233,10 +233,87 @@ describe("provider isolation", () => {
 				throw new Error("boom");
 			},
 		});
-		const results = await h.coordinator.syncTurn((reason) => h.aborts.push(reason));
+		const results = await h.coordinator.syncTurn({
+			abort: (reason) => {
+				h.aborts.push(reason);
+			},
+			warn: (reason) => {
+				h.warnings.push(reason);
+			},
+		});
 		expect(results.find((r) => r.provider === "anthropic")?.status).toBe("aborted");
 		expect(results.find((r) => r.provider === "openai-codex")?.status).toBe("builtin");
 		// No codex override was ever installed (AC-006 for the unconfigured provider).
 		expect(h.runtime.keys.has("openai-codex")).toBe(false);
+	});
+});
+
+describe("AC-031: only the provider the turn runs on can abort it", () => {
+	let h: Harness;
+	beforeEach(() => {
+		h = makeHarness(cred("rt-dead", EXPIRED_EXPIRES), {
+			refresh: () => {
+				throw new Error("Token refresh failed: invalid_grant");
+			},
+		});
+	});
+
+	test("a turn on a non-seat provider survives a dead anthropic grant", async () => {
+		await runTurn(h, "cursor");
+		expect(h.aborts).toHaveLength(0);
+		expect(h.runtime.streamCalls).toBe(1);
+		// Still fail-closed for anthropic itself: reported, and the sentinel is installed.
+		expect(h.warnings).toHaveLength(1);
+		expect(h.warnings[0]).toContain("anthropic auth failed");
+		expect(h.runtime.keys.get("anthropic")).toBe(SEAT_SENTINEL_API_KEY);
+
+		// Switching back to the dead provider aborts, with no extra refresh attempt.
+		await runTurn(h, "anthropic");
+		expect(h.aborts).toHaveLength(1);
+		expect(h.runtime.streamCalls).toBe(1);
+		expect(h.counters.refresh).toBe(1);
+	});
+
+	test("a dead anthropic grant does not abort an openai-codex turn", async () => {
+		const results = await h.coordinator.syncTurn(
+			{
+				abort: (reason) => {
+					h.aborts.push(reason);
+				},
+				warn: (reason) => {
+					h.warnings.push(reason);
+				},
+			},
+			"openai-codex",
+		);
+		expect(h.aborts).toHaveLength(0);
+		expect(results.find((r) => r.provider === "anthropic")?.status).toBe("blocked");
+		expect(results.find((r) => r.provider === "openai-codex")?.status).toBe("builtin");
+	});
+
+	test("an unknown active model keeps the paranoid default", async () => {
+		await runTurn(h);
+		expect(h.aborts).toHaveLength(1);
+		expect(h.warnings).toHaveLength(0);
+		expect(h.runtime.streamCalls).toBe(0);
+	});
+
+	// T046: ctx.model is live agent state, the request rides a pre-turn_start
+	// snapshot. When they disagree, the turn we judged idle for this provider can
+	// be the turn that uses it — so surviving requires the sentinel to have landed.
+	test("sentinel install failure on an idle provider escalates to abort", async () => {
+		h.runtime.failSetFor = new Set([SEAT_SENTINEL_API_KEY]);
+		await runTurn(h, "cursor");
+		expect(h.aborts).toHaveLength(1);
+		expect(h.warnings).toHaveLength(0);
+		expect(h.runtime.streamCalls).toBe(0);
+	});
+
+	test("a runtime that does not retain the sentinel escalates to abort", async () => {
+		h.runtime.verifyReturnsWrongValue = true; // read-back disagrees with the poison
+		await runTurn(h, "cursor");
+		expect(h.aborts).toHaveLength(1);
+		expect(h.warnings).toHaveLength(0);
+		expect(h.runtime.streamCalls).toBe(0);
 	});
 });

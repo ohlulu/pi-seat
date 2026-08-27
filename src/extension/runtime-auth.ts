@@ -10,7 +10,8 @@
  *
  * Fail-closed state lives in memory only: transient failures retry next turn;
  * an invalid_grant blocks the provider until a replacement login rotates the
- * stored credential. Other providers are unaffected.
+ * stored credential. A failure only aborts turns that run on the failing
+ * provider — other providers keep their own overlay and their own turns.
  *
  * Runtime access is pinned (docs/architecture.md §Pi compatibility): a structural cast of
  * `ctx.modelRegistry.runtime` yields the active ModelRuntime; we feature-detect
@@ -59,7 +60,23 @@ export function getSeatRuntime(modelRegistry: unknown): SeatRuntime | undefined 
 export type TurnAuthResult =
 	| { provider: ProviderId; status: "builtin" }
 	| { provider: ProviderId; status: "applied"; label: string }
-	| { provider: ProviderId; status: "aborted"; reason: string };
+	/** Failed closed: `aborted` killed this turn, `blocked` poisoned an idle provider. */
+	| { provider: ProviderId; status: "aborted" | "blocked"; reason: string };
+
+/** How the caller surfaces a per-provider failure. */
+export interface TurnFailureHandlers {
+	/** Fail-closed abort, for the provider this turn runs on. */
+	abort: (reason: string) => void;
+	/** Non-fatal report, for a provider this turn does not touch. */
+	warn: (reason: string) => void;
+}
+
+/** What a failure does to the current turn, decided per provider. */
+export interface FailurePolicy {
+	/** True when a failure must abort the turn. */
+	fatal: boolean;
+	handlers: TurnFailureHandlers;
+}
 
 export interface CoordinatorOptions {
 	runtime: SeatRuntime;
@@ -105,16 +122,24 @@ export class SeatRuntimeAuthCoordinator {
 	/**
 	 * turn_start entry point: synchronize both providers. Each provider is
 	 * isolated — an abort on one never touches the other's overlay.
+	 *
+	 * `activeProvider` is the provider id of the model this turn runs on; only
+	 * its failure aborts the turn (AC-031), so a dead seat profile cannot block
+	 * work that needs no seat credential. Both providers still sync, so an idle
+	 * provider that fails is blocked and sentinel-poisoned before it goes live.
+	 * undefined means the active model is unknown — stay paranoid and abort on
+	 * any failure.
 	 */
-	async syncTurn(abort: (reason: string) => void): Promise<TurnAuthResult[]> {
+	async syncTurn(handlers: TurnFailureHandlers, activeProvider?: string): Promise<TurnAuthResult[]> {
 		const results: TurnAuthResult[] = [];
 		for (const provider of PROVIDER_IDS) {
-			results.push(await this.syncProvider(provider, abort));
+			const fatal = activeProvider === undefined || activeProvider === provider;
+			results.push(await this.syncProvider(provider, { fatal, handlers }));
 		}
 		return results;
 	}
 
-	async syncProvider(provider: ProviderId, abort: (reason: string) => void): Promise<TurnAuthResult> {
+	async syncProvider(provider: ProviderId, policy: FailurePolicy): Promise<TurnAuthResult> {
 		// Every credential this turn touched, so an abort reason cannot echo one
 		// of them (T037/T042). Grown as they appear: the stored one, the one the
 		// locked refresh actually sent, and the rotation it returned.
@@ -150,7 +175,7 @@ export class SeatRuntimeAuthCoordinator {
 					? store.providers[provider]?.profiles[label]?.refresh
 					: undefined;
 				if (currentRefresh === block.refresh) {
-					return this.failClosed(provider, abort, new Error(block.reason), secrets);
+					return await this.failClosed(provider, policy, new Error(block.reason), secrets);
 				}
 				delete this.blocked[provider]; // replacement login cleared it
 			}
@@ -199,27 +224,56 @@ export class SeatRuntimeAuthCoordinator {
 			this.appliedIdentity[provider] = identity;
 			return { provider, status: "applied", label };
 		} catch (error) {
-			return this.failClosed(provider, abort, error, secrets);
+			return await this.failClosed(provider, policy, error, secrets);
 		}
 	}
 
-	/** Abort FIRST, then best-effort sentinel. Sentinel failure changes nothing. */
-	private failClosed(
+	/**
+	 * Fatal: abort FIRST, then best-effort sentinel — sentinel failure changes
+	 * nothing. Non-fatal: the sentinel is the ONLY protection left, so it must
+	 * land before the turn is allowed to live, and a failure escalates to abort.
+	 *
+	 * Why the escalation exists (T046): `ctx.model` is live agent state, but the
+	 * request rides a config snapshot taken before `turn_start` (Pi 0.84.2,
+	 * agent-loop.js). Anything switching models inside the same `turn_start` — an
+	 * extension loaded before seat, an RPC client — makes the two disagree, and
+	 * the turn we judged idle for this provider can be the turn that calls it. A
+	 * landed sentinel makes that disagreement cost a 401; an unlanded one would
+	 * let the request ride whatever the overlay still held.
+	 */
+	private async failClosed(
 		provider: ProviderId,
-		abort: (reason: string) => void,
+		policy: FailurePolicy,
 		error: unknown,
 		secrets: readonly string[] = [],
-	): TurnAuthResult {
+	): Promise<TurnAuthResult> {
 		const reason = redactTokenText(errorMessage(error), secrets);
-		abort(`seat: ${provider} auth failed — ${reason}`);
-		try {
-			const applied = this.options.runtime.setRuntimeApiKey(provider, SEAT_SENTINEL_API_KEY);
-			if (applied instanceof Promise) applied.catch(() => undefined);
-			this.overlayActive[provider] = true;
-		} catch {
-			// Best-effort only; the abort already protects the turn.
+		const message = `seat: ${provider} auth failed — ${reason}`;
+
+		if (policy.fatal) {
+			policy.handlers.abort(message);
+			void this.installSentinel(provider); // never awaited: the abort stands alone
+			return { provider, status: "aborted", reason };
 		}
-		return { provider, status: "aborted", reason };
+
+		if (!(await this.installSentinel(provider))) {
+			policy.handlers.abort(message);
+			return { provider, status: "aborted", reason };
+		}
+		policy.handlers.warn(message);
+		return { provider, status: "blocked", reason };
+	}
+
+	/** Poison a provider's overlay. Reports whether it actually took effect. */
+	private async installSentinel(provider: ProviderId): Promise<boolean> {
+		try {
+			await this.options.runtime.setRuntimeApiKey(provider, SEAT_SENTINEL_API_KEY);
+			this.overlayActive[provider] = true;
+			await this.verifyApplied(provider, SEAT_SENTINEL_API_KEY);
+			return true;
+		} catch {
+			return false;
+		}
 	}
 
 	private async invalidateOnIdentityChange(provider: ProviderId, next: Identity): Promise<void> {
