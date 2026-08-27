@@ -7,25 +7,47 @@
  * cannot be misread as an anthropic one. No pin, no badge — the common
  * unpinned session renders zero seat chrome.
  *
- * An invalid PI_SEAT gets an error badge instead of nothing: with every
- * turn aborting (AC-004), an empty footer would read as a normal unpinned
- * session. Per-turn fail-closed (REQ-004) deliberately stays out — that is
- * transient per-provider health, not the session's pin identity.
+ * A startup problem gets a badge instead of nothing: with every turn
+ * aborting, an empty footer would read as a normal unpinned session. The two
+ * problems are distinct because they have different fixes — an invalid
+ * PI_SEAT is fixed in the environment, an unreadable store is fixed on disk.
+ * Per-turn fail-closed (REQ-004) stays out: that is transient per-provider
+ * health, not the session's pin identity.
  */
 import type { ProviderId } from "../store/schema.ts";
 
+/** Startup failures that replace the pin badge; see index.ts for their notices. */
+export type BadgeProblem = "pin-invalid" | "store-unreadable";
+
 export type PinBadge = { kind: "pin" | "error"; text: string };
 
-export function pinBadge(pins: Partial<Record<ProviderId, string>>, invalid: boolean): PinBadge | undefined {
-	if (invalid) return { kind: "error", text: "PI_SEAT invalid" };
+const PROBLEM_TEXT: Record<BadgeProblem, string> = {
+	"pin-invalid": "PI_SEAT invalid",
+	"store-unreadable": "seat store error",
+};
+
+/**
+ * Labels forbid ":" and "," but NOT "/", which is the slot delimiter — an
+ * anthropic-only label "a/b" would otherwise render exactly like the two-pin
+ * badge for "a" and "b". Escaped so every badge has one reading.
+ */
+function escapeSlot(label: string): string {
+	return label.replace(/\\/g, "\\\\").replace(/\//g, "\\/");
+}
+
+export function pinBadge(
+	pins: Partial<Record<ProviderId, string>>,
+	problem?: BadgeProblem | undefined,
+): PinBadge | undefined {
+	if (problem !== undefined) return { kind: "error", text: PROBLEM_TEXT[problem] };
 	const anthropic = pins["anthropic"];
 	const codex = pins["openai-codex"];
 	if (anthropic === undefined && codex === undefined) return undefined;
 	const slots =
 		anthropic !== undefined && codex !== undefined
-			? `${anthropic}/${codex}`
+			? `${escapeSlot(anthropic)}/${escapeSlot(codex)}`
 			: anthropic !== undefined
-				? anthropic
-				: `/${codex}`;
+				? escapeSlot(anthropic)
+				: `/${escapeSlot(codex as string)}`;
 	return { kind: "pin", text: `:${slots}:` };
 }

@@ -24,7 +24,7 @@ import { decodeStore } from "../store/storage.ts";
 import { resolvePins } from "../store/selector.ts";
 import { envUsageFetchOptions } from "../usage/fetch.ts";
 import { createSeatProviderAdapters } from "./oauth.ts";
-import { pinBadge } from "./pin-status.ts";
+import { pinBadge, type BadgeProblem } from "./pin-status.ts";
 import { SeatRuntimeAuthCoordinator, getSeatRuntime } from "./runtime-auth.ts";
 import { SEAT_COMMAND_DESCRIPTION, runSeatCommand } from "./seat-command.ts";
 
@@ -46,15 +46,30 @@ export default function seatExtension(pi: ExtensionAPI): void {
 
 	const startupNotices: string[] = [];
 	let startupError: string | undefined;
+	let problem: BadgeProblem | undefined;
 	let pins: Partial<Record<ProviderId, string>> = {};
 
 	// Init-time pin parse (DEC-002): read PI_SEAT once, resolve aliases once.
+	// The store read and the pin parse are reported separately: a corrupt
+	// seat.json is not a PI_SEAT problem and has a different fix, so blaming
+	// the env var would send the user to the wrong place.
 	const pinSpec = process.env["PI_SEAT"] ?? "";
+	let store: ReturnType<typeof decodeStore> | undefined;
 	try {
-		pins = resolvePins(backend.read((current) => decodeStore(current)), pinSpec);
+		store = backend.read((current) => decodeStore(current));
 	} catch (error) {
-		startupError = `seat: PI_SEAT is invalid — ${message(error)}. All seat-managed provider turns are aborted; fix PI_SEAT and restart.`;
+		problem = "store-unreadable";
+		startupError = `seat: the credential store could not be read — ${message(error)}. All seat-managed provider turns are aborted; repair or remove seat.json and restart.`;
 		startupNotices.push(startupError);
+	}
+	if (store !== undefined) {
+		try {
+			pins = resolvePins(store, pinSpec);
+		} catch (error) {
+			problem = "pin-invalid";
+			startupError = `seat: PI_SEAT is invalid — ${message(error)}. All seat-managed provider turns are aborted; fix PI_SEAT and restart.`;
+			startupNotices.push(startupError);
+		}
 	}
 
 	pi.registerCommand("seat", {
@@ -62,8 +77,8 @@ export default function seatExtension(pi: ExtensionAPI): void {
 		handler: async (args, ctx) => runSeatCommand(args, ctx, { backend, adapters, pins, authPath, fetchOptions }),
 	});
 
-	// AC-026: computed once — pins and startupError are immutable for the session.
-	const badge = pinBadge(pins, startupError !== undefined);
+	// AC-026: computed once — pins and the startup problem are immutable.
+	const badge = pinBadge(pins, problem);
 
 	let coordinator: SeatRuntimeAuthCoordinator | undefined;
 	let noticesFlushed = false;
@@ -72,11 +87,14 @@ export default function seatExtension(pi: ExtensionAPI): void {
 		// Re-applied on every session_start: /reload clears extension statuses.
 		// setStatus is a fire-and-forget request in RPC mode; the catch covers
 		// modes with no status surface (print).
-		if (badge) {
+		// hasUI covers TUI and RPC (which forwards setStatus to its client);
+		// print/json have no status surface. The catch is a backstop for a Pi
+		// build whose ctx.ui lacks either member.
+		if (badge && ctx.hasUI) {
 			try {
 				ctx.ui.setStatus("pi-seat", ctx.ui.theme.fg(badge.kind === "error" ? "error" : "accent", badge.text));
 			} catch {
-				// No footer in this mode; the badge is TUI/RPC chrome only.
+				// No status surface on this Pi build; the badge is chrome only.
 			}
 		}
 		if (noticesFlushed) return;
