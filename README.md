@@ -6,7 +6,7 @@ Named multi-account manager for [Pi](https://github.com/badlogic/pi-mono) — sw
 
 - **Named profiles** — `work`, `personal`, `team`… each holding its own OAuth grant in an exclusive store. Pi's own `auth.json` is never written.
 - **Session pinning** — run two Pi sessions on two different accounts at the same time via the `PI_SEAT` env var.
-- **Usage meters** — 5-hour and weekly usage bars for every profile, right in the CLI.
+- **Usage meters** — 5-hour and weekly usage bars for every profile, right in the CLI. Bars are coloured by burn rate, not level: red when the current pace projects past the limit before the window resets, yellow when it is close, green when there is room to spare.
 - **Fail-closed** — if a credential cannot be refreshed and verified, the turn aborts. No request ever rides a stale or wrong account.
 
 ## Requirements

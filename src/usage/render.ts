@@ -7,6 +7,7 @@
 
 import { cellClip, cellWidth, fit } from "./cells.ts";
 import { GAP, INDENT, LABEL_W, RESET_W_LONG, type Layout } from "./layout.ts";
+import { claudeLimitPeriodMs, evaluatePace } from "./pace.ts";
 
 export const BAR_FULL = "█";
 export const BAR_EMPTY = "░";
@@ -138,14 +139,43 @@ export function sectionLines(layout: Layout, title: string, options: RenderOptio
 	];
 }
 
+/**
+ * The bar color (REQ-011): the burn-rate verdict when the window supports one,
+ * the absolute level when it does not.
+ *
+ * Pace answers the question the percentage cannot — 39% of a weekly window is
+ * calm on day five and a blow-out on day two — so it outranks the level
+ * whenever it has something trustworthy to say. Without a window, early in
+ * one, or on a nearly-empty meter, `evaluatePace` says nothing and the old
+ * absolute thresholds take over unchanged.
+ */
+export function meterColor(percent: number, resetDt: Date | null, periodMs: number | null, now: Date): string {
+	switch (evaluatePace(percent, resetDt, periodMs, now)) {
+		case "behind":
+			return RED;
+		case "onTrack":
+			return YELLOW;
+		case "ahead":
+			return GREEN;
+		case null:
+			return percent < 70 ? GREEN : percent < 90 ? YELLOW : RED;
+	}
+}
+
+/**
+ * `periodMs` is the meter's reset-window length, which only the provider's
+ * renderer knows. Omitting it is not "unknown pace" by accident — it is how a
+ * caller with no window asks for plain level coloring.
+ */
 export function meterLine(
 	layout: Layout,
 	label: string,
 	percent: number,
 	resetDt: Date | null,
 	options: RenderOptions,
+	periodMs: number | null = null,
 ): string {
-	const color = percent < 70 ? GREEN : percent < 90 ? YELLOW : RED;
+	const color = meterColor(percent, resetDt, periodMs, options.now());
 	const filled = Math.max(0, Math.min(layout.barW, roundHalfEven((percent / 100) * layout.barW)));
 	const segments: Segment[] = [
 		[" ".repeat(INDENT), undefined],
@@ -226,7 +256,7 @@ export function renderClaudeUsage(layout: Layout, data: ClaudeUsage, options: Re
 			label = lim.group === "weekly" && layout.labelW >= LABEL_W ? `weekly ${model}` : model;
 		}
 		const resetDt = lim.resets_at ? new Date(lim.resets_at) : null;
-		lines.push(meterLine(layout, label, lim.percent ?? 0, resetDt, options));
+		lines.push(meterLine(layout, label, lim.percent ?? 0, resetDt, options, claudeLimitPeriodMs(lim)));
 	}
 	const extra = data.extra_usage;
 	if (extra?.is_enabled) {
@@ -264,7 +294,11 @@ export function renderCodexUsage(layout: Layout, data: CodexUsage, options: Rend
 		const win = rl[key];
 		if (!win) continue;
 		const resetDt = win.reset_at ? new Date(win.reset_at * 1000) : null;
-		lines.push(meterLine(layout, windowLabel(win.limit_window_seconds ?? 0), win.used_percent ?? 0, resetDt, options));
+		// Codex states its window length outright, so no inference is needed here.
+		const periodMs = win.limit_window_seconds ? win.limit_window_seconds * 1000 : null;
+		lines.push(
+			meterLine(layout, windowLabel(win.limit_window_seconds ?? 0), win.used_percent ?? 0, resetDt, options, periodMs),
+		);
 	}
 	const credits = data.rate_limit_reset_credits?.available_count;
 	if (credits) lines.push(detailLine(layout, "credits", String(credits), options));
