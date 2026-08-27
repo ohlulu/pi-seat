@@ -297,4 +297,23 @@ describe("AC-031: only the provider the turn runs on can abort it", () => {
 		expect(h.warnings).toHaveLength(0);
 		expect(h.runtime.streamCalls).toBe(0);
 	});
+
+	// T046: ctx.model is live agent state, the request rides a pre-turn_start
+	// snapshot. When they disagree, the turn we judged idle for this provider can
+	// be the turn that uses it — so surviving requires the sentinel to have landed.
+	test("sentinel install failure on an idle provider escalates to abort", async () => {
+		h.runtime.failSetFor = new Set([SEAT_SENTINEL_API_KEY]);
+		await runTurn(h, "cursor");
+		expect(h.aborts).toHaveLength(1);
+		expect(h.warnings).toHaveLength(0);
+		expect(h.runtime.streamCalls).toBe(0);
+	});
+
+	test("a runtime that does not retain the sentinel escalates to abort", async () => {
+		h.runtime.verifyReturnsWrongValue = true; // read-back disagrees with the poison
+		await runTurn(h, "cursor");
+		expect(h.aborts).toHaveLength(1);
+		expect(h.warnings).toHaveLength(0);
+		expect(h.runtime.streamCalls).toBe(0);
+	});
 });

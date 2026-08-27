@@ -75,7 +75,7 @@ export interface TurnFailureHandlers {
 export interface FailurePolicy {
 	/** True when a failure must abort the turn. */
 	fatal: boolean;
-	report: (reason: string) => void;
+	handlers: TurnFailureHandlers;
 }
 
 export interface CoordinatorOptions {
@@ -134,7 +134,7 @@ export class SeatRuntimeAuthCoordinator {
 		const results: TurnAuthResult[] = [];
 		for (const provider of PROVIDER_IDS) {
 			const fatal = activeProvider === undefined || activeProvider === provider;
-			results.push(await this.syncProvider(provider, { fatal, report: fatal ? handlers.abort : handlers.warn }));
+			results.push(await this.syncProvider(provider, { fatal, handlers }));
 		}
 		return results;
 	}
@@ -175,7 +175,7 @@ export class SeatRuntimeAuthCoordinator {
 					? store.providers[provider]?.profiles[label]?.refresh
 					: undefined;
 				if (currentRefresh === block.refresh) {
-					return this.failClosed(provider, policy, new Error(block.reason), secrets);
+					return await this.failClosed(provider, policy, new Error(block.reason), secrets);
 				}
 				delete this.blocked[provider]; // replacement login cleared it
 			}
@@ -224,27 +224,56 @@ export class SeatRuntimeAuthCoordinator {
 			this.appliedIdentity[provider] = identity;
 			return { provider, status: "applied", label };
 		} catch (error) {
-			return this.failClosed(provider, policy, error, secrets);
+			return await this.failClosed(provider, policy, error, secrets);
 		}
 	}
 
-	/** Abort FIRST, then best-effort sentinel. Sentinel failure changes nothing. */
-	private failClosed(
+	/**
+	 * Fatal: abort FIRST, then best-effort sentinel — sentinel failure changes
+	 * nothing. Non-fatal: the sentinel is the ONLY protection left, so it must
+	 * land before the turn is allowed to live, and a failure escalates to abort.
+	 *
+	 * Why the escalation exists (T046): `ctx.model` is live agent state, but the
+	 * request rides a config snapshot taken before `turn_start` (Pi 0.84.2,
+	 * agent-loop.js). Anything switching models inside the same `turn_start` — an
+	 * extension loaded before seat, an RPC client — makes the two disagree, and
+	 * the turn we judged idle for this provider can be the turn that calls it. A
+	 * landed sentinel makes that disagreement cost a 401; an unlanded one would
+	 * let the request ride whatever the overlay still held.
+	 */
+	private async failClosed(
 		provider: ProviderId,
 		policy: FailurePolicy,
 		error: unknown,
 		secrets: readonly string[] = [],
-	): TurnAuthResult {
+	): Promise<TurnAuthResult> {
 		const reason = redactTokenText(errorMessage(error), secrets);
-		policy.report(`seat: ${provider} auth failed — ${reason}`);
-		try {
-			const applied = this.options.runtime.setRuntimeApiKey(provider, SEAT_SENTINEL_API_KEY);
-			if (applied instanceof Promise) applied.catch(() => undefined);
-			this.overlayActive[provider] = true;
-		} catch {
-			// Best-effort only; the abort already protects the turn.
+		const message = `seat: ${provider} auth failed — ${reason}`;
+
+		if (policy.fatal) {
+			policy.handlers.abort(message);
+			void this.installSentinel(provider); // never awaited: the abort stands alone
+			return { provider, status: "aborted", reason };
 		}
-		return { provider, status: policy.fatal ? "aborted" : "blocked", reason };
+
+		if (!(await this.installSentinel(provider))) {
+			policy.handlers.abort(message);
+			return { provider, status: "aborted", reason };
+		}
+		policy.handlers.warn(message);
+		return { provider, status: "blocked", reason };
+	}
+
+	/** Poison a provider's overlay. Reports whether it actually took effect. */
+	private async installSentinel(provider: ProviderId): Promise<boolean> {
+		try {
+			await this.options.runtime.setRuntimeApiKey(provider, SEAT_SENTINEL_API_KEY);
+			this.overlayActive[provider] = true;
+			await this.verifyApplied(provider, SEAT_SENTINEL_API_KEY);
+			return true;
+		} catch {
+			return false;
+		}
 	}
 
 	private async invalidateOnIdentityChange(provider: ProviderId, next: Identity): Promise<void> {

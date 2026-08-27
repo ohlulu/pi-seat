@@ -103,9 +103,10 @@ fail-closed 狀態只存在記憶體，不落盤：暫時性失敗（網路抖�
 
 | AC | Given | When | Then |
 |---|---|---|---|
-| AC-007 | refresh 失敗（模擬 invalid_grant） | turn 開始 | turn 中止並顯示原因；store 內 credential 未被刪除 |
-| AC-008 | overlay 流程任一步 throw（含 sentinel 安裝自身） | turn 開始 | turn 先被 abort，provider request 零次發出 |
+| AC-007 | refresh 失敗（模擬 invalid_grant），active model 屬該 provider | turn 開始 | turn 中止並顯示原因；store 內 credential 未被刪除 |
+| AC-008 | overlay 流程任一步 throw（含 sentinel 安裝自身），active model 屬該 provider | turn 開始 | turn 先被 abort，provider request 零次發出 |
 | AC-031 | anthropic profile 已死（invalid_grant） | turn 跑在非 anthropic 的 model 上 | turn 不中止、request 照發；anthropic 仍被 block 並裝上 sentinel，並以非致命訊息回報；下一個跑在 anthropic 上的 turn 才中止 |
+| AC-032 | 同 AC-031，但 sentinel 裝不上去（set 丟錯或 read-back 不符） | turn 開始 | 升級為 abort：非致命路徑的存活條件是該 provider 確實已被 poison |
 
 ### REQ-009: Codex connection invalidation
 

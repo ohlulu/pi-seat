@@ -20,6 +20,10 @@ Pi 一次 agent loop 可有多個 turn，tool continuation 可能騎在過期或
 
 Abort 的範圍綁在 `ctx.model?.provider`：兩個 provider 照樣每個 turn 同步（overlay 保溫、block 記錄、sentinel 安裝全部不變），但只有 active model 所屬的 provider 失敗才偷走這個 turn，其餘走非致命的 notify。這是 REQ-004 的範圍限定而非退讓：失敗的 provider 下一次被選中時的保證逐字不變，而 dead grant 不再擋住根本不需要它的 turn。`ctx.model` 無法辨識時退回「任何失敗都 abort」的保守默認。
 
+`ctx.model` 並非這個判斷的完美來源，而 Pi 0.84.2 沒有更好的：agent loop 用的是 `prepareNextTurn` 凍結進 config 的 model snapshot（`agent-loop.js` 的 `streamAssistantResponse(currentContext, config, …)`），而 `ExtensionContext.model` 是 live 的 `agent.state.model`（`agent-session.js` `_installAgentNextTurnRefresh`）。圖上它們只在同一個 `turn_start` 內有人切模型時分岔——比 seat 更早載入的 extension、或 RPC client。`before_provider_request` 本來是正確的 seam，但 0.84.2 的 `onPayload(payload, _model)` 把 model 丟掉了，extension 拿不到 provider。
+
+因此非致命路徑不依賴這個判斷正確：它只在 sentinel 確實裝上去（含 read-back 驗證）時才放過 turn，否則升級為 abort（AC-032）。判斷错了的代價因而是一個 401——sentinel 是不可能通過認證的字串——而不是請求騎在過期或錯誤的帳號上。Residual risk 是訊息品質：這種 turn 會以 provider 的 401 失敗，而非 seat 自己的 fail-closed 訊息。
+
 Selection resolution 是本專案唯一的新核心邏輯：`env pin > store default > Pi built-in`，pin（含 alias→label 解析）在 extension init 讀一次 `PI_SEAT`，天生 session-scoped。
 
 ## Pi compatibility
