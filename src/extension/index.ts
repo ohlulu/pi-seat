@@ -24,6 +24,7 @@ import { decodeStore } from "../store/storage.ts";
 import { resolvePins } from "../store/selector.ts";
 import { envUsageFetchOptions } from "../usage/fetch.ts";
 import { createSeatProviderAdapters } from "./oauth.ts";
+import { pinBadge } from "./pin-status.ts";
 import { SeatRuntimeAuthCoordinator, getSeatRuntime } from "./runtime-auth.ts";
 import { SEAT_COMMAND_DESCRIPTION, runSeatCommand } from "./seat-command.ts";
 
@@ -61,10 +62,23 @@ export default function seatExtension(pi: ExtensionAPI): void {
 		handler: async (args, ctx) => runSeatCommand(args, ctx, { backend, adapters, pins, authPath, fetchOptions }),
 	});
 
+	// AC-026: computed once — pins and startupError are immutable for the session.
+	const badge = pinBadge(pins, startupError !== undefined);
+
 	let coordinator: SeatRuntimeAuthCoordinator | undefined;
 	let noticesFlushed = false;
 
 	pi.on("session_start", async (_event, ctx) => {
+		// Re-applied on every session_start: /reload clears extension statuses.
+		// setStatus is a fire-and-forget request in RPC mode; the catch covers
+		// modes with no status surface (print).
+		if (badge) {
+			try {
+				ctx.ui.setStatus("pi-seat", ctx.ui.theme.fg(badge.kind === "error" ? "error" : "accent", badge.text));
+			} catch {
+				// No footer in this mode; the badge is TUI/RPC chrome only.
+			}
+		}
 		if (noticesFlushed) return;
 		noticesFlushed = true;
 		for (const notice of startupNotices) notify(ctx, notice, startupError ? "error" : "info");

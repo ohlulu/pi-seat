@@ -67,6 +67,8 @@ Selector grammar（所有接受 selector 的指令與 `PI_SEAT` 共用）：
 5. malformed、unknown provider、duplicate provider、不存在的 label——一律於 session startup 明確報錯並 fail-closed，絕不部分套用。
 6. env 只在 extension init 讀一次；alias 於 init 一次解析為 label，之後不重解析。解析後的 profile 若在 session 中被刪除，per-turn 套用時 fail-closed。
 
+Pin badge（AC-026）：WHEN the session has at least one pin, the extension SHALL show a persistent pin badge via Pi's keyed footer status（`ctx.ui.setStatus`，每次 `session_start` 重設，因 `/reload` 會清空 extension statuses）。槽位固定依 `PROVIDER_IDS` 順序：`:ula:`（anthropic-only）、`:/work:`（codex-only，前導 `/` 標示 anthropic 槽位空缺）、`:ula/work:`（雙 pin）；內容是 resolved canonical label，不是 alias。無 pin 的 session 不產生任何 seat chrome。WHEN `PI_SEAT` is invalid（rule 5 的 startup error），the badge SHALL read `PI_SEAT invalid` in error styling — 此時每個 turn 都被 abort，完全不顯示會誤讀為正常的 unpinned session。Per-turn fail-closed（[REQ-004](#req-004-fail-closed-runtime-application)）不進 badge：那是 transient per-provider health，不是 session 的 pin identity。
+
 Extension 載入對 store 的保證（AC-020）：載入永不建立 `seat.json`、永不改變 credential 內容、也永不執行任何 legacy 匯入——這條規則是 load-time 匯入專屬測試得以刪除的依據，由 `scripts/smoke-extension.sh` 對 store 缺席與 store 既存兩種情境斷言。載入不是字面上 side-effect-free：init 經由 store 的 read path 解析 pin，該路徑會短暫取得 file lock，並把既有檔案的 mode 重新收斂到 0600（刻意的 defense in depth——每次讀取都把持有 OAuth credential 的檔案硬化回 0600）。
 
 | AC | Given | When | Then |
@@ -74,6 +76,7 @@ Extension 載入對 store 的保證（AC-020）：載入永不建立 `seat.json`
 | AC-003 | 兩個 pi session，`PI_SEAT=work` 與 `PI_SEAT=personal` | 同時運行 | 各自以指定帳號發請求，互不影響，store default 不變 |
 | AC-004 | `PI_SEAT=nosuch`（不存在的 label）或 malformed selector | session 啟動 | 該 provider fail-closed（turn 中止並報錯），絕不靜默改用其他帳號 |
 | AC-020 | 任意環境（store 檔與相鄰檔案存在與否皆同） | extension 載入 | `seat.json` 不被建立；既有 store 的內容 byte-identical；無任何匯入。允許的 side effects 僅限 read path 的 transient lock 與 0600 mode 硬化 |
+| AC-026 | `PI_SEAT` 分別為 `ula`、`openai-codex:work`、`anthropic:ula,openai-codex:work`、未設、invalid | session start（含 `/reload` 重入） | footer status 分別為 `:ula:`、`:/work:`、`:ula/work:`、無 badge、error 樣式的 `PI_SEAT invalid`；badge 一律顯示 resolved label 而非 alias |
 
 ### REQ-003: Global default selection
 

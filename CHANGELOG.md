@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- A `PI_SEAT`-pinned session now shows a persistent pin badge in Pi's footer status line: `:ula:` for an anthropic pin, `:/work:` for a codex-only pin (the leading slash marks the empty anthropic slot), `:ula/work:` for both — slots in fixed provider order, always the resolved label rather than an alias. An unpinned session shows nothing. An invalid `PI_SEAT` shows an error-styled `PI_SEAT invalid` badge, because with every turn aborting an empty footer would read as a normal unpinned session. Per-turn auth failures stay out of the badge — they are transient health, not the session's pin identity.
+
 ### Fixed
 
 - `seat --version` reported `3.0.0`. The CLI kept its own hand-written `VERSION` constant, unconnected to `package.json` — it has been wrong since the CLI was first written, when it said `3.0.0` against a manifest reading `1.0.0`, and it shipped that way in 0.1.0, 0.1.1 and 0.2.0. The constant now reads `package.json`, so the two cannot diverge. The existing test asserted `toContain("seat 3")`, which pinned the wrong value and would have failed on any correct one; it now asserts against the manifest.
