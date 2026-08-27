@@ -168,6 +168,23 @@ Destructive operations (`rm`, `login`) SHALL NOT be reachable from the view：�
 | AC-024 | 終端已協商 Kitty keyboard protocol（esc = `esc [ 27 u`、enter = `esc [ 13 u`） | 按下 esc / enter / ↑ / ↓ | 與 legacy encoding 行為完全相同。方向鍵不得被讀成 close |
 | AC-025 | reload 已串流出部分帳號後抛錯（例：auth.json 不是 regular file） | view 重畫 | 游標仍指向存活的帳號（同一帳號優先，否則 clamp）；marker 不得消失，`enter` 不得静默無效 |
 
+### REQ-011: Pace-coloured meters
+
+A meter's bar and percent SHALL be coloured by its **burn rate** rather than its absolute level wherever the reset window supports a projection：以 `projected = percent ÷ elapsed fraction` 推算窗期結束時的用量，`projected > 100%` 為 red（超支）、`> 90%` 為 yellow（快超支）、其餘為 green（有餘裕）。百分比本身回答不了「這樣算多嗎」——weekly 用掉 39% 在第五天是從容，在第二天是失控。
+
+WHERE no trustworthy projection exists, the meter SHALL fall back to the absolute thresholds it used before（`< 70%` green、`< 90%` yellow、否則 red）。無可信投影的情形恰為四種：limit 沒有可用的 `resets_at`（缺少或無法解析）、窗長無法判定、窗期才剛開始（elapsed < `max(60s, 1% of period)`）、或用量低於 5%。最後一項是刻意比 openusage 寬——它只擋紅色、放行黃色，但本專案的顏色是唯一的訊息通道，誤判的黃與誤判的紅一樣會誤導，只是安靜一點。用量 0% 一律 green、≥ 100% 一律 red，兩者都不需要投影。
+
+Window length 的來源分兩路：Codex 的 payload 直接給 `limit_window_seconds`；Claude 的 `/api/oauth/usage` **不含任何 duration 欄位**（實測 live response，`limits[]` 只有 `kind` / `group` / `percent` / `severity` / `resets_at` / `scope` / `is_active`），因此由 `group` 推斷——`session` → 5h、`weekly*` → 7d，認不出來的 limit 不推斷、退回絕對門檻。這是本功能唯一的假設，Anthropic 改窗長時 `src/usage/pace.ts` 是唯一要跟著改的地方。
+
+Colour is the entire feature：no glyph, no extra column, no layout change。[AC-011a](#req-006-usage-meters-in-the-cli) 的 golden fixtures 全部以 `color: false` 產生，所以 Python parity 逐 byte 不受影響——這也是為什麼 pace 走顏色而不是 bar 上的 marker（見 [architecture.md §DEC-012](../architecture.md#dec-012-pace-以顏色表達不在-bar-上加-marker)）。
+
+| AC | Given | When | Then |
+|---|---|---|---|
+| AC-027 | 同一 provider 兩個帳號，A 的 weekly 用 39% 但窗期只走了 31%，B 的 weekly 用 76% 且窗期已走 76% | `seat` 或 `/seat` | A 的 bar 與百分比為 red，B 為 yellow；絕對門檻下 A 會是 green |
+| AC-028 | limit 無 `resets_at`、窗長認不出、窗期未達 `max(60s, 1% of period)`，或用量 < 5% | 渲染該 meter | 顏色為 pace 之前的絕對門檻結果（70 / 90），與本功能上線前一致 |
+| AC-029 | 任何 payload、任何寬度 | 以 `color: false` 渲染 | 輸出與 pace 上線前逐 byte 相同（AC-011a 的 golden fixtures 不變）；一列 meter 只讀一次 clock，顏色與倒數描述同一瞬間 |
+| AC-030 | limit 的 `resets_at` 無法解析，或 Codex `reset_at` 超出 Date 範圍 | 渲染該 meter | 只損失 reset 欄位：bar 與百分比照常渲染、顏色為絕對門檻、輸出不含 `NaN`、不抛錯 |
+
 ## Non-functional
 
 - NFR-001: CLI 冷啟至 `--plain` 輸出 process-cold p95 ≤ 150ms（hyperfine 量測，repo 內提供 benchmark command；prompt segment 可用性；bun 執行）。

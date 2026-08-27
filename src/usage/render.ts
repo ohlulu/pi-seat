@@ -7,6 +7,7 @@
 
 import { cellClip, cellWidth, fit } from "./cells.ts";
 import { GAP, INDENT, LABEL_W, RESET_W_LONG, type Layout } from "./layout.ts";
+import { claudeLimitPeriodMs, evaluatePace } from "./pace.ts";
 
 export const BAR_FULL = "█";
 export const BAR_EMPTY = "░";
@@ -74,9 +75,30 @@ export function roundHalfEven(value: number): number {
 	return floor % 2 === 0 ? floor : floor + 1;
 }
 
-/** Time to reset: countdown, plus the wall clock when there is room. */
-export function fmtReset(dt: Date, long: boolean, options: RenderOptions): string {
-	const secs = Math.trunc((dt.getTime() - options.now().getTime()) / 1000);
+/**
+ * A reset timestamp off the wire, or `null` when it is missing or unusable.
+ *
+ * The usage payloads are cast, not validated, so an unparsable `resets_at` or
+ * an out-of-range `reset_at` reaches us as an Invalid Date. That is not a
+ * cosmetic problem: `fmtReset` hands the value to `Intl.DateTimeFormat`, which
+ * throws `RangeError` on a non-finite date and takes the whole report down
+ * with it, and on the narrow reset column it prints `in NaNm` instead. Both
+ * are older than pace. Rejecting the value here means one unreadable field
+ * costs its own column and nothing else — the meter still renders, and
+ * `evaluatePace` sees the same `null` every other windowless meter produces.
+ */
+export function parseResetDate(value: string | number | undefined | null): Date | null {
+	if (value === undefined || value === null || value === "") return null;
+	const dt = new Date(value);
+	return Number.isFinite(dt.getTime()) ? dt : null;
+}
+
+/** Time to reset: countdown, plus the wall clock when there is room.
+ *
+ * `now` is a parameter so a caller that already reads the clock can hand over
+ * the same instant instead of sampling it again — see `meterLine`. */
+export function fmtReset(dt: Date, long: boolean, options: RenderOptions, now: Date = options.now()): string {
+	const secs = Math.trunc((dt.getTime() - now.getTime()) / 1000);
 	if (secs <= 0) return "resetting";
 	const days = Math.trunc(secs / 86_400);
 	let rem = secs % 86_400;
@@ -138,14 +160,47 @@ export function sectionLines(layout: Layout, title: string, options: RenderOptio
 	];
 }
 
+/**
+ * The bar color (REQ-011): the burn-rate verdict when the window supports one,
+ * the absolute level when it does not.
+ *
+ * Pace answers the question the percentage cannot — 39% of a weekly window is
+ * calm on day five and a blow-out on day two — so it outranks the level
+ * whenever it has something trustworthy to say. Without a window, early in
+ * one, or on a nearly-empty meter, `evaluatePace` says nothing and the old
+ * absolute thresholds take over unchanged.
+ */
+export function meterColor(percent: number, resetDt: Date | null, periodMs: number | null, now: Date): string {
+	switch (evaluatePace(percent, resetDt, periodMs, now)) {
+		case "behind":
+			return RED;
+		case "onTrack":
+			return YELLOW;
+		case "ahead":
+			return GREEN;
+		case null:
+			return percent < 70 ? GREEN : percent < 90 ? YELLOW : RED;
+	}
+}
+
+/**
+ * `periodMs` is the meter's reset-window length, which only the provider's
+ * renderer knows. Omitting it is not "unknown pace" by accident — it is how a
+ * caller with no window asks for plain level coloring.
+ */
 export function meterLine(
 	layout: Layout,
 	label: string,
 	percent: number,
 	resetDt: Date | null,
 	options: RenderOptions,
+	periodMs: number | null = null,
 ): string {
-	const color = percent < 70 ? GREEN : percent < 90 ? YELLOW : RED;
+	// One clock reading for the whole row. The pace verdict and the countdown
+	// describe the same instant, and sampling twice would let a row be coloured
+	// against one moment and dated against a later one.
+	const now = options.now();
+	const color = meterColor(percent, resetDt, periodMs, now);
 	const filled = Math.max(0, Math.min(layout.barW, roundHalfEven((percent / 100) * layout.barW)));
 	const segments: Segment[] = [
 		[" ".repeat(INDENT), undefined],
@@ -157,7 +212,7 @@ export function meterLine(
 		[`${formatPercent(percent)}%`, color],
 	];
 	if (layout.resetW && resetDt !== null) {
-		segments.push([" ".repeat(GAP), undefined], [fmtReset(resetDt, layout.resetW >= RESET_W_LONG, options), DIM]);
+		segments.push([" ".repeat(GAP), undefined], [fmtReset(resetDt, layout.resetW >= RESET_W_LONG, options, now), DIM]);
 	}
 	return emitLine(segments, layout.width - 1, options.color);
 }
@@ -225,8 +280,8 @@ export function renderClaudeUsage(layout: Layout, data: ClaudeUsage, options: Re
 			// information (see Python source for the full rationale).
 			label = lim.group === "weekly" && layout.labelW >= LABEL_W ? `weekly ${model}` : model;
 		}
-		const resetDt = lim.resets_at ? new Date(lim.resets_at) : null;
-		lines.push(meterLine(layout, label, lim.percent ?? 0, resetDt, options));
+		const resetDt = parseResetDate(lim.resets_at);
+		lines.push(meterLine(layout, label, lim.percent ?? 0, resetDt, options, claudeLimitPeriodMs(lim)));
 	}
 	const extra = data.extra_usage;
 	if (extra?.is_enabled) {
@@ -263,8 +318,12 @@ export function renderCodexUsage(layout: Layout, data: CodexUsage, options: Rend
 	for (const key of ["primary_window", "secondary_window"] as const) {
 		const win = rl[key];
 		if (!win) continue;
-		const resetDt = win.reset_at ? new Date(win.reset_at * 1000) : null;
-		lines.push(meterLine(layout, windowLabel(win.limit_window_seconds ?? 0), win.used_percent ?? 0, resetDt, options));
+		const resetDt = parseResetDate(win.reset_at ? win.reset_at * 1000 : null);
+		// Codex states its window length outright, so no inference is needed here.
+		const periodMs = win.limit_window_seconds ? win.limit_window_seconds * 1000 : null;
+		lines.push(
+			meterLine(layout, windowLabel(win.limit_window_seconds ?? 0), win.used_percent ?? 0, resetDt, options, periodMs),
+		);
 	}
 	const credits = data.rate_limit_reset_credits?.available_count;
 	if (credits) lines.push(detailLine(layout, "credits", String(credits), options));

@@ -124,9 +124,19 @@ Ownership fencing——lock compromised 後禁止 commit，失鎖狀態下寫入
 - Regression 鎖在 `test/usage/report.test.ts`，且必須用**真的** `FileSeatStorageBackend`——這個 deadlock 是 file lock 的性質，`InMemorySeatStorageBackend`（其他 collectUsage 測試用的）絕對看不到。三個測試同時釘住兩個相反約束：refresh 不可重疊、endpoint 必須重疊、順序不變。
 - Satisfies: REQ-006, REQ-010。
 
+### DEC-012: Pace 以顏色表達，不在 bar 上加 marker
+
+- Choice: burn-rate 判定（[REQ-011](./specs/behavior.md#req-011-pace-coloured-meters)）只改 `meterLine` 的顏色，不在 bar 上畫 pace marker、不加投影文字欄位。純邏輯放 `src/usage/pace.ts`（clock-injected、無 I/O），`render.ts` 負責 verdict → 顏色與無 verdict 時的退回。
+- Alternatives: (a) openusage 的做法——在 bar 上畫一根 elapsed-fraction 的細直線；(b) 在 reset 欄位後追加 `~127% at reset` 之類的投影文字。
+- Rationale: (a) **在 cell 網格上會摧毀它要標示的資訊**。實測 width 60（barW=14）、weekly 39%：填色 5 格、tick 落在第 4 格，換上 `│` 之後 bar 看起來剛好停在線上，而真相是它已經越線——「填色與 tick 相鄰」正是最需要看清楚的臨界狀況。改用濃度字元（填色區 `▓`、空白區 `▒`）可以保住邊界，但解析度仍是 barW=20 時一格 5%、barW=10 時一格 10%，只能當粗略提示。(b) width 100 的行確實還有 34 格空著（bar 封頂在 `BAR_MAX`），塞得下投影文字，但那會在部分寬度打破 AC-011a 的 Python parity，得另立 opt-in 開關才能維持可證性。顏色兩個問題都沒有：不佔格、不改 layout，而 golden fixtures 全是 `color: false`，parity 逐 byte 不動。
+- 代價：mono 終端與 `NO_COLOR` 拿不到這個訊號。可接受——它是疊在已經印出來的百分比上的判讀輔助，不是唯一資訊來源。
+- Claude 的窗長靠 `group` 推斷（`session` → 5h、`weekly*` → 7d），因為 live payload 實測沒有 duration 欄位；openusage 同樣寫死這組值。這是整個功能唯一的假設，認不出來的 limit 不猜、退回絕對門檻。
+- 門檻與 guard 沿用 openusage 的 `Pace.swift`（MIT，attribution 見 NOTICE），一處刻意放寬：near-empty distrust guard 對 yellow 也生效，不只 red。openusage 的 bar 旁有解釋文字，誤判的黃還有話可說；這裡顏色就是全部的訊息，安靜的誤導仍然是誤導。
+- Satisfies: REQ-011。
+
 ## Related
 
 - [specs/behavior.md §Store](./specs/behavior.md#store) ← store、refresh、login 的行為契約（DEC-001/003/005 的 Satisfies 對象）
 - [specs/behavior.md §Selection & runtime](./specs/behavior.md#selection--runtime) ← pin、default、fail-closed overlay、Codex invalidation 的行為契約（DEC-002 與 per-turn lifecycle）
-- [specs/behavior.md §Usage](./specs/behavior.md#usage) ← usage CLI 與 in-session view 的行為契約（DEC-004/007/008/009/010/011）
+- [specs/behavior.md §Usage](./specs/behavior.md#usage) ← usage CLI 與 in-session view 的行為契約（DEC-004/007/008/009/010/011/012）
 - [RELEASING.md §Facts](./RELEASING.md#facts) ← DEC-006 部署形態對應的發佈 facts 與程序
