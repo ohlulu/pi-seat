@@ -12,6 +12,7 @@ import {
 	RED,
 	YELLOW,
 	meterColor,
+	meterLine,
 	renderClaudeUsage,
 	renderCodexUsage,
 	type ClaudeUsage,
@@ -79,6 +80,21 @@ describe("evaluatePace (REQ-011)", () => {
 	test("a window that has already reset says nothing", () => {
 		expect(evaluatePace(50, new Date(NOW.getTime() - 1000), WEEK_PERIOD_MS, NOW)).toBeNull();
 		expect(evaluatePace(50, NOW, WEEK_PERIOD_MS, NOW)).toBeNull();
+	});
+
+	test("an unparsable or overflowing window says nothing, never 'behind'", () => {
+		// Every guard in evaluatePace is a `<` or `>=`, and all of them are false
+		// for NaN — so before the finiteness check these fell through to the
+		// default verdict and painted the meter red on a malformed timestamp.
+		// The usage payload is cast, not validated, so this comes off the wire.
+		expect(evaluatePace(39, new Date("not a date"), WEEK_PERIOD_MS, NOW)).toBeNull();
+		expect(evaluatePace(39, new Date(Number.NaN), WEEK_PERIOD_MS, NOW)).toBeNull();
+		// A reset_at or limit_window_seconds big enough to overflow to Infinity.
+		expect(evaluatePace(39, new Date(8.64e15 + 1), WEEK_PERIOD_MS, NOW)).toBeNull();
+		expect(evaluatePace(39, resetsAfterElapsed(WEEK_PERIOD_MS, 0.5), Number.POSITIVE_INFINITY, NOW)).toBeNull();
+		expect(evaluatePace(39, resetsAfterElapsed(WEEK_PERIOD_MS, 0.5), Number.NaN, NOW)).toBeNull();
+		// A caller with a broken clock is no different.
+		expect(evaluatePace(39, resetsAfterElapsed(WEEK_PERIOD_MS, 0.5), WEEK_PERIOD_MS, new Date(Number.NaN))).toBeNull();
 	});
 
 	test("a nearly-empty meter is distrusted, loud verdict or quiet", () => {
@@ -189,5 +205,64 @@ describe("provider blocks color by pace", () => {
 	test("a limit with no reset keeps its absolute color", () => {
 		const usage: ClaudeUsage = { limits: [{ kind: "weekly_opus", percent: 70 }] };
 		expect(renderClaudeUsage(layout, usage, OPTS)[0]).toContain(YELLOW);
+	});
+
+	test("a malformed resets_at costs its own column and nothing else", () => {
+		// Older than pace: fmtReset used to hand the Invalid Date to
+		// Intl.DateTimeFormat, which throws RangeError and takes the whole report
+		// down on a wide terminal, and prints `in NaNm` on a narrow one.
+		const usage: ClaudeUsage = { limits: [{ kind: "weekly_all", group: "weekly", percent: 39, resets_at: "not a date" }] };
+		const [row] = renderClaudeUsage(layout, usage, OPTS);
+		expect(row).toContain("39%");
+		expect(row).not.toContain("NaN");
+		expect(row).toContain(GREEN); // no window to project from, so absolute level
+		// The narrow tier formats the countdown without the wall clock, which is
+		// the path that returned `in NaNm` rather than throwing.
+		expect(renderClaudeUsage(planLayout(50), usage, OPTS)[0]).not.toContain("NaN");
+	});
+
+	test("an out-of-range Codex reset_at is dropped the same way", () => {
+		const usage: CodexUsage = {
+			rate_limit: { primary_window: { limit_window_seconds: 5 * 3600, used_percent: 20, reset_at: 8.64e15 } },
+		};
+		const [row] = renderCodexUsage(layout, usage, OPTS);
+		expect(row).toContain("20%");
+		expect(row).not.toContain("NaN");
+	});
+});
+
+describe("meterLine reads the clock once (AC-029)", () => {
+	// The row's colour and its countdown have to describe the same instant, and
+	// a second sample is also a second chance to cross a minute boundary — which
+	// is what would make a `color: false` rendering differ from the pre-pace one.
+	test("one call, whether or not pace has anything to say", () => {
+		const layout = planLayout(100);
+		for (const periodMs of [WEEK_PERIOD_MS, null]) {
+			let calls = 0;
+			const counting: RenderOptions = {
+				color: false,
+				timeZone: "UTC",
+				now: () => {
+					calls += 1;
+					return NOW;
+				},
+			};
+			meterLine(layout, "weekly", 39, resetsAfterElapsed(WEEK_PERIOD_MS, 0.3), counting, periodMs);
+			expect(calls, `periodMs=${periodMs}`).toBe(1);
+		}
+	});
+
+	test("an advancing clock cannot date a row later than it coloured it", () => {
+		const layout = planLayout(100);
+		// A clock that moves a minute per call: with two samples the countdown
+		// would render against the later one.
+		let tick = 0;
+		const advancing: RenderOptions = {
+			color: false,
+			timeZone: "UTC",
+			now: () => new Date(NOW.getTime() + tick++ * 60_000),
+		};
+		const resetDt = new Date(NOW.getTime() + 3_600_000);
+		expect(meterLine(layout, "weekly", 39, resetDt, advancing, WEEK_PERIOD_MS)).toContain("in 1h00m");
 	});
 });

@@ -10,7 +10,7 @@
  *
  * Ported from openusage's `Pace.swift` (MIT, see NOTICE) — the thresholds, the
  * minimum-elapsed floor and the near-empty distrust guard are its design, not
- * ours. Two deliberate differences are noted at their definitions.
+ * ours. The one deliberate difference is noted at `DISTRUST_BELOW_PERCENT`.
  *
  * Pure and clock-injected, like the rest of `src/usage`: no I/O, no colors.
  * `render.ts` maps a verdict onto the bar color and owns the fallback when
@@ -76,9 +76,20 @@ export function evaluatePace(
 ): PaceVerdict | null {
 	if (resetsAt === null || periodMs === null || periodMs <= 0) return null;
 
-	const elapsedMs = now.getTime() - (resetsAt.getTime() - periodMs);
+	// Finiteness is checked before any comparison, because NaN slides through
+	// all of them: every guard below is a `<` or `>=`, and each one is false for
+	// NaN, so an unparsable `resets_at` would fall past every gate and land on
+	// the default verdict — painting a meter red on the strength of a malformed
+	// timestamp. The usage payload is cast, not validated, so this is reachable
+	// from the wire. Infinity gets here the same way, via a `reset_at` or
+	// `limit_window_seconds` large enough to overflow the conversion to ms.
+	const resetMs = resetsAt.getTime();
+	if (!Number.isFinite(resetMs) || !Number.isFinite(periodMs)) return null;
+	const elapsedMs = now.getTime() - (resetMs - periodMs);
+	if (!Number.isFinite(elapsedMs)) return null;
+
 	if (elapsedMs < minimumElapsedMs(periodMs)) return null;
-	if (now.getTime() >= resetsAt.getTime()) return null;
+	if (now.getTime() >= resetMs) return null;
 
 	if (percent <= 0) return "ahead";
 	// An exhausted quota is the one case that needs no projection.
