@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- A model call made before a session's first turn now uses the seat credential. The overlay was applied only on `turn_start`, so an extension that calls a model on its own outside a turn — a slash command typed as the first thing in a new session, such as a prompt rewriter pinned to an Anthropic model — found no overlay and fell back to Pi's built-in `auth.json` login. That is the wrong account, and once that grant has expired it fails with `invalid_grant`. The same call worked as soon as one turn had run, which made it look intermittent. The overlay is now also applied on `session_start`, with the same sequence and sentinel rules. There is no turn to abort there, so a failure is poisoned and reported rather than fatal, and a startup error still applies nothing and leaves the first turn to fail closed. One consequence: an expired credential is now refreshed when the session starts rather than on its first turn (AC-033).
+
 ## [0.3.0] - 2026-08-27
 
 ### Changed

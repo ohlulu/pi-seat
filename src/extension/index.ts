@@ -83,6 +83,15 @@ export default function seatExtension(pi: ExtensionAPI): void {
 	let coordinator: SeatRuntimeAuthCoordinator | undefined;
 	let noticesFlushed = false;
 
+	/** undefined when this Pi build lacks the runtime overlay (version incompatibility). */
+	function ensureCoordinator(ctx: ExtensionContext): SeatRuntimeAuthCoordinator | undefined {
+		if (coordinator) return coordinator;
+		const runtime = getSeatRuntime(ctx.modelRegistry);
+		if (!runtime) return undefined;
+		coordinator = new SeatRuntimeAuthCoordinator({ runtime, backend, adapters, pins });
+		return coordinator;
+	}
+
 	pi.on("session_start", async (_event, ctx) => {
 		// Re-applied on every session_start: /reload clears extension statuses.
 		// setStatus is a fire-and-forget request in RPC mode; the catch covers
@@ -97,9 +106,17 @@ export default function seatExtension(pi: ExtensionAPI): void {
 				// No status surface on this Pi build; the badge is chrome only.
 			}
 		}
-		if (noticesFlushed) return;
-		noticesFlushed = true;
-		for (const notice of startupNotices) notify(ctx, notice, startupError ? "error" : "info");
+		if (!noticesFlushed) {
+			noticesFlushed = true;
+			for (const notice of startupNotices) notify(ctx, notice, startupError ? "error" : "info");
+		}
+
+		// AC-033: apply the overlay before any turn, so an extension command run
+		// before the first prompt rides the seat credential, not auth.json. A
+		// startup error or a missing overlay is reported by the first turn_start.
+		if (startupError !== undefined) return;
+		const report = (reason: string) => notify(ctx, reason, "error");
+		await ensureCoordinator(ctx)?.syncIdle({ abort: report, warn: report });
 	});
 
 	pi.on("turn_start", async (_event, ctx) => {
@@ -110,20 +127,17 @@ export default function seatExtension(pi: ExtensionAPI): void {
 			return;
 		}
 
-		if (!coordinator) {
-			const runtime = getSeatRuntime(ctx.modelRegistry);
-			if (!runtime) {
-				ctx.abort();
-				notify(ctx, PI_VERSION_NOTICE, "error");
-				return;
-			}
-			coordinator = new SeatRuntimeAuthCoordinator({ runtime, backend, adapters, pins });
+		const active = ensureCoordinator(ctx);
+		if (!active) {
+			ctx.abort();
+			notify(ctx, PI_VERSION_NOTICE, "error");
+			return;
 		}
 
 		// AC-031: only the provider this turn runs on may abort it. A seat profile
 		// that fails while idle is still blocked and sentinel-poisoned, and aborts
 		// the first turn that selects it.
-		await coordinator.syncTurn(
+		await active.syncTurn(
 			{
 				abort: (reason) => {
 					ctx.abort();
