@@ -131,10 +131,28 @@ export class SeatRuntimeAuthCoordinator {
 	 * any failure.
 	 */
 	async syncTurn(handlers: TurnFailureHandlers, activeProvider?: string): Promise<TurnAuthResult[]> {
+		return this.syncAll(handlers, (provider) => activeProvider === undefined || activeProvider === provider);
+	}
+
+	/**
+	 * session_start entry point (AC-033): synchronize both providers before any
+	 * turn exists. A model call made outside a turn — an extension command run
+	 * before the first prompt — otherwise finds no overlay and rides Pi's
+	 * built-in auth.json login instead of the seat selection. With no turn to
+	 * abort, every failure takes the non-fatal path: poisoned and reported, and
+	 * a sentinel that cannot land still escalates through `abort` (AC-032).
+	 */
+	async syncIdle(handlers: TurnFailureHandlers): Promise<TurnAuthResult[]> {
+		return this.syncAll(handlers, () => false);
+	}
+
+	private async syncAll(
+		handlers: TurnFailureHandlers,
+		isFatal: (provider: ProviderId) => boolean,
+	): Promise<TurnAuthResult[]> {
 		const results: TurnAuthResult[] = [];
 		for (const provider of PROVIDER_IDS) {
-			const fatal = activeProvider === undefined || activeProvider === provider;
-			results.push(await this.syncProvider(provider, { fatal, handlers }));
+			results.push(await this.syncProvider(provider, { fatal: isFatal(provider), handlers }));
 		}
 		return results;
 	}

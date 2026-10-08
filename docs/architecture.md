@@ -18,6 +18,8 @@ Id policy：`DEC-###` 是被 `src/` 與 `test/` 直接引用的 stable anchors �
 
 Pi 一次 agent loop 可有多個 turn，tool continuation 可能騎在過期或已切換的 credential 上——只在 `before_agent_start` sync（上游 pi-accounts 的做法）不滿足 [REQ-004](./specs/behavior.md#req-004-fail-closed-runtime-application)。本專案的 async `turn_start` handler 每個 turn 執行 selection → locked refresh → toAuth → overlay → verify；任一步失敗（含 sentinel 安裝自身）先 `ctx.abort()`，再 best-effort 安裝 sentinel。
 
+`session_start` 也跑同一條序列（`syncIdle`，AC-033），因為 extension 可以在任何 turn 之前直接呼叫 model。新 session 第一個 prompt 之前的 slash command 就是例子：它從 `ctx.modelRegistry` 取 credential，只在 `turn_start` 套用的話，它拿到的是 Pi 內建的 `auth.json` login。`session_start` 沒有 turn 可以中止，所以兩個 provider 都走非致命路徑。之後每個 `turn_start` 照常重新同步，所以 session 開始時套上的 overlay 不需要撐到整個 session。
+
 Abort 的範圍綁在 `ctx.model?.provider`：兩個 provider 照樣每個 turn 同步（overlay 保溫、block 記錄、sentinel 安裝全部不變），但只有 active model 所屬的 provider 失敗才偷走這個 turn，其餘走非致命的 notify。這是 REQ-004 的範圍限定而非退讓：失敗的 provider 下一次被選中時的保證逐字不變，而 dead grant 不再擋住根本不需要它的 turn。`ctx.model` 無法辨識時退回「任何失敗都 abort」的保守默認。
 
 `ctx.model` 並非這個判斷的完美來源，而 Pi 0.84.2 沒有更好的：agent loop 用的是 `prepareNextTurn` 凍結進 config 的 model snapshot（`agent-loop.js` 的 `streamAssistantResponse(currentContext, config, …)`），而 `ExtensionContext.model` 是 live 的 `agent.state.model`（`agent-session.js` `_installAgentNextTurnRefresh`）。圖上它們只在同一個 `turn_start` 內有人切模型時分岔——比 seat 更早載入的 extension、或 RPC client。`before_provider_request` 本來是正確的 seam，但 0.84.2 的 `onPayload(payload, _model)` 把 model 丟掉了，extension 拿不到 provider。

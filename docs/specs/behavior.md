@@ -71,7 +71,7 @@ Pin badge（AC-026）：WHEN the session has at least one pin, the extension SHA
 
 Startup 失敗 SHALL 顯示 error badge 而非留白 — 此時每個 turn 都被 abort，空 footer 會誤讀為正常的 unpinned session。兩種失敗分開報告，因為修法不同：`PI_SEAT` 本身無效（rule 5）顯示 `PI_SEAT invalid`（在環境變數修），store 讀取或 decode 失敗顯示 `seat store error`（在磁碟上修）；startup notice 的措辭同樣分開，不得把壞掉的 `seat.json` 說成 `PI_SEAT` 的問題。Per-turn fail-closed（[REQ-004](#req-004-fail-closed-runtime-application)）不進 badge：那是 transient per-provider health，不是 session 的 pin identity。
 
-Extension 載入對 store 的保證（AC-020）：載入永不建立 `seat.json`、永不改變 credential 內容、也永不執行任何 legacy 匯入——這條規則是 load-time 匯入專屬測試得以刪除的依據，由 `scripts/smoke-extension.sh` 對 store 缺席與 store 既存兩種情境斷言。載入不是字面上 side-effect-free：init 經由 store 的 read path 解析 pin，該路徑會短暫取得 file lock，並把既有檔案的 mode 重新收斂到 0600（刻意的 defense in depth——每次讀取都把持有 OAuth credential 的檔案硬化回 0600）。
+Extension 載入對 store 的保證（AC-020）：載入永不建立 `seat.json`、永不改變 credential 內容、也永不執行任何 legacy 匯入——這條規則是 load-time 匯入專屬測試得以刪除的依據，由 `scripts/smoke-extension.sh` 對 store 缺席與 store 既存兩種情境斷言。載入不是字面上 side-effect-free：init 經由 store 的 read path 解析 pin，該路徑會短暫取得 file lock，並把既有檔案的 mode 重新收斂到 0600（刻意的 defense in depth——每次讀取都把持有 OAuth credential 的檔案硬化回 0600）。AC-020 的範圍是載入本身；之後的 `session_start` 同步（AC-033）跟 turn 一樣，可能對已過期的 credential 執行 [REQ-005](#req-005-single-flight-refresh) 的 locked refresh 並寫回 rotation。
 
 | AC | Given | When | Then |
 |---|---|---|---|
@@ -99,6 +99,8 @@ The extension SHALL apply the selected credential as a runtime provider overlay 
 
 fail-closed 狀態只存在記憶體，不落盤：暫時性失敗（網路抖動）下一個 turn 自動重試復原；持久性失敗（refresh token 死亡）持續擋住直到重新 login。
 
+Turn 之外的呼叫者（AC-033）：extension 可以在任何 turn 之前直接呼叫 model——例如在新 session 第一個 prompt 之前執行的 slash command，透過 `ctx.modelRegistry.getApiKeyAndHeaders` 取 credential。只在 `turn_start` 套用時，這種呼叫找不到 overlay，會退回 Pi 內建的 `auth.json` login：用的不是 seat 選擇的帳號，而該 grant 若已過期就是 `invalid_grant`。因此 extension SHALL also apply the overlay at `session_start`, with the same sequence and the same sentinel rules. 這時沒有 turn 可以中止，所以每個失敗都走非致命路徑（poison + notify），sentinel 裝不上去時一樣升級為 abort handler 回報（AC-032 的規則）。Startup error 或缺少 runtime overlay 時，`session_start` 什麼都不套用，交給第一個 `turn_start` 依 AC-004 與版本檢查 fail-closed。
+
 中止的範圍是「這個 turn 實際會用到的 provider」：兩個 provider 每個 turn 照樣同步、照樣安裝 sentinel、照樣記住 block，但只有 active model 所屬的 provider 失敗才 abort。壞掉的 anthropic profile 因此擋不住跑在 codex 或任何非 seat provider（cursor、google……）上的 turn——那條路本來就不需要這份 credential，而「額度沒了就換模型繼續做事」是這個設計要保住的逃生門。Active model 無法辨識時回到最保守的行為：任何失敗都 abort。
 
 | AC | Given | When | Then |
@@ -107,6 +109,7 @@ fail-closed 狀態只存在記憶體，不落盤：暫時性失敗（網路抖�
 | AC-008 | overlay 流程任一步 throw（含 sentinel 安裝自身），active model 屬該 provider | turn 開始 | turn 先被 abort，provider request 零次發出 |
 | AC-031 | anthropic profile 已死（invalid_grant） | turn 跑在非 anthropic 的 model 上 | turn 不中止、request 照發；anthropic 仍被 block 並裝上 sentinel，並以非致命訊息回報；下一個跑在 anthropic 上的 turn 才中止 |
 | AC-032 | 同 AC-031，但 sentinel 裝不上去（set 丟錯或 read-back 不符） | turn 開始 | 升級為 abort：非致命路徑的存活條件是該 provider 確實已被 poison |
+| AC-033 | 有效的 pin 或 default；尚未執行任何 turn | `session_start` | 兩個 provider 的 overlay 都已套用，turn 之外的 model 呼叫使用 seat credential；失敗只 poison 並 notify，不中止任何東西；startup error 時不套用任何 overlay |
 
 ### REQ-009: Codex connection invalidation
 
