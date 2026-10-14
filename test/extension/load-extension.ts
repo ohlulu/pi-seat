@@ -16,6 +16,8 @@ import { FakeRuntime } from "./harness.ts";
 export interface LoadOptions {
 	pin: string;
 	profiles?: Partial<Record<ProviderId, Record<string, SeatCredential>>>;
+	/** Store default label per provider. */
+	defaults?: Partial<Record<ProviderId, string>>;
 	/** Write an undecodable seat.json to exercise the store-unreadable path. */
 	corruptStore?: boolean;
 	/** print/json modes report hasUI false and have no status surface. */
@@ -30,7 +32,13 @@ export interface LoadedExtension {
 	statuses: Map<string, string | undefined>;
 	statusCalls: number;
 	aborts: number;
+	/**
+	 * A real Pi ModelRuntime to serve as ctx.modelRegistry.runtime instead of
+	 * the FakeRuntime; provider registrations are forwarded to it.
+	 */
+	modelRuntime?: unknown;
 	fireSessionStart(): Promise<void>;
+	fireSessionShutdown(): Promise<void>;
 	fireTurnStart(): Promise<void>;
 }
 
@@ -54,7 +62,9 @@ export function loadExtension(options: LoadOptions): LoadedExtension {
 			Record<string, SeatCredential>,
 		][]) {
 			if (Object.keys(profiles).length === 0) continue;
+			const def = options.defaults?.[provider];
 			store.providers[provider] = {
+				...(def !== undefined ? { default: def } : {}),
 				profiles: Object.assign(Object.create(null), profiles),
 				aliases: Object.assign(Object.create(null)),
 			};
@@ -80,6 +90,12 @@ export function loadExtension(options: LoadOptions): LoadedExtension {
 			handlers.set(event, handler);
 		},
 		registerCommand: () => undefined,
+		registerProvider: (provider: unknown) => {
+			(loaded.modelRuntime as { registerNativeProvider(p: unknown): void }).registerNativeProvider(provider);
+		},
+		unregisterProvider: (name: string) => {
+			(loaded.modelRuntime as { unregisterProvider(n: string): void }).unregisterProvider(name);
+		},
 	} as unknown as ExtensionAPI;
 
 	const runtime = new FakeRuntime();
@@ -92,6 +108,9 @@ export function loadExtension(options: LoadOptions): LoadedExtension {
 		aborts: 0,
 		fireSessionStart: async () => {
 			await handlers.get("session_start")?.({ type: "session_start" }, ctx());
+		},
+		fireSessionShutdown: async () => {
+			await handlers.get("session_shutdown")?.({ type: "session_shutdown" }, ctx());
 		},
 		fireTurnStart: async () => {
 			const before = loaded.aborts;
@@ -119,7 +138,7 @@ export function loadExtension(options: LoadOptions): LoadedExtension {
 				// Marks the colour so tests can assert styling, not just text.
 				theme: { fg: (color: string, text: string) => `<${color}>${text}</${color}>` },
 			},
-			modelRegistry: { runtime },
+			modelRegistry: { runtime: loaded.modelRuntime ?? runtime },
 		}) as never;
 
 	seatExtension(fakePi);

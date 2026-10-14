@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- Foreground subagents now use the seat credential. A pi-subagents child started with `async: false` runs on a fresh `ModelRuntime` that loads no extensions, so seat's per-turn overlay never reached it, and the child's Anthropic or Codex requests fell back to Pi's own `auth.json` login. With a live grant there, the child silently ran on whatever account `auth.json` held. With a dead one it failed with `OAuth refresh failed for anthropic … invalid_grant`, even though the parent session was working. Background (`async: true`) children were unaffected because they load extensions themselves. Seat now registers each seat-managed provider as a native provider wrapping the one Pi already holds, and the child inherits it from the parent. Every request (parent and child alike) asks seat for its credential, using the same pin and default the parent uses. While seat owns a provider, Pi's `auth.json` grant for it is neither refreshed nor written. A dead seat profile or an invalid `PI_SEAT` fails the child with seat's own error, never an `auth.json` refresh error. A provider with no pin and no default still uses Pi's built-in login untouched. Concurrent children in one process share one locked refresh rather than deadlocking on the store lock. One known gap: if another extension registers a provider config for `anthropic` or `openai-codex`, seat leaves it in place and reports at session start that subagent children for that provider use Pi's built-in login (AC-034, DEC-013).
+
 ## [0.3.1] - 2026-10-08
 
 ### Fixed
