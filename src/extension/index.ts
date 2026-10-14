@@ -25,6 +25,7 @@ import { resolvePins } from "../store/selector.ts";
 import { envUsageFetchOptions } from "../usage/fetch.ts";
 import { createSeatProviderAdapters } from "./oauth.ts";
 import { pinBadge, type BadgeProblem } from "./pin-status.ts";
+import { SeatProviderInstaller, getProviderHost } from "./provider-auth.ts";
 import { SeatRuntimeAuthCoordinator, getSeatRuntime } from "./runtime-auth.ts";
 import { SEAT_COMMAND_DESCRIPTION, runSeatCommand } from "./seat-command.ts";
 
@@ -83,6 +84,18 @@ export default function seatExtension(pi: ExtensionAPI): void {
 	let coordinator: SeatRuntimeAuthCoordinator | undefined;
 	let noticesFlushed = false;
 
+	// AC-034: every request through a seat-managed provider — subagent children
+	// included — resolves here, and fails closed exactly like a turn would.
+	const requireCoordinator = (): SeatRuntimeAuthCoordinator => {
+		if (startupError !== undefined) throw new Error(startupError);
+		if (!coordinator) throw new Error(PI_VERSION_NOTICE);
+		return coordinator;
+	};
+	const providers = new SeatProviderInstaller(pi, {
+		owns: async (provider) => requireCoordinator().owns(provider),
+		requestAuth: async (provider) => requireCoordinator().requestAuth(provider),
+	});
+
 	/** undefined when this Pi build lacks the runtime overlay (version incompatibility). */
 	function ensureCoordinator(ctx: ExtensionContext): SeatRuntimeAuthCoordinator | undefined {
 		if (coordinator) return coordinator;
@@ -111,12 +124,26 @@ export default function seatExtension(pi: ExtensionAPI): void {
 			for (const notice of startupNotices) notify(ctx, notice, startupError ? "error" : "info");
 		}
 
+		const active = ensureCoordinator(ctx);
+
+		// AC-034: registered even under a startup error, so children fail closed
+		// with it instead of riding auth.json. Re-run on every session_start
+		// because session_shutdown hands the providers back.
+		const host = getProviderHost(ctx.modelRegistry);
+		if (host) {
+			for (const notice of providers.install(host)) notify(ctx, notice, "error");
+		}
+
 		// AC-033: apply the overlay before any turn, so an extension command run
 		// before the first prompt rides the seat credential, not auth.json. A
 		// startup error or a missing overlay is reported by the first turn_start.
 		if (startupError !== undefined) return;
 		const report = (reason: string) => notify(ctx, reason, "error");
-		await ensureCoordinator(ctx)?.syncIdle({ abort: report, warn: report });
+		await active?.syncIdle({ abort: report, warn: report });
+	});
+
+	pi.on("session_shutdown", async () => {
+		providers.uninstall();
 	});
 
 	pi.on("turn_start", async (_event, ctx) => {

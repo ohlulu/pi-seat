@@ -26,11 +26,22 @@ Abort 的範圍綁在 `ctx.model?.provider`：兩個 provider 照樣每個 turn 
 
 因此非致命路徑不依賴這個判斷正確：它只在 sentinel 確實裝上去（含 read-back 驗證）時才放過 turn，否則升級為 abort（AC-032）。判斷错了的代價因而是一個 401——sentinel 是不可能通過認證的字串——而不是請求騎在過期或錯誤的帳號上。Residual risk 是訊息品質：這種 turn 會以 provider 的 401 失敗，而非 seat 自己的 fail-closed 訊息。
 
+Overlay 只存在於 parent 自己的 runtime。每個 request 實際取得 credential 的地方是 seat 註冊的 provider（[DEC-013](#dec-013-seat-auth-rides-a-registered-provider)）：它的 auth hook 在 request 當下呼叫 coordinator 的 `requestAuth`，與 per-turn 序列共用同一份 selection、refresh、block 與 redaction。Parent 裡兩者結果一致，overlay 對 auth 正確性是冗餘的；pi-subagents 的 foreground child 沒有 overlay，只靠這條路。
+
 Selection resolution 是本專案唯一的新核心邏輯：`env pin > store default > Pi built-in`，pin（含 alias→label 解析）在 extension init 讀一次 `PI_SEAT`，天生 session-scoped。
 
 ## Pi compatibility
 
 Runtime overlay 依賴 Pi 內部 `ModelRuntime.setRuntimeApiKey/removeRuntimeApiKey`（非公開 ExtensionAPI）：以 structural cast 從 `ctx.modelRegistry.runtime` 取得 active runtime，startup 做 feature detection，缺失時 fail-closed 並提示版本不相容。Pi upgrade 是已知 residual risk——private API 無相容性保證。
+
+Per-request provider（[DEC-013](#dec-013-seat-auth-rides-a-registered-provider)，AC-034）依賴的表面，在 Pi 0.84.2 與 1.2.0、pi-subagents 0.78.0 上都已實證：
+
+- 公開：`pi.registerProvider(provider: Provider)` / `pi.unregisterProvider(id)`，以及 pi-ai 的 `Provider` 介面（`auth.oauth` 的 `refresh` / `toAuth`、`auth.apiKey` 的 `check` / `resolve`）。
+- 外部契約：pi-subagents 的 `inheritParentProviders`（`child-session.js`）把 parent 的 `getRegisteredNativeProvider()` 物件原樣註冊進 child runtime。同一個 process、同一個物件，closure 一併帶過去，所以 child 沒載入 extension 也問得到 seat。
+- pi-ai `resolveProviderAuth` 的「stored credential owns the provider」：`auth.json` 有 OAuth entry 時，Pi 先在自己的 file lock 內呼叫 `auth.oauth.refresh`，再呼叫 `auth.oauth.toAuth`；沒有 entry 時走 `auth.apiKey.resolve`。Seat 必須三個 hook 都接，只接 `apiKey` 的話，`auth.json` 裡的死 grant 仍會先被 refresh。
+- `CredentialStore.modify` 的 callback 回傳 `undefined` 表示「不改變 entry」（`AuthStorage.modify` 實證不寫檔）。Seat 擁有 provider 時，`oauth.refresh` 就回傳 `undefined`。這違反 `OAuthAuth.refresh` 宣告的回傳型別，是整個設計最脆弱的一點：Pi 若改成「空值即登出」，seat-owned provider 會變成未設定，表現是 fail-closed 而非退回 `auth.json`。
+- 私有：`ModelRuntime.builtins`（structural cast 讀取）。Seat 包的是 Pi 自己會用的那個 instance，remote-catalog wrapper 在內、`models.json` override 尚未套用，所以 override 仍只在 seat 之上 compose 一次。缺少這個 slice 時不註冊，parent 仍由 overlay 保護，child 退回修正前的行為。
+- Pi 在 `/reload` 時不清除已註冊的 provider，所以 seat 在 `session_shutdown` 歸還。
 
 ## Decisions
 
@@ -141,6 +152,16 @@ Ownership fencing——lock compromised 後禁止 commit，失鎖狀態下寫入
 - Claude 的窗長靠 `group` 推斷（`session` → 5h、`weekly*` → 7d），因為 live payload 實測沒有 duration 欄位；openusage 同樣寫死這組值。這是整個功能唯一的假設，認不出來的 limit 不猜、退回絕對門檻。
 - 門檻與 guard 沿用 openusage 的 `Pace.swift`（MIT，attribution 見 NOTICE），一處刻意放寬：near-empty distrust guard 對 yellow 也生效，不只 red。openusage 的 bar 旁有解釋文字，誤判的黃還有話可說；這裡顏色就是全部的訊息，安靜的誤導仍然是誤導。
 - Satisfies: REQ-011。
+
+### DEC-013: Seat auth rides a registered provider
+
+- Choice: `session_start` 時，為每個 seat-managed provider（`anthropic`、`openai-codex`）註冊一個 native `Provider`，包住 Pi 當下持有的那個（另一個 extension 的 native 註冊，否則是 `builtins` 裡的內建）。Models、streaming、login 與 catalog refresh 仍是 base 的；只有 auth hook 先問 coordinator。Seat 擁有 provider 時：`oauth.refresh` 回傳 `undefined`（Pi 的 grant 不動），`oauth.toAuth` 與 `apiKey.resolve` 回傳 seat 的 request auth，`apiKey.check` 只用 ownership 回答，所以 availability check 不會觸發 refresh。不擁有時全部委派給 base（AC-006）。`apiKey` 一律存在：只透過 seat login 的 Codex 在 `auth.json` 裡沒有 entry，只有這條路徑找得到 seat。Per-turn overlay 保留。
+- Alternatives: (a) monkey-patch `ModelRuntime.create` 或 `AuthStorage`；(b) 改 pi-subagents，讓它把 runtime key 傳給 child；(c) legacy `ProviderConfig` 註冊；(d) 在 extension factory 階段直接包 pi-ai 的內建 provider；(e) 既然 request 已經經過 seat，就拿掉 per-turn overlay。
+- Rationale: (a) 是覆蓋全域的 patch，會影響每個 runtime，也明確被排除；(b) 不在本 repo 的範圍，而且只修一個 host。(c) 的 `apiKey` 只是靜態 config 值（literal、`$ENV`、`!command`），沒有 per-request hook，而 `auth.json` 的 stored credential 仍然優先。(d) 會失去 Pi 外包的 remote-catalog（pi.dev 的新 model 就不會出現），且需要 jiti 下不可靠的 subpath import，所以改為在 `session_start` 從 runtime 取 base。(e) Overlay 仍然負責三件 provider 做不到的事：在 request 之前就中止 turn 並顯示 seat 的訊息（AC-007/008/031/032）、Codex WebSocket invalidation（REQ-009，需要 session id），以及 provider 裝不上去時的 fallback。在 happy path 上它對 auth 正確性是冗餘的，縮減它是另一件事。
+- Lifecycle: 即使有 startup error 也註冊，讓 child 帶著該錯誤 fail closed，而不是退回 `auth.json`。`session_shutdown` 歸還：還原另一個 extension 的 native provider，否則 unregister。上一個 instance 殘留的 wrapper 會被拆開，不會被包兩層。
+- Serialization: 同一個 process 裡並發的 child 會同時走到 store，而同步 lock 讀取撞上另一個正在 refresh 的 async lock，就是 DEC-011 的 event-loop deadlock（實測：拿掉 queue 後兩個 child 卡滿 5s，以 `Lock file is already being held` 失敗）。Coordinator 因此把所有 store 工作排進一個 queue。Overlay 的套用必須在 queue 外：`setRuntimeApiKey` 會觸發 Pi 的 availability check，它又呼叫 wrapper 的 `owns`，在 queue 內就是自己等自己（一樣實測過）。
+- Limits: 另一個 extension 若對同一個 id 註冊了 `ProviderConfig`，native 註冊會靜默把它丟掉，所以 seat 保留它並在 session start 提示。該 provider 的 child 繼承那份 config，auth 由它決定（config 自訂了 oauth 或 apiKey 就用它的，否則才落到 Pi 內建登入），seat 不保證 child 用哪個 credential；parent 仍由 overlay 保護。Codex WebSocket 不在 request 層失效：child 開的 socket 在 child 存活期間都用開啟時的 credential。失敗訊息由 Pi 包裝：`OAuth auth derivation failed for anthropic: seat: anthropic auth failed — …`（`ModelsError` 保留 cause）。
+- Satisfies: REQ-004, AC-034。
 
 ## Related
 

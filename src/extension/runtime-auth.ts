@@ -4,7 +4,9 @@
  * restructured for seat's abort-first per-turn contract:
  *
  * Every turn, per provider: selection → locked refresh → toAuth → overlay →
- * verify. IF any step fails — sentinel installation included — the turn is
+ * verify. The same resolution also serves every request through the registered
+ * provider (`requestAuth`, AC-034), which is what reaches subagent children.
+ * IF any step fails — sentinel installation included — the turn is
  * aborted FIRST, then a non-secret sentinel key is installed best-effort.
  * Abort never depends on the sentinel succeeding.
  *
@@ -24,7 +26,7 @@
 // specifier to a single entry file, so subpath imports break under `pi -e`.
 // cleanupSessionResources (root export) dispatches to the registered
 // closeOpenAICodexWebSocketSessions cleanup — same close, loadable path.
-import { cleanupSessionResources } from "@earendil-works/pi-ai";
+import { cleanupSessionResources, type ModelAuth } from "@earendil-works/pi-ai";
 import { PROVIDER_IDS, type ProviderId, type SeatCredential } from "../store/schema.ts";
 import { InvalidGrantError, ensureFreshProfile } from "../store/refresh.ts";
 import { decodeStore, type SeatStorageBackend } from "../store/storage.ts";
@@ -112,12 +114,64 @@ function accountFingerprint(credential: SeatCredential): string {
 	return typeof accountId === "string" && accountId.length > 0 ? `id:${accountId}` : `rt:${credential.refresh}`;
 }
 
+/** What the selection resolves to: Pi's own login, or a fresh seat credential. */
+type ResolvedSeat =
+	| { kind: "builtin" }
+	| { kind: "seat"; label: string; credential: SeatCredential; auth: ModelAuth & { apiKey: string } };
+
 export class SeatRuntimeAuthCoordinator {
 	private readonly blocked: Partial<Record<ProviderId, BlockedState>> = {};
 	private readonly appliedIdentity: Partial<Record<ProviderId, Identity>> = {};
 	private readonly overlayActive: Partial<Record<ProviderId, boolean>> = {};
+	/**
+	 * Every store access in this process queues here. The store read takes a
+	 * SYNC lock that freezes the event loop, so one that lands while another
+	 * resolution holds the async refresh lock over its network call deadlocks
+	 * both until the lock timeout (DEC-011). Parallel subagent children are the
+	 * concurrent callers.
+	 */
+	private queue: Promise<unknown> = Promise.resolve();
 
 	constructor(private readonly options: CoordinatorOptions) {}
+
+	private serialize<T>(task: () => Promise<T>): Promise<T> {
+		const run = this.queue.then(task, task);
+		this.queue = run.catch(() => undefined);
+		return run;
+	}
+
+	/**
+	 * True when seat owns `provider`'s auth (a pin or a store default). Throws a
+	 * seat error when the store cannot be read — the caller must fail closed.
+	 */
+	owns(provider: ProviderId): Promise<boolean> {
+		return this.serialize(async () => {
+			try {
+				const store = this.options.backend.read((current) => decodeStore(current));
+				return resolveSelection(store, provider, this.options.pins[provider]).source !== "builtin";
+			} catch (error) {
+				throw new Error(failureMessage(provider, errorMessage(error)));
+			}
+		});
+	}
+
+	/**
+	 * Per-request entry point for the registered provider (AC-034): the request
+	 * auth of the seat selection, or undefined when Pi's built-in login owns the
+	 * provider. Shares the fail-closed block with the per-turn overlay, and
+	 * throws seat's own redacted error — never falls back to auth.json.
+	 */
+	requestAuth(provider: ProviderId): Promise<ModelAuth | undefined> {
+		return this.serialize(async () => {
+			const secrets: string[] = [];
+			try {
+				const resolved = await this.resolveSeat(provider, secrets);
+				return resolved.kind === "seat" ? resolved.auth : undefined;
+			} catch (error) {
+				throw new Error(failureMessage(provider, redactTokenText(errorMessage(error), secrets)));
+			}
+		});
+	}
 
 	/**
 	 * turn_start entry point: synchronize both providers. Each provider is
@@ -163,10 +217,12 @@ export class SeatRuntimeAuthCoordinator {
 		// locked refresh actually sent, and the rotation it returned.
 		const secrets: string[] = [];
 		try {
-			const store = this.options.backend.read((current) => decodeStore(current));
-			const selection = resolveSelection(store, provider, this.options.pins[provider]);
+			// Only the store work queues. Applying the overlay re-enters seat: Pi's
+			// availability check calls the registered provider's `owns`, which
+			// would wait behind this very task.
+			const resolved = await this.serialize(() => this.resolveSeat(provider, secrets));
 
-			if (selection.source === "builtin") {
+			if (resolved.kind === "builtin") {
 				// AC-006: with no pin and no default, Pi's built-in login runs
 				// untouched — zero runtime override. Only remove what we own.
 				if (this.overlayActive[provider]) {
@@ -178,57 +234,7 @@ export class SeatRuntimeAuthCoordinator {
 				return { provider, status: "builtin" };
 			}
 
-			const label = selection.label;
-
-			// Redactable even when the failure happens inside refresh, before any
-			// rotation exists.
-			const stored = store.providers[provider]?.profiles[label];
-			if (stored) secrets.push(stored.access, stored.refresh);
-
-			// Persistent fail-closed: a dead grant blocks this provider until a
-			// replacement login rotates the stored refresh token (AC-007).
-			const block = this.blocked[provider];
-			if (block && block.label === label) {
-				const currentRefresh = Object.hasOwn(store.providers[provider]?.profiles ?? {}, label)
-					? store.providers[provider]?.profiles[label]?.refresh
-					: undefined;
-				if (currentRefresh === block.refresh) {
-					return await this.failClosed(provider, policy, new Error(block.reason), secrets);
-				}
-				delete this.blocked[provider]; // replacement login cleared it
-			}
-
-			const adapter = adapterFor(this.options.adapters, provider);
-			let credential: SeatCredential;
-			// The credential the locked refresh actually sent, which diverges from
-			// this coordinator's entry read under a concurrent same-label
-			// replacement. Both the fail-closed block (T034) and redaction (T042)
-			// must bind to it.
-			let sent: SeatCredential | undefined;
-			try {
-				const nowOption = this.options.now;
-				const outcome = await ensureFreshProfile(this.options.backend, provider, label, toRefreshCallback(adapter), {
-					...(this.options.refreshTimeoutMs !== undefined ? { timeoutMs: this.options.refreshTimeoutMs } : {}),
-					...(nowOption !== undefined ? { now: nowOption } : {}),
-					onAttempt: (attempted) => {
-						sent = attempted;
-						secrets.push(attempted.access, attempted.refresh);
-					},
-				});
-				credential = outcome.credential;
-				secrets.push(credential.access, credential.refresh);
-			} catch (error) {
-				if (error instanceof InvalidGrantError) {
-					const deadRefresh = sent?.refresh ?? store.providers[provider]?.profiles[label]?.refresh;
-					if (deadRefresh !== undefined) {
-						this.blocked[provider] = { label, refresh: deadRefresh, reason: error.message };
-					}
-				}
-				throw error;
-			}
-
-			const auth = await adapter.oauth.toAuth(credential);
-			validateModelAuth(auth, adapter.displayName);
+			const { label, credential, auth } = resolved;
 
 			// REQ-009: close live Codex sockets BEFORE the new credential is
 			// applied and the switch is reported — no request rides a stale grant.
@@ -244,6 +250,69 @@ export class SeatRuntimeAuthCoordinator {
 		} catch (error) {
 			return await this.failClosed(provider, policy, error, secrets);
 		}
+	}
+
+	/**
+	 * selection → fail-closed block → locked refresh → toAuth → validate. Shared
+	 * by the per-turn overlay and the per-request provider, so both see the same
+	 * block and the same redaction set. Must run inside `serialize` and must not
+	 * call back into Pi.
+	 */
+	private async resolveSeat(provider: ProviderId, secrets: string[]): Promise<ResolvedSeat> {
+		const store = this.options.backend.read((current) => decodeStore(current));
+		const selection = resolveSelection(store, provider, this.options.pins[provider]);
+		if (selection.source === "builtin") return { kind: "builtin" };
+
+		const label = selection.label;
+
+		// Redactable even when the failure happens inside refresh, before any
+		// rotation exists.
+		const stored = store.providers[provider]?.profiles[label];
+		if (stored) secrets.push(stored.access, stored.refresh);
+
+		// Persistent fail-closed: a dead grant blocks this provider until a
+		// replacement login rotates the stored refresh token (AC-007).
+		const block = this.blocked[provider];
+		if (block && block.label === label) {
+			const currentRefresh = Object.hasOwn(store.providers[provider]?.profiles ?? {}, label)
+				? store.providers[provider]?.profiles[label]?.refresh
+				: undefined;
+			if (currentRefresh === block.refresh) throw new Error(block.reason);
+			delete this.blocked[provider]; // replacement login cleared it
+		}
+
+		const adapter = adapterFor(this.options.adapters, provider);
+		let credential: SeatCredential;
+		// The credential the locked refresh actually sent, which diverges from
+		// this coordinator's entry read under a concurrent same-label
+		// replacement. Both the fail-closed block (T034) and redaction (T042)
+		// must bind to it.
+		let sent: SeatCredential | undefined;
+		try {
+			const nowOption = this.options.now;
+			const outcome = await ensureFreshProfile(this.options.backend, provider, label, toRefreshCallback(adapter), {
+				...(this.options.refreshTimeoutMs !== undefined ? { timeoutMs: this.options.refreshTimeoutMs } : {}),
+				...(nowOption !== undefined ? { now: nowOption } : {}),
+				onAttempt: (attempted) => {
+					sent = attempted;
+					secrets.push(attempted.access, attempted.refresh);
+				},
+			});
+			credential = outcome.credential;
+			secrets.push(credential.access, credential.refresh);
+		} catch (error) {
+			if (error instanceof InvalidGrantError) {
+				const deadRefresh = sent?.refresh ?? store.providers[provider]?.profiles[label]?.refresh;
+				if (deadRefresh !== undefined) {
+					this.blocked[provider] = { label, refresh: deadRefresh, reason: error.message };
+				}
+			}
+			throw error;
+		}
+
+		const auth = await adapter.oauth.toAuth(credential);
+		validateModelAuth(auth, adapter.displayName);
+		return { kind: "seat", label, credential, auth };
 	}
 
 	/**
@@ -266,7 +335,7 @@ export class SeatRuntimeAuthCoordinator {
 		secrets: readonly string[] = [],
 	): Promise<TurnAuthResult> {
 		const reason = redactTokenText(errorMessage(error), secrets);
-		const message = `seat: ${provider} auth failed — ${reason}`;
+		const message = failureMessage(provider, reason);
 
 		if (policy.fatal) {
 			policy.handlers.abort(message);
@@ -357,6 +426,10 @@ export function validateModelAuth(
 			}
 		}
 	}
+}
+
+function failureMessage(provider: ProviderId, reason: string): string {
+	return `seat: ${provider} auth failed — ${reason}`;
 }
 
 function errorMessage(error: unknown): string {

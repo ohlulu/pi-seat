@@ -101,6 +101,8 @@ fail-closed 狀態只存在記憶體，不落盤：暫時性失敗（網路抖�
 
 Turn 之外的呼叫者（AC-033）：extension 可以在任何 turn 之前直接呼叫 model——例如在新 session 第一個 prompt 之前執行的 slash command，透過 `ctx.modelRegistry.getApiKeyAndHeaders` 取 credential。只在 `turn_start` 套用時，這種呼叫找不到 overlay，會退回 Pi 內建的 `auth.json` login：用的不是 seat 選擇的帳號，而該 grant 若已過期就是 `invalid_grant`。因此 extension SHALL also apply the overlay at `session_start`, with the same sequence and the same sentinel rules. 這時沒有 turn 可以中止，所以每個失敗都走非致命路徑（poison + notify），sentinel 裝不上去時一樣升級為 abort handler 回報（AC-032 的規則）。Startup error 或缺少 runtime overlay 時，`session_start` 什麼都不套用，交給第一個 `turn_start` 依 AC-004 與版本檢查 fail-closed。
 
+Subagent children（AC-034）：pi-subagents 的 foreground child（`async: false`）跑在一個全新的 `ModelRuntime` 上，不載入任何 extension，只繼承 parent 透過 `pi.registerProvider` 註冊的 provider——per-turn overlay 到不了那裡，child 會退回 `auth.json` 的 grant。The extension SHALL therefore also resolve every request to a seat-managed provider through seat, in every runtime that holds seat's registered provider：同一份 selection（init 解析的 pin > store default）、同一條 [REQ-005](#req-005-single-flight-refresh) locked refresh、同一個 fail-closed block。seat 擁有該 provider 時，Pi 的 `auth.json` grant 不被 refresh 也不被寫入；失敗時 request 以 seat 的錯誤失敗，絕不退回 `auth.json`。這條路徑沒有 turn 可以中止，fail-closed 的形式就是該 request 本身失敗。Startup error（AC-004）同樣讓這些 request 失敗，而不是放行。Background child 自己載入 extension，走的仍是 per-turn overlay。
+
 中止的範圍是「這個 turn 實際會用到的 provider」：兩個 provider 每個 turn 照樣同步、照樣安裝 sentinel、照樣記住 block，但只有 active model 所屬的 provider 失敗才 abort。壞掉的 anthropic profile 因此擋不住跑在 codex 或任何非 seat provider（cursor、google……）上的 turn——那條路本來就不需要這份 credential，而「額度沒了就換模型繼續做事」是這個設計要保住的逃生門。Active model 無法辨識時回到最保守的行為：任何失敗都 abort。
 
 | AC | Given | When | Then |
@@ -110,6 +112,7 @@ Turn 之外的呼叫者（AC-033）：extension 可以在任何 turn 之前直�
 | AC-031 | anthropic profile 已死（invalid_grant） | turn 跑在非 anthropic 的 model 上 | turn 不中止、request 照發；anthropic 仍被 block 並裝上 sentinel，並以非致命訊息回報；下一個跑在 anthropic 上的 turn 才中止 |
 | AC-032 | 同 AC-031，但 sentinel 裝不上去（set 丟錯或 read-back 不符） | turn 開始 | 升級為 abort：非致命路徑的存活條件是該 provider 確實已被 poison |
 | AC-033 | 有效的 pin 或 default；尚未執行任何 turn | `session_start` | 兩個 provider 的 overlay 都已套用，turn 之外的 model 呼叫使用 seat credential；失敗只 poison 並 notify，不中止任何東西；startup error 時不套用任何 overlay |
+| AC-034 | seat 的 pin 或 default 生效；`auth.json` 同 provider 的 grant 已死；foreground subagent child（全新 `ModelRuntime`、不載入 extension、只繼承 parent 註冊的 provider） | child 發出該 provider 的 request | 使用與 parent 相同的 seat profile（pin > default）；`auth.json` 未被 refresh 且 byte-identical；seat profile 已死或 startup error 時 request 以 seat 的錯誤失敗，而非 `auth.json` 的 refresh 錯誤；無 pin 無 default 時走 Pi 內建登入（AC-006）；同一 process 內並發的 child 對同一顆過期 grant 只 refresh 一次且不死鎖 |
 
 ### REQ-009: Codex connection invalidation
 
