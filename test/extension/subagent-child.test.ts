@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { decodeStore, encodeStore, FileSeatStorageBackend } from "../../src/store/storage.ts";
 import { cred } from "./harness.ts";
@@ -49,6 +49,12 @@ function authPath(loaded: LoadedExtension): string {
 	return join(loaded.dir, "auth.json");
 }
 
+/** Every runtime in a test reads the same sandbox: auth.json, plus models.json when the test wrote one. */
+function runtimeOptions(loaded: LoadedExtension) {
+	const modelsPath = join(loaded.dir, "models.json");
+	return { authPath: authPath(loaded), modelsPath: existsSync(modelsPath) ? modelsPath : null };
+}
+
 function writeAuthJson(loaded: LoadedExtension, entries: Record<string, unknown>): string {
 	const content = JSON.stringify(entries, null, 2);
 	writeFileSync(authPath(loaded), content, { mode: 0o600 });
@@ -58,10 +64,15 @@ function writeAuthJson(loaded: LoadedExtension, entries: Record<string, unknown>
 const deadAuthJson = { anthropic: { type: "oauth", refresh: AUTH_JSON_REFRESH, access: "at-authjson", expires: EXPIRED } };
 
 /** The parent session: real runtime, real extension, session_start fired. */
-async function startParent(options: LoadOptions, authJson: Record<string, unknown> = deadAuthJson) {
+async function startParent(
+	options: LoadOptions,
+	authJson: Record<string, unknown> = deadAuthJson,
+	modelsJson?: Record<string, unknown>,
+) {
 	const loaded = loadExtension(options);
 	const authJsonBefore = writeAuthJson(loaded, authJson);
-	const parent = await ModelRuntime.create({ authPath: authPath(loaded), modelsPath: null });
+	if (modelsJson) writeFileSync(join(loaded.dir, "models.json"), JSON.stringify(modelsJson));
+	const parent = await ModelRuntime.create(runtimeOptions(loaded));
 	loaded.modelRuntime = parent;
 	await loaded.fireSessionStart();
 	return { loaded, parent, authJsonBefore };
@@ -69,7 +80,7 @@ async function startParent(options: LoadOptions, authJson: Record<string, unknow
 
 /** A foreground child exactly as pi-subagents builds one: fresh runtime + inherited providers. */
 async function spawnChild(parent: ModelRuntime, loaded: LoadedExtension): Promise<ModelRuntime> {
-	const child = await ModelRuntime.create({ authPath: authPath(loaded), modelsPath: null });
+	const child = await ModelRuntime.create(runtimeOptions(loaded));
 	for (const id of parent.getRegisteredProviderIds()) {
 		const native = parent.getRegisteredNativeProvider(id);
 		const config = native ? undefined : parent.getRegisteredProviderConfig(id);
@@ -175,6 +186,20 @@ describe("AC-034: subagent children resolve seat credentials, never auth.json", 
 
 		expect(await child.checkAuth("openai-codex")).toBeDefined();
 		expect((await child.getAuth(modelOf(child, "openai-codex")))?.auth.apiKey).toBe("at-rt-main");
+	});
+
+	test("an unowned Codex keeps the apiKey models.json configures for it (AC-006)", async () => {
+		const { loaded, parent } = await startParent(
+			{ pin: "", profiles: { anthropic: { work: cred("rt-work", FRESH) } }, defaults: { anthropic: "work" } },
+			{},
+			{ providers: { "openai-codex": { apiKey: "sk-from-models-json" } } },
+		);
+		const child = await spawnChild(parent, loaded);
+
+		for (const runtime of [parent, child]) {
+			expect(await runtime.checkAuth("openai-codex")).toBeDefined();
+			expect((await runtime.getAuth(modelOf(runtime, "openai-codex")))?.auth.apiKey).toBe("sk-from-models-json");
+		}
 	});
 
 	test("concurrent children refresh an expiring seat grant once, without the DEC-011 lock deadlock", async () => {
