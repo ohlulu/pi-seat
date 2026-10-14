@@ -37,6 +37,8 @@ export interface LoadedExtension {
 	 * the FakeRuntime; provider registrations are forwarded to it.
 	 */
 	modelRuntime?: unknown;
+	/** ctx.model for turns; undefined means the active model is unknown. */
+	activeModel?: { provider: string };
 	fireSessionStart(): Promise<void>;
 	fireSessionShutdown(): Promise<void>;
 	fireTurnStart(): Promise<void>;
@@ -139,6 +141,7 @@ export function loadExtension(options: LoadOptions): LoadedExtension {
 				theme: { fg: (color: string, text: string) => `<${color}>${text}</${color}>` },
 			},
 			modelRegistry: { runtime: loaded.modelRuntime ?? runtime },
+			model: loaded.activeModel,
 		}) as never;
 
 	seatExtension(fakePi);

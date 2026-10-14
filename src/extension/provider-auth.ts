@@ -21,6 +21,7 @@
 
 import type { ApiKeyAuth, ModelAuth, OAuthAuth, OAuthCredential, Provider } from "@earendil-works/pi-ai";
 import { PROVIDER_IDS, type ProviderId } from "../store/schema.ts";
+import { SEAT_SENTINEL_API_KEY } from "./runtime-auth.ts";
 
 /** What the registered provider asks seat on every request. */
 export interface SeatAuthSource {
@@ -76,6 +77,10 @@ export function wrapProvider(
 		...(baseApiKey?.login ? { login: (interaction) => baseApiKey.login!(interaction) } : {}),
 		// Availability checks must not refresh tokens, so ownership answers them.
 		check: async (input) => {
+			// Installing the sentinel runs this check. It must pass without the
+			// store, which may be the very thing that failed (AC-031/032); the
+			// request itself still fails closed in resolve.
+			if (input.credential?.key === SEAT_SENTINEL_API_KEY) return { type: "api_key", source: SEAT_AUTH_SOURCE };
 			if (await source.owns(id)) return { type: "oauth", source: SEAT_AUTH_SOURCE };
 			if (!baseApiKey) return undefined;
 			if (baseApiKey.check) return baseApiKey.check(input);
@@ -150,7 +155,7 @@ export class SeatProviderInstaller {
 			if (host.getRegisteredProviderConfig(id) !== undefined) {
 				// A native registration would silently drop that extension's config.
 				notices.push(
-					`seat: another extension registered a provider config for "${id}"; seat cannot cover subagent children for ${id}, which use Pi's built-in login.`,
+					`seat: another extension registered a provider config for "${id}"; seat cannot cover subagent children for ${id}; their auth comes from that config, not from seat.`,
 				);
 				continue;
 			}

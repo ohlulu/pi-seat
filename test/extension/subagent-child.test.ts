@@ -203,6 +203,27 @@ describe("AC-034: subagent children resolve seat credentials, never auth.json", 
 		expect(Date.now() - started).toBeLessThan(3_000); // a sync-lock deadlock waits out the 5s lock timeout
 	});
 
+	test("a store corrupted mid-session still lets a non-seat turn run: the sentinel lands (AC-031)", async () => {
+		const { loaded, parent } = await startParent({
+			pin: "",
+			profiles: { anthropic: { work: cred("rt-work", FRESH) } },
+			defaults: { anthropic: "work" },
+		});
+		writeFileSync(join(loaded.dir, "seat.json"), "{ corrupted mid-session", { mode: 0o600 });
+		loaded.activeModel = { provider: "google" };
+
+		await loaded.fireTurnStart();
+
+		// Installing the sentinel runs Pi's availability check through the
+		// registered provider; it must not need the unreadable store to pass.
+		expect(loaded.aborts).toBe(0);
+		expect(loaded.notices.some((notice) => notice.startsWith("seat: anthropic auth failed"))).toBe(true);
+		expect(loaded.runtime.streamCalls).toBe(1); // the turn runner went on to the request
+		// An anthropic request still fails closed with seat's error.
+		await expect(parent.getAuth(modelOf(parent, "anthropic"))).rejects.toThrow(/seat: anthropic auth failed/);
+		expect(refreshes).toEqual([]);
+	});
+
 	test("session_shutdown hands the providers back to Pi", async () => {
 		const { loaded, parent } = await startParent({
 			pin: "",
