@@ -31,6 +31,7 @@ import { PROVIDER_IDS, type ProviderId, type SeatCredential } from "../store/sch
 import { InvalidGrantError, ensureFreshProfile } from "../store/refresh.ts";
 import { decodeStore, type SeatStorageBackend } from "../store/storage.ts";
 import { resolveSelection } from "../store/selector.ts";
+import { createStoreSchedule, type StoreSchedule } from "../store/scheduler.ts";
 import { adapterFor, toRefreshCallback, type SeatProviderAdapter } from "./oauth.ts";
 import { redactTokenText } from "../store/redact.ts";
 
@@ -91,6 +92,12 @@ export interface CoordinatorOptions {
 	sessionId?: string;
 	now?: () => number;
 	refreshTimeoutMs?: number;
+	/**
+	 * The process's store schedule (DEC-011, DEC-013), shared with every other
+	 * store user in the process. Defaults to a private one, enough when this
+	 * coordinator is the only store user.
+	 */
+	schedule?: StoreSchedule;
 }
 
 interface BlockedState {
@@ -123,21 +130,11 @@ export class SeatRuntimeAuthCoordinator {
 	private readonly blocked: Partial<Record<ProviderId, BlockedState>> = {};
 	private readonly appliedIdentity: Partial<Record<ProviderId, Identity>> = {};
 	private readonly overlayActive: Partial<Record<ProviderId, boolean>> = {};
-	/**
-	 * Every store access in this process queues here. The store read takes a
-	 * SYNC lock that freezes the event loop, so one that lands while another
-	 * resolution holds the async refresh lock over its network call deadlocks
-	 * both until the lock timeout (DEC-011). Parallel subagent children are the
-	 * concurrent callers.
-	 */
-	private queue: Promise<unknown> = Promise.resolve();
+	/** Store work only: parallel subagent children are concurrent callers (DEC-011). */
+	private readonly serialize: StoreSchedule;
 
-	constructor(private readonly options: CoordinatorOptions) {}
-
-	private serialize<T>(task: () => Promise<T>): Promise<T> {
-		const run = this.queue.then(task, task);
-		this.queue = run.catch(() => undefined);
-		return run;
+	constructor(private readonly options: CoordinatorOptions) {
+		this.serialize = options.schedule ?? createStoreSchedule();
 	}
 
 	/**

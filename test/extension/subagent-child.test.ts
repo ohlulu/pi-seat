@@ -25,14 +25,18 @@ const AUTH_JSON_REFRESH = "rt-authjson-dead";
 const ROTATABLE_REFRESH = "rt-seat-rotatable";
 
 let refreshes: string[];
+/** Called when a rotatable refresh is on the wire, i.e. while its store lock is held. */
+let onRotatableRefresh: (() => void) | undefined;
 const realFetch = globalThis.fetch;
 
 beforeEach(() => {
 	refreshes = [];
+	onRotatableRefresh = undefined;
 	globalThis.fetch = (async (_input: unknown, init?: { body?: unknown }) => {
 		const refreshToken = (JSON.parse(String(init?.body ?? "{}")) as { refresh_token?: string }).refresh_token ?? "";
 		refreshes.push(refreshToken);
 		if (refreshToken === ROTATABLE_REFRESH) {
+			onRotatableRefresh?.();
 			await Bun.sleep(150); // hold the store's async refresh lock across a real await
 			return Response.json({ access_token: "at-rotated", refresh_token: "rt-rotated", expires_in: 3600 });
 		}
@@ -88,6 +92,15 @@ async function spawnChild(parent: ModelRuntime, loaded: LoadedExtension): Promis
 		else if (config) child.registerProvider(id, config);
 	}
 	return child;
+}
+
+/** Replace the anthropic "work" grant with an expired, rotatable one — after any session_start sync. */
+function expireWorkGrant(loaded: LoadedExtension): void {
+	new FileSeatStorageBackend(join(loaded.dir, "seat.json")).withLock((current) => {
+		const store = decodeStore(current);
+		store.providers.anthropic!.profiles["work"] = cred(ROTATABLE_REFRESH, EXPIRED);
+		return { result: undefined, next: encodeStore(store) };
+	});
 }
 
 function modelOf(runtime: ModelRuntime, provider: string) {
@@ -209,12 +222,7 @@ describe("AC-034: subagent children resolve seat credentials, never auth.json", 
 			defaults: { anthropic: "work" },
 		});
 		// Expire the grant after the parent's session_start sync, so the children race the refresh.
-		const backend = new FileSeatStorageBackend(join(loaded.dir, "seat.json"));
-		backend.withLock((current) => {
-			const store = decodeStore(current);
-			store.providers.anthropic!.profiles["work"] = cred(ROTATABLE_REFRESH, EXPIRED);
-			return { result: undefined, next: encodeStore(store) };
-		});
+		expireWorkGrant(loaded);
 		const [first, second] = [await spawnChild(parent, loaded), await spawnChild(parent, loaded)];
 
 		const started = Date.now();
@@ -248,6 +256,34 @@ describe("AC-034: subagent children resolve seat credentials, never auth.json", 
 		await expect(parent.getAuth(modelOf(parent, "anthropic"))).rejects.toThrow(/seat: anthropic auth failed/);
 		expect(refreshes).toEqual([]);
 	});
+
+	for (const [command, settled] of [
+		["whoami", (notice: string) => expect(notice).toStartWith("seat status")],
+		["use anthropic:default", (notice: string) => expect(notice).toContain("anthropic default cleared")],
+	] as const) {
+		test(`/seat ${command} run while a child holds the refresh lock waits its turn (DEC-011)`, async () => {
+			const { loaded, parent } = await startParent({
+				pin: "",
+				profiles: { anthropic: { work: cred("rt-work", FRESH) } },
+				defaults: { anthropic: "work" },
+			});
+			expireWorkGrant(loaded);
+			const child = await spawnChild(parent, loaded);
+			const onTheWire = new Promise<void>((resolve) => {
+				onRotatableRefresh = resolve;
+			});
+
+			const request = child.getAuth(modelOf(child, "anthropic"));
+			await onTheWire; // the child now holds the store lock across its round trip
+			// Pi runs extension commands mid-stream, so this lands inside that window.
+			const started = Date.now();
+			await loaded.fireCommand("seat", command);
+
+			settled(loaded.notices.at(-1) ?? "");
+			expect(Date.now() - started).toBeLessThan(3_000); // a sync-lock deadlock waits out the 5s timeout
+			expect((await request)?.auth.apiKey).toBe("at-rotated");
+		});
+	}
 
 	test("session_shutdown hands the providers back to Pi", async () => {
 		const { loaded, parent } = await startParent({

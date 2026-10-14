@@ -41,6 +41,8 @@ export interface LoadedExtension {
 	activeModel?: { provider: string };
 	fireSessionStart(): Promise<void>;
 	fireSessionShutdown(): Promise<void>;
+	/** Run a registered slash command, as Pi does — possibly mid-stream. */
+	fireCommand(name: string, args: string): Promise<void>;
 	fireTurnStart(): Promise<void>;
 }
 
@@ -87,11 +89,14 @@ export function loadExtension(options: LoadOptions): LoadedExtension {
 	});
 
 	const handlers = new Map<string, (event: unknown, ctx: unknown) => Promise<void>>();
+	const commands = new Map<string, (args: string, ctx: unknown) => Promise<void>>();
 	const fakePi = {
 		on: (event: string, handler: (event: unknown, ctx: unknown) => Promise<void>) => {
 			handlers.set(event, handler);
 		},
-		registerCommand: () => undefined,
+		registerCommand: (name: string, command: { handler: (args: string, ctx: unknown) => Promise<void> }) => {
+			commands.set(name, command.handler);
+		},
 		registerProvider: (provider: unknown) => {
 			(loaded.modelRuntime as { registerNativeProvider(p: unknown): void }).registerNativeProvider(provider);
 		},
@@ -110,6 +115,9 @@ export function loadExtension(options: LoadOptions): LoadedExtension {
 		aborts: 0,
 		fireSessionStart: async () => {
 			await handlers.get("session_start")?.({ type: "session_start" }, ctx());
+		},
+		fireCommand: async (name, args) => {
+			await commands.get(name)?.(args, ctx());
 		},
 		fireSessionShutdown: async () => {
 			await handlers.get("session_shutdown")?.({ type: "session_shutdown" }, ctx());

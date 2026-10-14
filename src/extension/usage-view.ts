@@ -26,6 +26,7 @@
 
 import { Key, matchesKey } from "@earendil-works/pi-tui";
 import type { SeatStore } from "../store/schema.ts";
+import type { StoreSchedule } from "../store/scheduler.ts";
 import { decodeStore } from "../store/storage.ts";
 import { cellClip, stripAnsi, visibleCellWidth } from "../usage/cells.ts";
 import {
@@ -69,6 +70,8 @@ export const MARK_SELECTED = "▌ ";
 export const MARK_PLAIN = "  ";
 
 export interface UsageViewDeps extends Omit<UsageCollectDeps, "store"> {
+	/** The extension's store schedule: the view runs while requests resolve auth (DEC-013). */
+	schedule: StoreSchedule;
 	color?: boolean;
 	now?: () => Date;
 	timeZone?: string;
@@ -173,7 +176,8 @@ export class UsageView {
 		this.retime();
 		try {
 			// Read once, so the section headers and the bars describe the same store.
-			this.store = this.deps.backend.read((current) => decodeStore(current));
+			this.store = await this.deps.schedule(() => this.deps.backend.read((current) => decodeStore(current)));
+			if (this.disposed || generation !== this.generation) return;
 			// Sections are pure over that snapshot, so the headers are on screen from
 			// the first frame instead of arriving with the slowest account.
 			this.sections = usageSections(this.store, this.deps.pins);
@@ -209,7 +213,7 @@ export class UsageView {
 		if (data === "r") void this.load();
 		else if (isUpKey(data)) this.move(-1);
 		else if (isDownKey(data)) this.move(1);
-		else if (isEnterKey(data)) this.applySelection();
+		else if (isEnterKey(data)) void this.applySelection();
 	}
 
 	/** Clamped, not wrapping — matching Pi's own SelectList. */
@@ -230,17 +234,22 @@ export class UsageView {
 	 * (`isLive`), so re-reading the store is enough to move the dot; refetching
 	 * would spend a full round of network requests to redraw one glyph.
 	 */
-	private applySelection(): void {
+	private async applySelection(): Promise<void> {
 		const account = this.accounts[this.selected];
 		if (account === undefined) return;
 		const name = account.kind === "builtin" ? DEFAULT_KEYWORD : account.label;
 		if (name === undefined) return;
 		try {
-			const result = runMutation(this.deps.backend, (store) => useSelection(store, `${account.provider}:${name}`));
-			this.store = this.deps.backend.read((current) => decodeStore(current));
+			const { result, store } = await this.deps.schedule(() => ({
+				result: runMutation(this.deps.backend, (current) => useSelection(current, `${account.provider}:${name}`)),
+				store: this.deps.backend.read((current) => decodeStore(current)),
+			}));
+			if (this.disposed) return;
+			this.store = store;
 			this.sections = usageSections(this.store, this.deps.pins);
 			this.status = describeUseResult(result, this.deps.pins);
 		} catch (error) {
+			if (this.disposed) return;
 			this.status = `seat: ${error instanceof Error ? error.message : String(error)}`;
 		}
 		// The walk order is left alone on purpose: re-sorting would slide the block

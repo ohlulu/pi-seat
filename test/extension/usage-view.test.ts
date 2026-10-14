@@ -17,6 +17,7 @@ import { join } from "node:path";
 import { emptyStore, type SeatCredential } from "../../src/store/schema.ts";
 import { InMemorySeatStorageBackend, decodeStore, encodeStore } from "../../src/store/storage.ts";
 import type { RefreshCallback } from "../../src/store/refresh.ts";
+import { createStoreSchedule } from "../../src/store/scheduler.ts";
 import { SPINNER_FRAMES, SPINNER_INTERVAL_MS } from "../../src/usage/render.ts";
 import {
 	IDLE_TICK_MS,
@@ -143,6 +144,7 @@ function makeView(
 
 	const deps: UsageViewDeps = {
 		backend,
+		schedule: createStoreSchedule(),
 		authPath: options.auth ?? emptyAuthPath,
 		pins: (options.pins ?? {}) as UsageViewDeps["pins"],
 		refreshFor: () => refresh,
