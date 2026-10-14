@@ -56,6 +56,11 @@ export function wrapProvider(
 	const baseOAuth = base.auth.oauth;
 	const baseApiKey = base.auth.apiKey;
 
+	// Stored grants whose refresh seat skipped. Pi hands toAuth the same object
+	// (AuthStorage.modify returns the untouched entry), and seat may have let go
+	// of the provider in between — that grant is due for a refresh nobody ran.
+	const skipped = new WeakSet<OAuthCredential>();
+
 	const oauth: OAuthAuth | undefined = baseOAuth && {
 		...baseOAuth,
 		// Rest args: Pi 1.x passes login options that 0.84.x types do not declare.
@@ -64,10 +69,26 @@ export function wrapProvider(
 			// Pi calls this inside its auth.json lock. CredentialStore.modify reads
 			// undefined as "leave the entry unchanged", so a seat-owned provider
 			// never refreshes or rewrites Pi's grant; toAuth ignores it anyway.
-			if (await source.owns(id)) return undefined as unknown as OAuthCredential;
+			if (await source.owns(id)) {
+				skipped.add(credential);
+				return undefined as unknown as OAuthCredential;
+			}
+			skipped.delete(credential);
 			return baseOAuth.refresh(credential, signal);
 		},
-		toAuth: async (credential) => (await source.requestAuth(id)) ?? baseOAuth.toAuth(credential),
+		toAuth: async (credential) => {
+			const auth = await source.requestAuth(id);
+			const refreshSkipped = skipped.delete(credential);
+			if (auth) return auth;
+			if (refreshSkipped) {
+				// Deriving it would send a token Pi meant to refresh first; refreshing
+				// here, outside Pi's lock, could lose a rotated grant.
+				throw new Error(
+					`seat: ${id} was handed back to Pi's built-in login during this request, after seat skipped its token refresh; retry the request`,
+				);
+			}
+			return baseOAuth.toAuth(credential);
+		},
 	};
 
 	// Always present: an OAuth-only provider with no auth.json entry (Codex

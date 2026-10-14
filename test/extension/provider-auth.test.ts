@@ -1,7 +1,12 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import type { ModelAuth, OAuthCredential, Provider } from "@earendil-works/pi-ai";
+import { ModelRuntime } from "@earendil-works/pi-coding-agent";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
 	SeatProviderInstaller,
+	getProviderHost,
 	wrapProvider,
 	type ProviderHost,
 	type SeatAuthSource,
@@ -101,6 +106,43 @@ describe("AC-034: the registered provider", () => {
 		expect(wrapper.auth.apiKey?.login).toBeUndefined();
 		expect(await wrapper.auth.apiKey!.check!(input)).toEqual({ type: "oauth", source: "pi-seat" });
 		expect((await wrapper.auth.apiKey!.resolve(input))?.auth.apiKey).toBe("at-seat");
+	});
+});
+
+describe("AC-034: ownership that flips between refresh and toAuth", () => {
+	const dirs: string[] = [];
+	afterEach(() => {
+		while (dirs.length) rmSync(dirs.pop()!, { recursive: true, force: true });
+	});
+
+	test("a grant whose refresh seat skipped is never derived after seat lets go", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "seat-flip-"));
+		dirs.push(dir);
+		const authPath = join(dir, "auth.json");
+		const authJson = JSON.stringify({
+			anthropic: { type: "oauth", refresh: "rt-authjson", access: "at-authjson-expired", expires: Date.now() - 60_000 },
+		});
+		writeFileSync(authPath, authJson, { mode: 0o600 });
+		const runtime = await ModelRuntime.create({ authPath, modelsPath: null });
+		const base = getProviderHost({ runtime })!.builtins.get("anthropic")!;
+		// Seat owns the provider when Pi asks refresh, and has let go by toAuth
+		// (`/seat use anthropic:default` landing in between).
+		let owned = true;
+		const flipping: SeatAuthSource = {
+			owns: async () => {
+				const answer = owned;
+				owned = false;
+				return answer;
+			},
+			requestAuth: async () => undefined,
+		};
+		runtime.registerNativeProvider(wrapProvider("anthropic", base, flipping));
+
+		const failure = runtime.getAuth(runtime.getModels("anthropic")[0]!);
+
+		// Deriving would send the expired auth.json token and draw a 401.
+		await expect(failure).rejects.toThrow(/seat: anthropic .*retry/);
+		expect(readFileSync(authPath, "utf8")).toBe(authJson);
 	});
 });
 
