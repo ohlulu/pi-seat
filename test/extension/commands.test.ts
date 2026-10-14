@@ -5,6 +5,7 @@ import { InMemorySeatStorageBackend, decodeStore, encodeStore } from "../../src/
 import { resolveSelection } from "../../src/store/selector.ts";
 import type { SeatProviderAdapter } from "../../src/extension/oauth.ts";
 import { runSeatCommand, type SeatCommandDeps } from "../../src/extension/seat-command.ts";
+import { createStoreSchedule } from "../../src/store/scheduler.ts";
 import { makeHarness, runTurn } from "./harness.ts";
 
 const FRESH = Date.now() + 3_600_000;
@@ -114,6 +115,7 @@ const CLAUDE_PAYLOAD = { limits: [{ kind: "session", percent: 42, resets_at: new
 function deps(backend: InMemorySeatStorageBackend, overrides: Partial<SeatCommandDeps> = {}): SeatCommandDeps {
 	return {
 		backend,
+		schedule: createStoreSchedule(),
 		adapters: overrides.adapters ?? loginAdapters(cred("rt-unused"), { login: 0 }),
 		pins: overrides.pins ?? {},
 		authPath: overrides.authPath ?? "/nonexistent/auth.json",

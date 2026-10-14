@@ -19,6 +19,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ProviderId } from "../store/schema.ts";
+import { createStoreSchedule } from "../store/scheduler.ts";
 import { FileSeatStorageBackend } from "../store/storage.ts";
 import { decodeStore } from "../store/storage.ts";
 import { resolvePins } from "../store/selector.ts";
@@ -44,6 +45,8 @@ export default function seatExtension(pi: ExtensionAPI): void {
 	const authPath = join(base, "auth.json");
 	const adapters = createSeatProviderAdapters();
 	const fetchOptions = envUsageFetchOptions(process.env);
+	// One schedule for every store access in this process (DEC-011, DEC-013).
+	const schedule = createStoreSchedule();
 
 	const startupNotices: string[] = [];
 	let startupError: string | undefined;
@@ -75,7 +78,7 @@ export default function seatExtension(pi: ExtensionAPI): void {
 
 	pi.registerCommand("seat", {
 		description: SEAT_COMMAND_DESCRIPTION,
-		handler: async (args, ctx) => runSeatCommand(args, ctx, { backend, adapters, pins, authPath, fetchOptions }),
+		handler: async (args, ctx) => runSeatCommand(args, ctx, { backend, schedule, adapters, pins, authPath, fetchOptions }),
 	});
 
 	// AC-026: computed once — pins and the startup problem are immutable.
@@ -101,7 +104,7 @@ export default function seatExtension(pi: ExtensionAPI): void {
 		if (coordinator) return coordinator;
 		const runtime = getSeatRuntime(ctx.modelRegistry);
 		if (!runtime) return undefined;
-		coordinator = new SeatRuntimeAuthCoordinator({ runtime, backend, adapters, pins });
+		coordinator = new SeatRuntimeAuthCoordinator({ runtime, backend, adapters, pins, schedule });
 		return coordinator;
 	}
 

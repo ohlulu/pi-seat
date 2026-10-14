@@ -9,6 +9,7 @@
 import type { AuthPrompt, ProviderAuthInteraction } from "@earendil-works/pi-ai";
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { isValidLabel, type ProviderId, type SeatCredential } from "../store/schema.ts";
+import type { StoreSchedule } from "../store/scheduler.ts";
 import type { SeatStorageBackend } from "../store/storage.ts";
 import { decodeStore } from "../store/storage.ts";
 import { parseSelector, resolveSelection } from "../store/selector.ts";
@@ -30,6 +31,12 @@ import {
 
 export interface SeatCommandDeps {
 	backend: SeatStorageBackend;
+	/**
+	 * The extension's store schedule, shared with request auth (DEC-013): Pi runs
+	 * commands mid-stream, while a subagent child may be refreshing. Every store
+	 * access below is one task; interactive waits stay outside tasks.
+	 */
+	schedule: StoreSchedule;
 	adapters: SeatProviderAdapter[];
 	pins: Partial<Record<ProviderId, string>>;
 	/** auth.json, for the built-in credential's usage snapshot (REQ-010). */
@@ -54,7 +61,7 @@ export async function runSeatCommand(args: string, ctx: ExtensionCommandContext,
 			return;
 		}
 		if (tokens[0] === "whoami") {
-			ctx.ui.notify(statusText(deps), "info");
+			ctx.ui.notify(await statusText(deps), "info");
 			return;
 		}
 		const [head, ...rest] = tokens as [string, ...string[]];
@@ -95,7 +102,7 @@ export async function runSeatCommand(args: string, ctx: ExtensionCommandContext,
  */
 async function showUsage(ctx: ExtensionCommandContext, deps: SeatCommandDeps): Promise<void> {
 	if (ctx.mode !== "tui") {
-		ctx.ui.notify(statusText(deps), "info");
+		ctx.ui.notify(await statusText(deps), "info");
 		return;
 	}
 	let view: UsageView | undefined;
@@ -104,6 +111,7 @@ async function showUsage(ctx: ExtensionCommandContext, deps: SeatCommandDeps): P
 			view = new UsageView(
 				{
 					backend: deps.backend,
+					schedule: deps.schedule,
 					authPath: deps.authPath,
 					pins: deps.pins,
 					refreshFor: (provider) => toRefreshCallback(adapterFor(deps.adapters, provider)),
@@ -132,7 +140,7 @@ async function showUsage(ctx: ExtensionCommandContext, deps: SeatCommandDeps): P
 async function handleUse(rest: string[], ctx: ExtensionCommandContext, deps: SeatCommandDeps): Promise<void> {
 	const USAGE = "usage: /seat use <selector> [-a <alias>]…";
 	const { selector, aliases } = parseSelectorWithAliases(rest, USAGE);
-	const result = runMutation(deps.backend, (store) => useSelection(store, selector, aliases));
+	const result = await deps.schedule(() => runMutation(deps.backend, (store) => useSelection(store, selector, aliases)));
 	ctx.ui.notify(`seat: ${describeUseResult(result, deps.pins)}`, "info");
 }
 
@@ -147,10 +155,12 @@ async function handleLogin(rest: string[], ctx: ExtensionCommandContext, deps: S
 	for (const alias of aliases) {
 		if (!isValidLabel(alias)) throw new CommandError(`invalid alias "${alias}" (":" and "," are not allowed)`);
 	}
-	const exists = deps.backend.read((current) => {
-		const store = decodeStore(current);
-		return Object.hasOwn(store.providers[parsed.provider]?.profiles ?? {}, parsed.name);
-	});
+	const exists = await deps.schedule(() =>
+		deps.backend.read((current) => {
+			const store = decodeStore(current);
+			return Object.hasOwn(store.providers[parsed.provider]?.profiles ?? {}, parsed.name);
+		}),
+	);
 	let confirmedOverwrite = false;
 	if (exists) {
 		const ok = await ctx.ui.confirm("seat login", `Profile "${parsed.name}" already exists. Overwrite its grant?`);
@@ -167,8 +177,8 @@ async function handleLogin(rest: string[], ctx: ExtensionCommandContext, deps: S
 		buildInteraction(ctx, controller.signal, deps.openBrowser ?? openBrowser),
 	)) as SeatCredential;
 
-	const result = runMutation(deps.backend, (store) =>
-		loginProfile(store, selector, credential, aliases, { confirmedOverwrite }),
+	const result = await deps.schedule(() =>
+		runMutation(deps.backend, (store) => loginProfile(store, selector, credential, aliases, { confirmedOverwrite })),
 	);
 	if (result.action !== "stored") throw new CommandError("login raced another mutation; try again");
 	// "success" is spelled out because notify("info") renders as one dim line: the
@@ -184,7 +194,9 @@ async function handleRm(rest: string[], ctx: ExtensionCommandContext, deps: Seat
 	const force = rest.includes("--force") || rest.includes("--no-input");
 	if (selector === undefined) throw new CommandError("usage: /seat rm <selector> [--force]");
 
-	const pre = runMutation(deps.backend, (store) => removeSelection(store, selector, { confirmedProfileRemoval: force }));
+	const pre = await deps.schedule(() =>
+		runMutation(deps.backend, (store) => removeSelection(store, selector, { confirmedProfileRemoval: force })),
+	);
 	if (pre.action === "needs-confirm") {
 		// T036: a confirmation covers exactly one grant fingerprint; a stale
 		// result means the grant changed mid-prompt and the user re-confirms.
@@ -195,8 +207,10 @@ async function handleRm(rest: string[], ctx: ExtensionCommandContext, deps: Seat
 				ctx.ui.notify("seat: rm cancelled", "info");
 				return;
 			}
-			const result = runMutation(deps.backend, (store) =>
-				removeSelection(store, selector, { confirmedProfileRemoval: true, expectedRefresh }),
+			const result = await deps.schedule(() =>
+				runMutation(deps.backend, (store) =>
+					removeSelection(store, selector, { confirmedProfileRemoval: true, expectedRefresh }),
+				),
 			);
 			if (result.action === "profile-removed") {
 				notifyRemoved(ctx, result.label, result.droppedAliases);
@@ -230,7 +244,7 @@ async function handleRename(rest: string[], ctx: ExtensionCommandContext, deps: 
 	if (oldSelector === undefined || newLabel === undefined || extra.length > 0) {
 		throw new CommandError("usage: /seat rename <old-selector> <new-label>");
 	}
-	const result = runMutation(deps.backend, (store) => renameProfile(store, oldSelector, newLabel));
+	const result = await deps.schedule(() => runMutation(deps.backend, (store) => renameProfile(store, oldSelector, newLabel)));
 	ctx.ui.notify(
 		`seat: renamed "${result.from}" to "${result.to}"${result.retargetedAliases.length > 0 ? ` (aliases ${result.retargetedAliases.join(", ")} follow)` : ""}`,
 		"info",
@@ -315,8 +329,8 @@ function buildInteraction(
 	};
 }
 
-function statusText(deps: SeatCommandDeps): string {
-	const store = deps.backend.read((current) => decodeStore(current));
+async function statusText(deps: SeatCommandDeps): Promise<string> {
+	const store = await deps.schedule(() => deps.backend.read((current) => decodeStore(current)));
 	const lines: string[] = [];
 	for (const adapter of deps.adapters) {
 		const pin = deps.pins[adapter.id];

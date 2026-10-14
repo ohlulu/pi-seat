@@ -10,6 +10,7 @@
 import { PROVIDER_IDS, type ProviderId, type SeatStore } from "../store/schema.ts";
 import type { RefreshCallback } from "../store/refresh.ts";
 import type { SeatStorageBackend } from "../store/storage.ts";
+import type { StoreSchedule } from "../store/scheduler.ts";
 import { resolveSelection, type Selection } from "../store/selector.ts";
 import {
 	builtinUsage,
@@ -73,6 +74,11 @@ export interface UsageCollectDeps {
 	/** REQ-005 refresh path for stored profiles, per provider. */
 	refreshFor: (provider: ProviderId) => RefreshCallback;
 	fetchOptions?: UsageFetchOptions;
+	/**
+	 * The process's store schedule. The extension shares one with request auth
+	 * (DEC-013); the CLI walks alone and runs Phase 1 directly.
+	 */
+	schedule?: StoreSchedule;
 }
 
 /** Codex carries its plan on the header row; Claude has nothing to add. */
@@ -231,12 +237,16 @@ export async function collectUsage(
 	const fetchOptions = deps.fetchOptions ?? {};
 	const slots = planSlots(deps);
 
-	// Phase 1, strictly one at a time. See the lock note above.
+	// Phase 1, strictly one at a time. See the lock note above. Each profile is
+	// its own task, so a request queued behind the walk waits one refresh at most.
+	const schedule = deps.schedule ?? (<T>(task: () => T | Promise<T>): Promise<T> => Promise.resolve().then(task));
 	const prepared: (ProfilePrepareResult | undefined)[] = [];
 	for (const slot of slots) {
 		prepared.push(
 			slot.kind === "profile"
-				? await prepareProfile(deps.backend, slot.provider, slot.label, deps.refreshFor(slot.provider), fetchOptions)
+				? await schedule(() =>
+						prepareProfile(deps.backend, slot.provider, slot.label, deps.refreshFor(slot.provider), fetchOptions),
+					)
 				: undefined,
 		);
 	}

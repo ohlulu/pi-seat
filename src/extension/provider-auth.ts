@@ -92,7 +92,10 @@ export function wrapProvider(
 	};
 
 	// Always present: an OAuth-only provider with no auth.json entry (Codex
-	// logged in only through seat) reaches seat solely through this path.
+	// logged in only through seat) reaches seat solely through this path. With
+	// no base api-key auth to delegate to, an unowned provider uses a handed-in
+	// key as-is — what Pi's composer does for models.json's `apiKey` when the
+	// base has no api-key auth (AC-006).
 	const apiKey: ApiKeyAuth = {
 		name: baseApiKey?.name ?? base.name,
 		...(baseApiKey?.login ? { login: (interaction) => baseApiKey.login!(interaction) } : {}),
@@ -103,7 +106,7 @@ export function wrapProvider(
 			// request itself still fails closed in resolve.
 			if (input.credential?.key === SEAT_SENTINEL_API_KEY) return { type: "api_key", source: SEAT_AUTH_SOURCE };
 			if (await source.owns(id)) return { type: "oauth", source: SEAT_AUTH_SOURCE };
-			if (!baseApiKey) return undefined;
+			if (!baseApiKey) return input.credential?.key ? { type: "api_key", source: "stored credential" } : undefined;
 			if (baseApiKey.check) return baseApiKey.check(input);
 			const resolved = await baseApiKey.resolve(input);
 			return resolved ? { type: "api_key", ...(resolved.source ? { source: resolved.source } : {}) } : undefined;
@@ -111,7 +114,14 @@ export function wrapProvider(
 		resolve: async (input) => {
 			const auth = await source.requestAuth(id);
 			if (auth) return { auth, source: SEAT_AUTH_SOURCE };
-			return baseApiKey?.resolve(input);
+			if (baseApiKey) return baseApiKey.resolve(input);
+			const credential = input.credential;
+			if (!credential?.key) return undefined;
+			return {
+				auth: { apiKey: credential.key },
+				...(credential.env ? { env: credential.env } : {}),
+				source: "stored credential",
+			};
 		},
 	};
 

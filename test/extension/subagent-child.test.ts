@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { decodeStore, encodeStore, FileSeatStorageBackend } from "../../src/store/storage.ts";
 import { cred } from "./harness.ts";
@@ -25,14 +25,18 @@ const AUTH_JSON_REFRESH = "rt-authjson-dead";
 const ROTATABLE_REFRESH = "rt-seat-rotatable";
 
 let refreshes: string[];
+/** Called when a rotatable refresh is on the wire, i.e. while its store lock is held. */
+let onRotatableRefresh: (() => void) | undefined;
 const realFetch = globalThis.fetch;
 
 beforeEach(() => {
 	refreshes = [];
+	onRotatableRefresh = undefined;
 	globalThis.fetch = (async (_input: unknown, init?: { body?: unknown }) => {
 		const refreshToken = (JSON.parse(String(init?.body ?? "{}")) as { refresh_token?: string }).refresh_token ?? "";
 		refreshes.push(refreshToken);
 		if (refreshToken === ROTATABLE_REFRESH) {
+			onRotatableRefresh?.();
 			await Bun.sleep(150); // hold the store's async refresh lock across a real await
 			return Response.json({ access_token: "at-rotated", refresh_token: "rt-rotated", expires_in: 3600 });
 		}
@@ -49,6 +53,12 @@ function authPath(loaded: LoadedExtension): string {
 	return join(loaded.dir, "auth.json");
 }
 
+/** Every runtime in a test reads the same sandbox: auth.json, plus models.json when the test wrote one. */
+function runtimeOptions(loaded: LoadedExtension) {
+	const modelsPath = join(loaded.dir, "models.json");
+	return { authPath: authPath(loaded), modelsPath: existsSync(modelsPath) ? modelsPath : null };
+}
+
 function writeAuthJson(loaded: LoadedExtension, entries: Record<string, unknown>): string {
 	const content = JSON.stringify(entries, null, 2);
 	writeFileSync(authPath(loaded), content, { mode: 0o600 });
@@ -58,10 +68,15 @@ function writeAuthJson(loaded: LoadedExtension, entries: Record<string, unknown>
 const deadAuthJson = { anthropic: { type: "oauth", refresh: AUTH_JSON_REFRESH, access: "at-authjson", expires: EXPIRED } };
 
 /** The parent session: real runtime, real extension, session_start fired. */
-async function startParent(options: LoadOptions, authJson: Record<string, unknown> = deadAuthJson) {
+async function startParent(
+	options: LoadOptions,
+	authJson: Record<string, unknown> = deadAuthJson,
+	modelsJson?: Record<string, unknown>,
+) {
 	const loaded = loadExtension(options);
 	const authJsonBefore = writeAuthJson(loaded, authJson);
-	const parent = await ModelRuntime.create({ authPath: authPath(loaded), modelsPath: null });
+	if (modelsJson) writeFileSync(join(loaded.dir, "models.json"), JSON.stringify(modelsJson));
+	const parent = await ModelRuntime.create(runtimeOptions(loaded));
 	loaded.modelRuntime = parent;
 	await loaded.fireSessionStart();
 	return { loaded, parent, authJsonBefore };
@@ -69,7 +84,7 @@ async function startParent(options: LoadOptions, authJson: Record<string, unknow
 
 /** A foreground child exactly as pi-subagents builds one: fresh runtime + inherited providers. */
 async function spawnChild(parent: ModelRuntime, loaded: LoadedExtension): Promise<ModelRuntime> {
-	const child = await ModelRuntime.create({ authPath: authPath(loaded), modelsPath: null });
+	const child = await ModelRuntime.create(runtimeOptions(loaded));
 	for (const id of parent.getRegisteredProviderIds()) {
 		const native = parent.getRegisteredNativeProvider(id);
 		const config = native ? undefined : parent.getRegisteredProviderConfig(id);
@@ -77,6 +92,15 @@ async function spawnChild(parent: ModelRuntime, loaded: LoadedExtension): Promis
 		else if (config) child.registerProvider(id, config);
 	}
 	return child;
+}
+
+/** Replace the anthropic "work" grant with an expired, rotatable one — after any session_start sync. */
+function expireWorkGrant(loaded: LoadedExtension): void {
+	new FileSeatStorageBackend(join(loaded.dir, "seat.json")).withLock((current) => {
+		const store = decodeStore(current);
+		store.providers.anthropic!.profiles["work"] = cred(ROTATABLE_REFRESH, EXPIRED);
+		return { result: undefined, next: encodeStore(store) };
+	});
 }
 
 function modelOf(runtime: ModelRuntime, provider: string) {
@@ -177,6 +201,20 @@ describe("AC-034: subagent children resolve seat credentials, never auth.json", 
 		expect((await child.getAuth(modelOf(child, "openai-codex")))?.auth.apiKey).toBe("at-rt-main");
 	});
 
+	test("an unowned Codex keeps the apiKey models.json configures for it (AC-006)", async () => {
+		const { loaded, parent } = await startParent(
+			{ pin: "", profiles: { anthropic: { work: cred("rt-work", FRESH) } }, defaults: { anthropic: "work" } },
+			{},
+			{ providers: { "openai-codex": { apiKey: "sk-from-models-json" } } },
+		);
+		const child = await spawnChild(parent, loaded);
+
+		for (const runtime of [parent, child]) {
+			expect(await runtime.checkAuth("openai-codex")).toBeDefined();
+			expect((await runtime.getAuth(modelOf(runtime, "openai-codex")))?.auth.apiKey).toBe("sk-from-models-json");
+		}
+	});
+
 	test("concurrent children refresh an expiring seat grant once, without the DEC-011 lock deadlock", async () => {
 		const { loaded, parent } = await startParent({
 			pin: "",
@@ -184,12 +222,7 @@ describe("AC-034: subagent children resolve seat credentials, never auth.json", 
 			defaults: { anthropic: "work" },
 		});
 		// Expire the grant after the parent's session_start sync, so the children race the refresh.
-		const backend = new FileSeatStorageBackend(join(loaded.dir, "seat.json"));
-		backend.withLock((current) => {
-			const store = decodeStore(current);
-			store.providers.anthropic!.profiles["work"] = cred(ROTATABLE_REFRESH, EXPIRED);
-			return { result: undefined, next: encodeStore(store) };
-		});
+		expireWorkGrant(loaded);
 		const [first, second] = [await spawnChild(parent, loaded), await spawnChild(parent, loaded)];
 
 		const started = Date.now();
@@ -223,6 +256,34 @@ describe("AC-034: subagent children resolve seat credentials, never auth.json", 
 		await expect(parent.getAuth(modelOf(parent, "anthropic"))).rejects.toThrow(/seat: anthropic auth failed/);
 		expect(refreshes).toEqual([]);
 	});
+
+	for (const [command, settled] of [
+		["whoami", (notice: string) => expect(notice).toStartWith("seat status")],
+		["use anthropic:default", (notice: string) => expect(notice).toContain("anthropic default cleared")],
+	] as const) {
+		test(`/seat ${command} run while a child holds the refresh lock waits its turn (DEC-011)`, async () => {
+			const { loaded, parent } = await startParent({
+				pin: "",
+				profiles: { anthropic: { work: cred("rt-work", FRESH) } },
+				defaults: { anthropic: "work" },
+			});
+			expireWorkGrant(loaded);
+			const child = await spawnChild(parent, loaded);
+			const onTheWire = new Promise<void>((resolve) => {
+				onRotatableRefresh = resolve;
+			});
+
+			const request = child.getAuth(modelOf(child, "anthropic"));
+			await onTheWire; // the child now holds the store lock across its round trip
+			// Pi runs extension commands mid-stream, so this lands inside that window.
+			const started = Date.now();
+			await loaded.fireCommand("seat", command);
+
+			settled(loaded.notices.at(-1) ?? "");
+			expect(Date.now() - started).toBeLessThan(3_000); // a sync-lock deadlock waits out the 5s timeout
+			expect((await request)?.auth.apiKey).toBe("at-rotated");
+		});
+	}
 
 	test("session_shutdown hands the providers back to Pi", async () => {
 		const { loaded, parent } = await startParent({

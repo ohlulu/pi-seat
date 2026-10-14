@@ -20,6 +20,7 @@ import { join } from "node:path";
 import { emptyStore, type SeatCredential } from "../../src/store/schema.ts";
 import { FileSeatStorageBackend, decodeStore, encodeStore } from "../../src/store/storage.ts";
 import type { RefreshCallback } from "../../src/store/refresh.ts";
+import { createStoreSchedule } from "../../src/store/scheduler.ts";
 import { collectUsage } from "../../src/usage/report.ts";
 
 const CLAUDE_PAYLOAD = { limits: [{ kind: "session", percent: 42, resets_at: "2026-01-15T14:31:00+00:00" }] };
@@ -88,6 +89,41 @@ describe("collectUsage concurrency (DEC-011)", () => {
 		// The sync-lock timeout is 5s per acquire; the deadlock this guards
 		// against burned two of them.
 		expect(elapsed).toBeLessThan(2_000);
+	});
+
+	test("a store read scheduled during the walk's refresh waits for it instead of deadlocking (DEC-013)", async () => {
+		const { backend, authPath } = seed({ stale: expired("stale") }, "stale");
+		const schedule = createStoreSchedule();
+		const server = Bun.serve({ port: 0, fetch: () => Response.json(CLAUDE_PAYLOAD) });
+		let onTheWire!: () => void;
+		const wire = new Promise<void>((resolve) => {
+			onTheWire = resolve;
+		});
+		const refresh: RefreshCallback = async (credential) => {
+			onTheWire();
+			await Bun.sleep(300);
+			return { ...credential, access: "at-rotated", expires: Date.now() + 3_600_000 };
+		};
+
+		const walk = collectUsage({
+			backend,
+			store: backend.read((current) => decodeStore(current)),
+			authPath,
+			pins: {},
+			refreshFor: () => refresh,
+			fetchOptions: { claudeUrl: `http://localhost:${server.port}/claude` },
+			schedule,
+		});
+		await wire; // the walk now holds the store lock across its refresh
+		// What a subagent child's request does on the same schedule meanwhile.
+		const started = Date.now();
+		const store = await schedule(() => backend.read((current) => decodeStore(current)));
+		const elapsed = Date.now() - started;
+		await walk;
+		await server.stop(true);
+
+		expect(store.providers.anthropic?.profiles["stale"]?.access).toBe("at-rotated"); // it ran after the commit
+		expect(elapsed).toBeLessThan(2_000); // a sync-lock deadlock waits out the 5s timeout
 	});
 
 	test("usage endpoints for different accounts are in flight at the same time", async () => {
