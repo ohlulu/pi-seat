@@ -35,7 +35,7 @@ import {
 	readBuiltinSnapshot,
 	type UsageFetchOptions,
 } from "./fetch.ts";
-import { parseResetDate, type ClaudeResetGrant } from "./render.ts";
+import { claudeResetsLeft, parseResetDate, type ClaudeResetGrant } from "./render.ts";
 
 export const CODEX_RESET_CREDITS_URL = `${CODEX_API_BASE}/wham/rate-limit-reset-credits`;
 export const CODEX_RESET_CONSUME_URL = `${CODEX_RESET_CREDITS_URL}/consume`;
@@ -142,7 +142,9 @@ interface CodexCredit {
 async function findCodexOffer(credential: SeatCredential, options: UsageFetchOptions): Promise<ResetLookup> {
 	const body = (await request("GET", CODEX_RESET_CREDITS_URL, codexHeaders(credential), undefined, options)).json;
 	const record = asRecord(body);
-	const credits = (Array.isArray(record?.["credits"]) ? (record["credits"] as CodexCredit[]) : [])
+	// Only a well-formed empty list means "none"; an unreadable one is a failed lookup.
+	if (record === undefined || !Array.isArray(record["credits"])) throw new Error("unreadable reset list");
+	const credits = (record["credits"] as CodexCredit[])
 		.filter((credit) => credit?.status === "available" && typeof credit.id === "string" && credit.id.length > 0)
 		.map((credit) => ({
 			id: credit.id as string,
@@ -175,7 +177,8 @@ const CLAUDE_INELIGIBLE: Record<string, string> = {
 };
 
 async function findClaudeOffer(credential: SeatCredential, options: UsageFetchOptions): Promise<ResetLookup> {
-	const status = (await fetchClaudeUsage(credential.access, options)).cedar_ember;
+	const usage = await fetchClaudeUsage(credential.access, options);
+	const status = usage.cedar_ember;
 	if (status === undefined || status === null) return { kind: "none", message: "no limit-reset program on this account" };
 	const grants = Array.isArray(status.grants) ? status.grants : [];
 	// The server only redeems the grant it names next (`not_next_grant` otherwise).
@@ -191,7 +194,8 @@ async function findClaudeOffer(credential: SeatCredential, options: UsageFetchOp
 	else if (!atLimit) caveat = "you have not reached a limit yet";
 	const cooldown = parseResetDate(status.cooldown_until ?? null);
 	if (cooldown !== null && cooldown.getTime() > (options.now ?? Date.now)()) caveat = "another reset is still going through";
-	const left = grant.resets_left;
+	// Account-wide, so the confirmation agrees with the meters' credits row.
+	const left = claudeResetsLeft(usage);
 	return {
 		kind: "offer",
 		offer: {
@@ -199,7 +203,7 @@ async function findClaudeOffer(credential: SeatCredential, options: UsageFetchOp
 			id: grant.id,
 			title: typeof grant.label === "string" && grant.label.length > 0 ? grant.label : "Limit reset",
 			expiresAt: parseResetDate(grant.ends_at ?? null),
-			remaining: typeof left === "number" && Number.isInteger(left) && left > 0 ? left : 1,
+			remaining: Math.max(1, left),
 			refills: (Array.isArray(grant.clears) ? grant.clears : []).map((window) => WINDOW_LABELS[window] ?? window),
 			...(caveat !== undefined ? { caveat } : {}),
 		},
@@ -221,13 +225,14 @@ export async function redeemReset(
 			? await redeemClaude(credential, offer, requestId, options)
 			: await redeemCodex(credential, offer, requestId, options);
 	} catch (error) {
-		const message = error instanceof Error ? error.message : String(error);
-		return {
-			used: false,
-			message: `reset not confirmed: ${redactTokenText(message, [...secrets])} — press r to check whether it went through`,
-		};
+		const message = redactTokenText(error instanceof Error ? error.message : String(error), [...secrets]);
+		if (error instanceof RedeemNotSentError) return { used: false, message: `could not start the reset: ${message} · nothing was used` };
+		return { used: false, message: `reset not confirmed: ${message} — press r to check whether it went through` };
 	}
 }
+
+/** A failure before the redeem request left this process: provably nothing was used. */
+class RedeemNotSentError extends Error {}
 
 const CODEX_OUTCOMES: Record<string, string> = {
 	nothing_to_reset: "nothing to reset right now · reset kept",
@@ -274,11 +279,16 @@ async function redeemClaude(
 	requestId: string,
 	options: ResetRequestOptions,
 ): Promise<ResetOutcome> {
-	if (!CLAUDE_GRANT_ID.test(offer.id)) throw new Error("malformed grant id");
 	const headers = claudeHeaders(credential.access);
-	const profile = await request("GET", CLAUDE_PROFILE_URL, headers, undefined, options);
-	const organization = asRecord(asRecord(profile.json)?.["organization"])?.["uuid"];
-	if (typeof organization !== "string" || !ORGANIZATION_ID.test(organization)) throw new Error("no organization on this login");
+	let organization: unknown;
+	try {
+		if (!CLAUDE_GRANT_ID.test(offer.id)) throw new Error("malformed grant id");
+		const profile = await request("GET", CLAUDE_PROFILE_URL, headers, undefined, options);
+		organization = asRecord(asRecord(profile.json)?.["organization"])?.["uuid"];
+		if (typeof organization !== "string" || !ORGANIZATION_ID.test(organization)) throw new Error("no organization on this login");
+	} catch (error) {
+		throw new RedeemNotSentError(error instanceof Error ? error.message : String(error));
+	}
 	const response = await request(
 		"POST",
 		`${CLAUDE_API_BASE}/api/organizations/${organization}/reset_rate_limits`,

@@ -67,6 +67,7 @@ export const VIEW_LEGEND = "↑↓ select · enter switch · x reset · r refres
 export const LOADING_TEXT = "loading usage…";
 export const RESET_CHECKING_TEXT = "checking resets…";
 export const RESET_REDEEMING_TEXT = "using reset…";
+export const RESET_CONFIRM_TITLE = "Use this reset? It cannot be undone.";
 export const RESET_CONFIRM_LEGEND = "y use reset · n/esc keep it";
 
 /**
@@ -416,16 +417,18 @@ export class UsageView {
 		const title = row([[`reset · ${flow.account.name} (${flow.account.provider})`, BOLD]]);
 		if (flow.phase === "checking") return [title, row([[`  ${RESET_CHECKING_TEXT}`, DIM]])];
 		const { offer } = flow;
-		const expiry = offer.expiresAt !== null ? ` · use by ${formatExpiry(offer.expiresAt, options)}` : "";
-		const lines = [title, row([[`  ${offer.title}${expiry}`, undefined]])];
-		const refills = offer.refills.length > 0 ? `refills ${offer.refills.join(", ")} · ` : "";
-		lines.push(row([[`  ${refills}${offer.remaining} left`, DIM]]));
+		// One fact per row: every row is clipped to one line, so a deadline or the
+		// keys sharing a row with long text would vanish on a narrow terminal.
+		const lines = [title, row([[`  ${offer.title}`, undefined]])];
+		const facts = [
+			...(offer.expiresAt !== null ? [`use by ${formatExpiry(offer.expiresAt, options)}`] : []),
+			...(offer.refills.length > 0 ? [`refills ${offer.refills.join(", ")}`] : []),
+			`${offer.remaining} left`,
+		];
+		for (const fact of facts) lines.push(row([[`  ${fact}`, DIM]]));
 		if (offer.caveat !== undefined) lines.push(row([[`  ${offer.caveat}`, YELLOW]]));
-		lines.push(
-			flow.phase === "redeeming"
-				? row([[`  ${RESET_REDEEMING_TEXT}`, DIM]])
-				: row([[`  Use this reset? It cannot be undone. `, BOLD], [RESET_CONFIRM_LEGEND, DIM]]),
-		);
+		if (flow.phase === "redeeming") lines.push(row([[`  ${RESET_REDEEMING_TEXT}`, DIM]]));
+		else lines.push(row([[`  ${RESET_CONFIRM_TITLE}`, BOLD]]), row([[`  ${RESET_CONFIRM_LEGEND}`, DIM]]));
 		return lines;
 	}
 

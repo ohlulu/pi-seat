@@ -96,6 +96,13 @@ describe("Codex: lookup", () => {
 		expect(sent[0]!.headers["chatgpt-account-id"]).toBe("acct-9");
 	});
 
+	test("an unreadable list is a failed lookup, never 'none'", async () => {
+		for (const response of [new Response("<html>oops</html>", { status: 200 }), Response.json({ available_count: 2 })]) {
+			const { fetchImpl } = mockFetch({ [`GET ${CODEX_RESET_CREDITS_URL}`]: () => response });
+			await expect(findResetOffer("openai-codex", cred("c"), opts(fetchImpl))).rejects.toThrow("unreadable reset list");
+		}
+	});
+
 	test("no available credit is a plain 'none', not an error", async () => {
 		const { fetchImpl } = mockFetch({
 			[`GET ${CODEX_RESET_CREDITS_URL}`]: () => Response.json({ available_count: 0, credits: [{ id: "x", status: "redeemed" }] }),
@@ -175,10 +182,11 @@ describe("Anthropic: lookup", () => {
 			provider: "anthropic",
 			id: "grant_a1",
 			title: "Opus 5.5 launch reset",
-			remaining: 1,
 			refills: ["5h", "weekly"],
 		});
 		expect(lookup.offer.caveat).toBeUndefined();
+		// Account-wide count, matching the credits row: both grants hold one each.
+		expect(lookup.offer.remaining).toBe(2);
 		expect(sent[0]!.headers["user-agent"]).toBe(CLAUDE_CLI_USER_AGENT);
 		expect(sent[0]!.headers["x-app"]).toBe("cli");
 	});
@@ -265,6 +273,15 @@ describe("Anthropic: redeem", () => {
 		}
 	});
 
+	test("a failure before the POST says nothing was used, not 'not confirmed'", async () => {
+		const { fetchImpl, sent } = mockFetch({ [`GET ${CLAUDE_PROFILE}`]: () => new Response("no", { status: 401 }) });
+		const outcome = await redeemReset(cred("a"), CLAUDE_OFFER, [], opts(fetchImpl));
+		expect(outcome.used).toBe(false);
+		expect(outcome.message).toStartWith("could not start the reset:");
+		expect(outcome.message).toEndWith("nothing was used");
+		expect(sent.some((s) => s.method === "POST")).toBe(false);
+	});
+
 	test("401 is a refusal; a login without an organization never reaches the redeem", async () => {
 		const refused = mockFetch({
 			[`GET ${CLAUDE_PROFILE}`]: () => Response.json({ organization: { uuid: ORG } }),
@@ -276,6 +293,7 @@ describe("Anthropic: redeem", () => {
 		const outcome = await redeemReset(cred("a"), CLAUDE_OFFER, [], opts(orgless.fetchImpl));
 		expect(outcome.used).toBe(false);
 		expect(outcome.message).toContain("no organization");
+		expect(outcome.message).toContain("nothing was used");
 		expect(orgless.sent.some((s) => s.method === "POST")).toBe(false);
 	});
 });

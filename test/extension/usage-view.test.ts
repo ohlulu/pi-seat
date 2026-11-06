@@ -637,8 +637,8 @@ describe("REQ-012: a banked reset is redeemed from the view, behind an inline co
 		await h.settle();
 		const text = h.view.render(100).join("\n");
 		expect(text).toContain("reset · work (anthropic)");
-		expect(text).toContain("Opus 5.5 launch reset · use by Jan 22 00:00");
-		expect(text).toContain("refills 5h, weekly · 1 left");
+		expect(text).toContain("  Opus 5.5 launch reset\n");
+		expect(text).toContain("  use by Jan 22 00:00\n  refills 5h, weekly\n  1 left");
 		expect(text).toContain(RESET_CONFIRM_LEGEND);
 		// The confirmation replaces the legend; nothing has been POSTed.
 		expect(text).not.toContain("x reset");
@@ -782,5 +782,15 @@ describe("REQ-012: a banked reset is redeemed from the view, behind an inline co
 			}
 		}
 		expect(h.view.render(100).join("\n")).toContain(RESET_CONFIRM_LEGEND);
+	});
+
+	test("at 40 columns the deadline and the keys are still on screen", async () => {
+		const { fetchImpl } = resetFetch({}, { ...banked, at_limit: false, grants: [{ ...GRANT, use_requires_limit: true }] });
+		const h = await openOnWork(fetchImpl);
+		h.view.handleInput("x");
+		await h.settle();
+		const text = h.view.render(40).join("\n");
+		expect(text).toContain("use by Jan 22 00:00");
+		expect(text).toContain(RESET_CONFIRM_LEGEND);
 	});
 });

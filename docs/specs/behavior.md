@@ -199,15 +199,15 @@ Colour is the entire feature：no glyph, no extra column, no layout change。[AC
 
 WHEN the user presses `x` on an account row of the in-session usage view ([REQ-010](#req-010-in-session-usage-view)), the extension SHALL look up the banked usage-limit reset that account would redeem next, show an inline confirmation naming it, and redeem it only after `y`. 兩個 provider 都發這種券：Codex 叫 reset credit，Anthropic 叫 limit reset（社群稱 banked reset）；兩者都沒有公開文件，wire contract 的來源記在 [architecture.md §DEC-014](../architecture.md#dec-014-banked-reset-是-view-的-inline-state)。
 
-哪一張：Codex 用最早到期的 `available` credit（用後面那張會讓這張白白過期）；Anthropic 用 server 在 `next_grant_id` 指名的 grant，其他 grant 會被以 `not_next_grant` 拒絕。Lookup SHALL be fresh at `x`：畫面上的張數可能已經是幾分鐘前的，而確認必須指名 redeem 要送出的那一張。確認內容包含券名、期限、會補滿哪些窗、剩餘張數，以及 server 可能拒絕的原因（Codex 只在至少補滿一個窗時才扣券；Anthropic 的券可能要求已經撞到上限）。
+哪一張：Codex 用最早到期的 `available` credit（用後面那張會讓這張白白過期）；Anthropic 用 server 在 `next_grant_id` 指名的 grant，其他 grant 會被以 `not_next_grant` 拒絕。Lookup SHALL be fresh at `x`, and an unreadable lookup reply SHALL report a failed check, never "no resets"：畫面上的張數可能已經是幾分鐘前的，而確認必須指名 redeem 要送出的那一張。確認內容包含券名、期限、會補滿哪些窗、剩餘張數，以及 server 可能拒絕的原因（Codex 只在至少補滿一個窗時才扣券；Anthropic 的券可能要求已經撞到上限）。
 
 Confirmation 是 view 的 state，不是第二個 `ctx.ui.custom()`。它開著的時候接管鍵盤：`esc` 與 `n` 的意思是「保留這張券」，只關確認、不關 view。Redeem 送出後沒有可以收回的東西，所以 in flight 期間所有按鍵無效。Redeem SHALL never be retried automatically：每次嘗試帶新的 idempotency key，重送等於一個新的 request。
 
 結果分三類，訊息各自說清楚券還在不在：
 
 - `reset`：券已使用、limit 已改變，view 重新抓 usage。這是除了 `r` 之外唯一會 refetch 的動作（對照 AC-023 的 zero-refetch）。
-- Server 明確拒絕（Codex `nothing_to_reset`/`no_credit`/`already_redeemed`、Anthropic `not_limited`/`already_used`/`cooldown`/`ineligible`/`unavailable`、HTTP 401/403/429）：不 refetch，狀態列說券保留或沒有消耗任何東西。
-- 曖昧（5xx、timeout、無法解析的 body）：可能已經 commit，所以說 `not confirmed` 並提示按 `r` 確認，絕不說 `nothing was used`。
+- Server 明確拒絕（Codex `nothing_to_reset`/`no_credit`/`already_redeemed`、Anthropic `not_limited`/`already_used`/`cooldown`/`ineligible`/`unavailable`、HTTP 401/403/429），以及 redeem request 送出之前的失敗（Anthropic 的 profile 查詢或 organization 驗證）：不 refetch，狀態列說券保留或沒有消耗任何東西。
+- 曖昧（redeem 送出後的 5xx、timeout、無法解析的 body）：可能已經 commit，所以說 `not confirmed` 並提示按 `r` 確認，絕不說 `nothing was used`。
 
 Credential：store profile 走 [REQ-005](#req-005-single-flight-refresh) 的 locked refresh（一個 store task，DEC-013）；built-in login 讀 `auth.json` 快照並且 SHALL NOT refresh it（DEC-005），過期時只提示、不發 request。
 
