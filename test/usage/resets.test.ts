@@ -213,6 +213,13 @@ describe("Anthropic: lookup", () => {
 		}
 	});
 
+	test("a present but unreadable reset block is a failed lookup, never 'none'", async () => {
+		for (const cedar of [{ eligible: true, grants: {}, next_grant_id: "grant_a1" }, { eligible: true }, "garbage"]) {
+			const { fetchImpl } = mockFetch({ [`GET ${CLAUDE_USAGE}`]: claudeStatus(cedar) });
+			await expect(findResetOffer("anthropic", cred("a"), opts(fetchImpl))).rejects.toThrow("unreadable reset status");
+		}
+	});
+
 	test("no grant, an ineligible client, or a paused grant is 'none' with the reason in words", async () => {
 		const cases = [
 			[{ eligible: false, ineligible_reason: "no_grant", grants: [], next_grant_id: null }, "no limit resets available"],

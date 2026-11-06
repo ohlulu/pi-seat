@@ -206,7 +206,7 @@ Confirmation 是 view 的 state，不是第二個 `ctx.ui.custom()`。它開著�
 結果分三類，訊息各自說清楚券還在不在：
 
 - `reset`：券已使用、limit 已改變，view 重新抓 usage。這是除了 `r` 之外唯一會 refetch 的動作（對照 AC-023 的 zero-refetch）。
-- Server 明確拒絕（Codex `nothing_to_reset`/`no_credit`/`already_redeemed`、Anthropic `not_limited`/`already_used`/`cooldown`/`ineligible`/`unavailable`、HTTP 401/403/429），以及 redeem request 送出之前的失敗（Anthropic 的 profile 查詢或 organization 驗證）：不 refetch，狀態列說券保留或沒有消耗任何東西。
+- Server 明確拒絕（Codex `nothing_to_reset`/`no_credit`/`already_redeemed`、Anthropic `not_limited`/`already_used`/`cooldown`/`ineligible`/`unavailable`、HTTP 401/403/429），以及 redeem request 送出之前的失敗（Anthropic 的 profile 查詢或 organization 驗證）：不 refetch，狀態列說這次請求沒有消耗任何東西，並照實說出原因——多數情況券仍可用（`nothing_to_reset`、`not_limited`、`cooldown`、狀態碼拒絕），但 `already_redeemed`/`already_used` 表示那張券已被用掉，`no_credit` 表示沒有可用的券。
 - 曖昧（redeem 送出後的 5xx、timeout、無法解析的 body）：可能已經 commit，所以說 `not confirmed` 並提示按 `r` 確認，絕不說 `nothing was used`。
 
 Credential：store profile 走 [REQ-005](#req-005-single-flight-refresh) 的 locked refresh（一個 store task，DEC-013）；built-in login 讀 `auth.json` 快照並且 SHALL NOT refresh it（DEC-005），過期時只提示、不發 request。
@@ -221,7 +221,7 @@ Scope：只有 view 能 redeem，沒有 `/seat reset` 指令、也沒有 CLI 指
 |---|---|---|---|
 | AC-035 | 帳號有可用的券 | view 載入後按 `x` | meter block 有 `credits N`；確認列出券名、期限、剩餘張數，有拒絕風險時加上原因；按 `y` 之前零個 redeem request；沒有券時只顯示狀態列、不開確認 |
 | AC-036 | 確認已開啟 | 按 `esc` 或 `n`；或在 redeem in flight 時按 `esc` / `y` | 前者只關確認、view 仍開著、零 redeem；後者全部無效，恰好送出一個 redeem |
-| AC-037 | 已按 `y` | server 回 `reset`、明確拒絕、或曖昧的失敗 | `reset`：usage 被 refetch，狀態列說 reset used；拒絕：零 refetch，狀態列說券保留；曖昧：說 `not confirmed`，絕不說 `nothing was used` |
+| AC-037 | 已按 `y` | server 回 `reset`、明確拒絕、或曖昧的失敗 | `reset`：usage 被 refetch，狀態列說 reset used；拒絕：零 refetch，狀態列說這次沒有消耗並照實說明原因（券保留、券已被用掉、或沒有券）；曖昧：說 `not confirmed`，絕不說 `nothing was used` |
 | AC-038 | 游標在 built-in login | redeem；或快照已過期 | 使用 `auth.json` 快照的 access token，`auth.json` byte-identical；快照過期時只提示，不 refresh、不發 request |
 | AC-039 | 任何 Claude request | 送出 | 帶 `claude-cli/<version> (external, cli)` UA 與 `x-app: cli`；usage URL 帶 `cedar_ember=1`、不帶 `skip_spend` |
 

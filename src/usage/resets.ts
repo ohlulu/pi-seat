@@ -180,7 +180,9 @@ async function findClaudeOffer(credential: SeatCredential, options: UsageFetchOp
 	const usage = await fetchClaudeUsage(credential.access, options);
 	const status = usage.cedar_ember;
 	if (status === undefined || status === null) return { kind: "none", message: "no limit-reset program on this account" };
-	const grants = Array.isArray(status.grants) ? status.grants : [];
+	// Present but unreadable is a failed lookup, not "none" — same rule as Codex.
+	if (asRecord(status) === undefined || !Array.isArray(status.grants)) throw new Error("unreadable reset status");
+	const grants = status.grants;
 	// The server only redeems the grant it names next (`not_next_grant` otherwise).
 	const grant = grants.find((g): g is ClaudeResetGrant & { id: string } => typeof g?.id === "string" && g.id === status.next_grant_id);
 	if (grant === undefined || !CLAUDE_GRANT_ID.test(grant.id)) {
