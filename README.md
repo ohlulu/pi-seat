@@ -61,10 +61,10 @@ Inside a Pi session:
 /seat login work        # mint a new OAuth grant, store it as "work"
 /seat use work          # make "work" the global default
 /seat use work -a w     # …and point the alias "w" at it
-/seat status            # usage meters, default and pin — ↑↓ select, enter switch, esc/q close
+/seat status            # usage meters, default and pin — ↑↓ select, enter switch, x reset, esc/q close
 ```
 
-`/seat` and `/seat status` open an interactive usage view in a TUI session, and fall back to plain text everywhere else (RPC, `pi -p`). In the view, `↑↓`/`jk` move between accounts and `enter` makes the highlighted one that provider's default — selecting a built-in row hands the provider back to Pi's own login.
+`/seat` and `/seat status` open an interactive usage view in a TUI session, and fall back to plain text everywhere else (RPC, `pi -p`). In the view, `↑↓`/`jk` move between accounts and `enter` makes the highlighted one that provider's default — selecting a built-in row hands the provider back to Pi's own login. `x` spends a banked usage-limit reset on the highlighted account (a Codex reset credit or a Claude limit reset) after an inline `y`/`n` confirmation that names the reset, its deadline, and any reason the server may refuse it; the `credits` row under the meters shows how many are left.
 
 Pin a session to an account (overrides the default, this session only):
 

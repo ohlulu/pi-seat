@@ -61,10 +61,10 @@ Dentro de una sesión de Pi:
 /seat login work        # crea un nuevo grant OAuth y lo guarda como "work"
 /seat use work          # convierte "work" en el predeterminado global
 /seat use work -a w     # …y apunta el alias "w" a él
-/seat status            # uso, predeterminado y pin — ↑↓ seleccionar, enter cambiar, esc/q cerrar
+/seat status            # uso, predeterminado y pin — ↑↓ seleccionar, enter cambiar, x reset, esc/q cerrar
 ```
 
-`/seat` y `/seat status` abren una vista de uso interactiva en una sesión TUI, y caen a texto plano en cualquier otro modo (RPC, `pi -p`). En la vista, `↑↓`/`jk` mueven la selección y `enter` hace que la cuenta resaltada sea el predeterminado de ese proveedor — elegir una fila built-in devuelve el proveedor al login integrado de Pi.
+`/seat` y `/seat status` abren una vista de uso interactiva en una sesión TUI, y caen a texto plano en cualquier otro modo (RPC, `pi -p`). En la vista, `↑↓`/`jk` mueven la selección y `enter` hace que la cuenta resaltada sea el predeterminado de ese proveedor — elegir una fila built-in devuelve el proveedor al login integrado de Pi. `x` gasta un reset de límite de uso guardado en la cuenta resaltada (un crédito de reset de Codex o un reset de límite de Claude) tras una confirmación `y`/`n` en la misma vista, que indica cuál es, su fecha límite y cualquier motivo por el que el servidor podría rechazarlo; la fila `credits` bajo las barras muestra cuántos quedan.
 
 Fija una sesión a una cuenta (prevalece sobre el predeterminado, solo en esa sesión):
 

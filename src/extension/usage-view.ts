@@ -18,16 +18,20 @@
  *   everything else, which is allowed because their row budget is fixed at one
  *   row each. The render probe sweeps widths 2–200 to prove it.
  * - The spinner is a periodic re-render, so the interval is owned by `dispose`.
- * - Nothing here opens nested UI while the view is up.
+ * - Nothing here opens nested UI while the view is up. The reset confirmation
+ *   (REQ-012) is a state of this component, drawn in its own rows — not a
+ *   second `ctx.ui.custom()`, whose promise never resolves without
+ *   `{ overlay: true }`.
  *
  * The component is Pi-free: it takes callbacks for redraw and close, so a test
  * can drive `render`/`handleInput` with no terminal.
  */
 
 import { Key, matchesKey } from "@earendil-works/pi-tui";
-import type { SeatStore } from "../store/schema.ts";
+import type { SeatCredential, SeatStore } from "../store/schema.ts";
 import type { StoreSchedule } from "../store/scheduler.ts";
 import { decodeStore } from "../store/storage.ts";
+import { redactTokenText } from "../store/redact.ts";
 import { cellClip, stripAnsi, visibleCellWidth } from "../usage/cells.ts";
 import {
 	UsageReportRows,
@@ -41,12 +45,14 @@ import {
 	BOLD,
 	CYAN,
 	DIM,
+	YELLOW,
 	SPINNER_FRAMES,
 	SPINNER_INTERVAL_MS,
 	emitLine,
 	type RenderOptions,
 	type Segment,
 } from "../usage/render.ts";
+import { findResetOffer, redeemReset, resetCredential, type ResetOffer, type ResetRequestOptions } from "../usage/resets.ts";
 import { DEFAULT_KEYWORD, describeUseResult, runMutation, useSelection } from "./commands.ts";
 
 /**
@@ -57,8 +63,20 @@ import { DEFAULT_KEYWORD, describeUseResult, runMutation, useSelection } from ".
 export const IDLE_TICK_MS = 20_000;
 
 export const VIEW_TITLE = "seat usage";
-export const VIEW_LEGEND = "↑↓ select · enter switch · r refresh · esc/q close";
+export const VIEW_LEGEND = "↑↓ select · enter switch · x reset · r refresh · esc/q close";
 export const LOADING_TEXT = "loading usage…";
+export const RESET_CHECKING_TEXT = "checking resets…";
+export const RESET_REDEEMING_TEXT = "using reset…";
+export const RESET_CONFIRM_LEGEND = "y use reset · n/esc keep it";
+
+/**
+ * The reset flow for one account (REQ-012). `confirm` holds the credential the
+ * offer was found with, so the redeem rides the same grant the user saw.
+ */
+type ResetFlow =
+	| { phase: "checking"; account: UsageAccount }
+	| { phase: "confirm"; account: UsageAccount; offer: ResetOffer; credential: SeatCredential; secrets: string[] }
+	| { phase: "redeeming"; account: UsageAccount; offer: ResetOffer };
 
 /**
  * Columns reserved on the left of every account row for the selection marker.
@@ -75,6 +93,8 @@ export interface UsageViewDeps extends Omit<UsageCollectDeps, "store"> {
 	color?: boolean;
 	now?: () => Date;
 	timeZone?: string;
+	/** Idempotency key for a redeem; random per attempt in production. */
+	resetRequestId?: () => string;
 	/** Injectable so tests can drive the spinner without real time. */
 	setInterval?: (fn: () => void, ms: number) => unknown;
 	clearInterval?: (handle: unknown) => void;
@@ -117,6 +137,9 @@ export class UsageView {
 	 * survives navigation so it can still be read after the cursor moves. */
 	private status: string | undefined;
 	private error: string | undefined;
+	private reset: ResetFlow | undefined;
+	/** Bumped when a flow starts or is cancelled, so a late lookup cannot reopen it. */
+	private resetGeneration = 0;
 	private frame = 0;
 	private timer: unknown;
 	private disposed = false;
@@ -165,14 +188,14 @@ export class UsageView {
 
 	/** Re-fetch. Credential refresh happens inside collectUsage, on the REQ-005
 	 * locked single-flight path — the view never touches a token itself. */
-	private async load(): Promise<void> {
+	private async load(status?: string): Promise<void> {
 		const generation = (this.generation += 1);
 		const previous = this.accounts[this.selected];
 		this.loading = true;
 		this.error = undefined;
 		this.accounts = [];
 		this.sections = [];
-		this.status = undefined;
+		this.status = status;
 		this.retime();
 		try {
 			// Read once, so the section headers and the bars describe the same store.
@@ -205,15 +228,93 @@ export class UsageView {
 	}
 
 	handleInput(data: string): void {
+		// An open reset flow owns the keyboard, close keys included: esc on a
+		// confirmation means "keep my reset", not "close the whole view".
+		if (this.reset !== undefined) {
+			this.handleResetInput(data);
+			return;
+		}
 		if (isCloseKey(data)) {
 			this.hooks.onClose();
 			return;
 		}
 		if (this.loading) return; // nothing stable to move over or switch to yet
 		if (data === "r") void this.load();
+		else if (isResetKey(data)) void this.startReset();
 		else if (isUpKey(data)) this.move(-1);
 		else if (isDownKey(data)) this.move(1);
 		else if (isEnterKey(data)) void this.applySelection();
+	}
+
+	private handleResetInput(data: string): void {
+		const flow = this.reset;
+		if (flow === undefined || flow.phase === "redeeming") return; // a sent redeem cannot be called back
+		if (flow.phase === "confirm" && matchesKey(data, "y")) {
+			void this.redeem(flow);
+			return;
+		}
+		if (isCloseKey(data) || matchesKey(data, "n")) {
+			this.resetGeneration += 1;
+			this.reset = undefined;
+			this.changed();
+		}
+	}
+
+	/**
+	 * `x`: look up the reset the highlighted account would use, then ask.
+	 *
+	 * The lookup is fresh rather than read off the meters: the count on screen
+	 * may be minutes old, and the confirmation has to name the exact credit or
+	 * grant the redeem will send.
+	 */
+	private async startReset(): Promise<void> {
+		const account = this.accounts[this.selected];
+		if (account === undefined) return;
+		const generation = (this.resetGeneration += 1);
+		this.reset = { phase: "checking", account };
+		this.status = undefined;
+		this.changed();
+		let secrets: string[] = [];
+		let next: ResetFlow | undefined;
+		let status: string | undefined;
+		try {
+			const access = await resetCredential(this.deps, account);
+			if (!access.ok) {
+				status = `${account.name}: ${access.message}`;
+			} else {
+				secrets = access.secrets;
+				const lookup = await findResetOffer(account.provider, access.credential, this.deps.fetchOptions ?? {});
+				if (lookup.kind === "none") status = `${account.name}: ${lookup.message}`;
+				else next = { phase: "confirm", account, offer: lookup.offer, credential: access.credential, secrets };
+			}
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			status = `${account.name}: could not check resets: ${redactTokenText(message, secrets)}`;
+		}
+		if (this.disposed || generation !== this.resetGeneration) return;
+		this.reset = next;
+		this.status = status;
+		this.changed();
+	}
+
+	/** `y` on the confirmation. A used reset changes the limits, so the meters are refetched. */
+	private async redeem(flow: Extract<ResetFlow, { phase: "confirm" }>): Promise<void> {
+		this.reset = { phase: "redeeming", account: flow.account, offer: flow.offer };
+		this.changed();
+		const options: ResetRequestOptions = {
+			...this.deps.fetchOptions,
+			...(this.deps.resetRequestId !== undefined ? { requestId: this.deps.resetRequestId } : {}),
+		};
+		const outcome = await redeemReset(flow.credential, flow.offer, flow.secrets, options);
+		if (this.disposed) return;
+		this.reset = undefined;
+		const status = `${flow.account.name}: ${outcome.message}`;
+		if (outcome.used) {
+			void this.load(status);
+			return;
+		}
+		this.status = status;
+		this.changed();
 	}
 
 	/** Clamped, not wrapping — matching Pi's own SelectList. */
@@ -301,7 +402,30 @@ export class UsageView {
 		// Undimmed on purpose: in a pinned session this line is the only signal
 		// that Enter did anything, because the live dot cannot move.
 		if (this.status !== undefined) lines.push("", row([[this.status, undefined]]));
+		if (this.reset !== undefined) {
+			// Last, where the legend would be: the view can outgrow the screen, and
+			// the bottom rows are the ones that stay visible.
+			lines.push("", ...this.resetRows(this.reset, row, options));
+			return lines;
+		}
 		lines.push("", row([[VIEW_LEGEND, DIM]]));
+		return lines;
+	}
+
+	private resetRows(flow: ResetFlow, row: (segments: readonly Segment[]) => string, options: RenderOptions): string[] {
+		const title = row([[`reset · ${flow.account.name} (${flow.account.provider})`, BOLD]]);
+		if (flow.phase === "checking") return [title, row([[`  ${RESET_CHECKING_TEXT}`, DIM]])];
+		const { offer } = flow;
+		const expiry = offer.expiresAt !== null ? ` · use by ${formatExpiry(offer.expiresAt, options)}` : "";
+		const lines = [title, row([[`  ${offer.title}${expiry}`, undefined]])];
+		const refills = offer.refills.length > 0 ? `refills ${offer.refills.join(", ")} · ` : "";
+		lines.push(row([[`  ${refills}${offer.remaining} left`, DIM]]));
+		if (offer.caveat !== undefined) lines.push(row([[`  ${offer.caveat}`, YELLOW]]));
+		lines.push(
+			flow.phase === "redeeming"
+				? row([[`  ${RESET_REDEEMING_TEXT}`, DIM]])
+				: row([[`  Use this reset? It cannot be undone. `, BOLD], [RESET_CONFIRM_LEGEND, DIM]]),
+		);
 		return lines;
 	}
 
@@ -359,4 +483,26 @@ export function isDownKey(data: string): boolean {
 
 export function isEnterKey(data: string): boolean {
 	return matchesKey(data, Key.enter);
+}
+
+/** `x` opens the reset flow; `r` is taken by refresh. */
+export function isResetKey(data: string): boolean {
+	return matchesKey(data, "x");
+}
+
+/**
+ * "Nov 30 17:36" in the view's zone — a reset's deadline, not a countdown.
+ * Assembled from parts because ICU's own pattern varies ("Nov 30 at 17:36").
+ */
+function formatExpiry(date: Date, options: RenderOptions): string {
+	const parts = new Intl.DateTimeFormat("en-US", {
+		...(options.timeZone !== undefined ? { timeZone: options.timeZone } : {}),
+		month: "short",
+		day: "numeric",
+		hour: "2-digit",
+		minute: "2-digit",
+		hourCycle: "h23",
+	}).formatToParts(date);
+	const get = (type: string) => parts.find((p) => p.type === type)?.value ?? "";
+	return `${get("month")} ${get("day")} ${get("hour")}:${get("minute")}`;
 }

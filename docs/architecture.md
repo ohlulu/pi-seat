@@ -121,12 +121,12 @@ Ownership fencing——lock compromised 後禁止 commit，失鎖狀態下寫入
 - Rationale: Pi 自己的 `SelectList`（`docs/tui.md` Pattern 1）用 `selectedPrefix` + accent，`DynamicBorder` 框的是整個 dialog 而非單項——gutter 才是 host 的語彙。橫向代價也實量過：`planLayout` 的 tier 邊界在 60 / 43 / 38，2 欄把它們推到 62 / 45 / 40（AC-011b 的 ≥ 40 保證對應 `planLayout(38)`，仍在安全側），外框的 4 欄則不劃算。只給選取列 gutter 是錯的：游標一移，整片 bar 就左右跳。方案（b）零成本但單靠顏色傳達選取，單色終端失效。
 - `UsageAccount.live` 隨之移除，改為 `isLive(sections, account)` 在 render 時推導。View 能在 meters 已在螢幕上時改寫 default，而 fetch 時凍結的 flag 會讓點留在剛切走的帳號上直到整份重拿。順帶修正一個 `--json` 邊界：`active` 現在報 selection 所**命名**的 label，而非「有回應的那個」——dangling default 下回 null 會被讀成「built-in 生效」，但 runtime 實際是 fail-closed。
 - Ordering 不在切換後重排：重排會把區塊從游標底下抽走。與 DEC-008 的「ordering 是 walk 的決定」一致：順序屬於那一次 walk，下一次 refresh 才收斂。
-- 範圍停在 `use`：`rm` / `login` 需要巳狀 UI，而漏帶 `{ overlay: true }` 的巳狀 `ctx.ui.custom()` 會讓 base component 的 promise 永不 resolve（pi.md 實證 gotcha，無法從 session 內救回）。
+- 範圍停在 `use`：`rm` / `login` 需要巢狀 UI，而漏帶 `{ overlay: true }` 的巢狀 `ctx.ui.custom()` 會讓 base component 的 promise 永不 resolve（pi.md 實證 gotcha，無法從 session 內救回）。
 - Satisfies: REQ-010。
 
 ### DEC-010: Key 辨識一律走 pi-tui 的 `matchesKey`
 
-- Choice: view 的所有按鍵判定（esc / q / ↑ / ↓ / j / k / enter / r）呈給 `@earendil-works/pi-tui` 的 `matchesKey` 與 `Key`，不自己比對 escape sequence 字串。pi-tui 因此進入 peerDependencies / devDependencies（同 DEC-006 的 Pi 套件 pattern，由 pi runtime 提供）。
+- Choice: view 的所有按鍵判定（esc / q / ↑ / ↓ / j / k / enter / r / x / y / n）呈給 `@earendil-works/pi-tui` 的 `matchesKey` 與 `Key`，不自己比對 escape sequence 字串。pi-tui 因此進入 peerDependencies / devDependencies（同 DEC-006 的 Pi 套件 pattern，由 pi runtime 提供）。
 - Rationale: Pi 在啟動時以 flags `1|2|4` 協商 Kitty keyboard protocol（pi-tui `Terminal.queryAndEnableKittyProtocol`）。協商成功的終端上，esc 以 `esc [ 27 u` 抵達、enter 以 `esc [ 13 u` 抵達，且 `\n` 不再是 enter 而是 shift+enter。手寫的 `data === "\x1b"` 在這些終端上全數失效，`matchesKey` 則同時涵蓋 legacy、application-cursor、modifyOtherKeys 與 CSI-u。
 - 這是一條 smoke 節目上的盲點：tmux 不協商 Kitty protocol，所以 `scripts/smoke-usage-view.sh` 無論如何都是綠的。覆蓋靠的是 `usage-view.test.ts` 裡對兩種 encoding 都斷言的 regression test（以 `setKittyProtocolActive` 切換）。
 - Satisfies: REQ-010。
@@ -164,9 +164,20 @@ Ownership fencing——lock compromised 後禁止 commit，失鎖狀態下寫入
 - Limits: 另一個 extension 若對同一個 id 註冊了 `ProviderConfig`，native 註冊會靜默把它丟掉，所以 seat 保留它並在 session start 提示。該 provider 的 child 繼承那份 config，auth 由它決定（config 自訂了 oauth 或 apiKey 就用它的，否則才落到 Pi 內建登入），seat 不保證 child 用哪個 credential；parent 仍由 overlay 保護。Codex WebSocket 不在 request 層失效：child 開的 socket 在 child 存活期間都用開啟時的 credential。失敗訊息由 Pi 包裝：`OAuth auth derivation failed for anthropic: seat: anthropic auth failed — …`（`ModelsError` 保留 cause）。
 - Satisfies: REQ-004, AC-034。
 
+### DEC-014: Banked reset 是 view 的 inline state
+
+- Choice: [REQ-012](./specs/behavior.md#req-012-banked-reset-from-the-usage-view) 的確認是 `UsageView` 內部的 state machine（`checking → confirm → redeeming`），畫在 legend 的位置。Provider 的 wire contract 集中在 `src/usage/resets.ts`：它跟 `fetch.ts` 一樣是 Pi-free 的 transport 層，對外只給兩個 provider 共用的 `ResetOffer` / `ResetOutcome`。Claude 的所有 request 改帶 Claude Code 的 identity（`CLAUDE_CLI_USER_AGENT` + `x-app: cli`）。
+- Alternatives: (a) 巢狀 `ctx.ui.custom(…, { overlay: true })` 確認框；(b) 獨立的 `/seat reset` 指令與 CLI 對等指令；(c) Claude 只顯示張數、不做 redeem；(d) 不帶 `credit_id`，讓 Codex server 自己挑；(e) 確認直接讀 meter 上的張數，不重新 lookup。
+- Rationale: (a) 帶上 `overlay: true` 確實能避開 pi.md 的 hang gotcha，但 component 就不再是 Pi-free，測試得模擬兩層 UI；inline state 只是多幾列 rows，而且直接覆蓋在既有的 render probe 裡。(b) 使用者選擇的介面是 view；指令版之後要加也只是 `resets.ts` 的另一個 caller。(c) 使用者選擇兩個 provider 都做，接受 Claude claim 只能靠 mock 驗證（實作當時兩個 Anthropic 帳號都是 `no_grant`）。(d) 確認必須指名實際會被消耗的那一張，而且最早到期的先用才不會浪費。(e) 張數可能是幾分鐘前的，且 meter payload 沒有 credit id。
+- Wire contract 來源：Codex 讀 openai/codex 原始碼 `codex-rs/backend-client/src/client/rate_limit_resets.rs`（`GET wham/rate-limit-reset-credits`、`POST …/consume` 帶 `{redeem_request_id, credit_id}`、回 `{code, windows_reset}`）。Anthropic 讀 Claude Code 2.1.280 binary 的 `/limit-reset` 指令：`/api/oauth/usage?cedar_ember=1` 的 `cedar_ember` 區塊（`grants[]`、`next_grant_id`、`at_limit`、`ineligible_reason`），`/api/oauth/profile` 的 `organization.uuid`，以及 `POST /api/organizations/{org}/reset_rate_limits` 帶 `{program: "cedar_ember", grant_id, request_id}`、回 `{result, reason, resets_left, cleared}`。兩邊都沒有公開文件，所以每個欄位都以 defensive 方式 parse，認不得的結果一律當成曖昧（`not confirmed`），而不是當成拒絕。
+- Identity：實測以舊的 `claude-code/2.1.69` UA 打 usage 會拿到 `ineligible_reason: "surface"`，改成 Claude Code 的 UA 與 `x-app` 之後 `event_props.surface` 是 `claude_code_cli`。Server 也有 `cli_version` 這個 ineligible reason，所以版本常數會過期；過期時 lookup 會說「update pi-seat」。這也是冒充 first-party client，Pi 自己的 Anthropic OAuth 路徑本來就是這樣運作；風險是 Anthropic 未來把這條路關掉。
+- REQ-001 的放寬：built-in login 的 redeem 只是拿 `auth.json` 快照的 access token 送一個 POST，不 refresh、不寫檔，與 usage snapshot 屬於同一種唯讀使用；DEC-005 的「auth.json 是 Pi 的 grant」不變。
+- Concurrency：只有 credential 準備碰 store，以一個 `StoreSchedule` task 執行（DEC-013）；lookup 與 redeem 是純網路，在 task 外。
+- Satisfies: REQ-012, REQ-001, REQ-010。
+
 ## Related
 
 - [specs/behavior.md §Store](./specs/behavior.md#store) ← store、refresh、login 的行為契約（DEC-001/003/005 的 Satisfies 對象）
 - [specs/behavior.md §Selection & runtime](./specs/behavior.md#selection--runtime) ← pin、default、fail-closed overlay、Codex invalidation 的行為契約（DEC-002 與 per-turn lifecycle）
-- [specs/behavior.md §Usage](./specs/behavior.md#usage) ← usage CLI 與 in-session view 的行為契約（DEC-004/007/008/009/010/011/012）
+- [specs/behavior.md §Usage](./specs/behavior.md#usage) ← usage CLI 與 in-session view 的行為契約（DEC-004/007/008/009/010/011/012/014）
 - [RELEASING.md §Facts](./RELEASING.md#facts) ← DEC-006 部署形態對應的發佈 facts 與程序
