@@ -153,6 +153,34 @@ describe("TS-native scenarios (states Python cannot express)", () => {
 		]);
 	});
 
+	test("REQ-012: Claude's unused limit resets share Codex's credits row; none means no row", () => {
+		const limits = [{ kind: "session", percent: 42, resets_at: iso(2 * 3600 + 31 * 60) }];
+		const withResets: ClaudeUsage = {
+			limits,
+			cedar_ember: {
+				eligible: true,
+				grants: [
+					{ id: "g1", resets_left: 1 },
+					{ id: "g2", resets_left: 2 },
+					{ id: "g3", resets_left: 0 },
+				],
+				next_grant_id: "g1",
+			},
+		};
+		expect(renderClaudeUsage(layout, withResets, OPTS)).toEqual([
+			"  5h             ████████░░░░░░░░░░░░   42%  in 2h31m · 14:31",
+			"  credits        3",
+		]);
+
+		// The live shape of an account with nothing banked: no row at all.
+		const noGrant: ClaudeUsage = {
+			limits,
+			cedar_ember: { eligible: false, ineligible_reason: "no_grant", grants: [], next_grant_id: null },
+		};
+		expect(renderClaudeUsage(layout, noGrant, OPTS)).toHaveLength(1);
+		expect(renderClaudeUsage(layout, { limits, cedar_ember: null }, OPTS)).toHaveLength(1);
+	});
+
 	test("dual provider view: anthropic block then codex block", () => {
 		const lines = [
 			accountLine(layout, "work", [], true, "", OPTS),

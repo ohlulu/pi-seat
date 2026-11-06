@@ -61,10 +61,10 @@ Dans une session Pi :
 /seat login work        # crée un nouveau grant OAuth, stocké sous "work"
 /seat use work          # fait de "work" le défaut global
 /seat use work -a w     # …et pointe l'alias "w" dessus
-/seat status            # usage, défaut et pin — ↑↓ sélectionner, enter basculer, esc/q fermer
+/seat status            # usage, défaut et pin — ↑↓ sélectionner, enter basculer, x reset, esc/q fermer
 ```
 
-`/seat` et `/seat status` ouvrent une vue d'usage interactive dans une session TUI, et retombent sur du texte partout ailleurs (RPC, `pi -p`). Dans la vue, `↑↓`/`jk` déplacent la sélection et `enter` fait du compte surligné le défaut de ce fournisseur — choisir une ligne built-in rend le fournisseur à la connexion intégrée de Pi.
+`/seat` et `/seat status` ouvrent une vue d'usage interactive dans une session TUI, et retombent sur du texte partout ailleurs (RPC, `pi -p`). Dans la vue, `↑↓`/`jk` déplacent la sélection et `enter` fait du compte surligné le défaut de ce fournisseur — choisir une ligne built-in rend le fournisseur à la connexion intégrée de Pi. `x` utilise une réinitialisation de limite mise de côté sur le compte surligné (un crédit de reset Codex ou un reset de limite Claude) après une confirmation `y`/`n` dans la vue, qui indique laquelle, son échéance et toute raison pour laquelle le serveur pourrait la refuser ; la ligne `credits` sous les barres indique combien il en reste.
 
 Épinglez une session à un compte (prioritaire sur le défaut, pour cette session uniquement) :
 

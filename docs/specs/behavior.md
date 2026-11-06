@@ -17,13 +17,13 @@ Id policy：`REQ-###` 與 `AC-###` 是被 `src/`、`test/`、`scripts/` 直接�
 
 ### REQ-001: Exclusive credential store
 
-The system SHALL store named OAuth profiles for `anthropic` and `openai-codex` in an exclusive store file. The system SHALL never mutate `auth.json`, and SHALL never copy an `auth.json` credential into the store. Read-only access to `auth.json` is limited to exactly one enumerated use: the built-in usage snapshot ([REQ-006](#req-006-usage-meters-in-the-cli)); the snapshot content SHALL never be persisted into `seat.json`.
+The system SHALL store named OAuth profiles for `anthropic` and `openai-codex` in an exclusive store file. The system SHALL never mutate `auth.json`, and SHALL never copy an `auth.json` credential into the store. Read-only access to `auth.json` is limited to exactly two enumerated uses: the built-in usage snapshot ([REQ-006](#req-006-usage-meters-in-the-cli)), and redeeming that login's banked reset ([REQ-012](#req-012-banked-reset-from-the-usage-view)), which sends the snapshot's access token and never refreshes it; the snapshot content SHALL never be persisted into `seat.json`.
 
 store 路徑：`$PI_CODING_AGENT_DIR/seat.json`（未設 env 時為 `~/.pi/agent/seat.json`），權限 0600，atomic write，cross-process file lock。每個 named profile 持有獨立的 OAuth grant——credential 永不與 auth.json 複製共享，因為 Anthropic refresh token 是 single-use，共享 grant 必然導致 double-spend。
 
 | AC | Given | When | Then |
 |---|---|---|---|
-| AC-001 | 任一 seat 操作（login/use/rm/rename/usage） | 操作完成 | `auth.json` byte-identical 於操作前（no-write assertion） |
+| AC-001 | 任一 seat 操作（login/use/rm/rename/usage/reset） | 操作完成 | `auth.json` byte-identical 於操作前（no-write assertion） |
 | AC-002 | store 檔不存在 | 首次寫入 | 檔案以 0600 建立；讀取端拒絕 symlink |
 
 ### REQ-005: Single-flight refresh
@@ -168,7 +168,7 @@ Switching from the view SHALL NOT refetch usage——liveness 是 store 的事�
 
 Key recognition SHALL go through pi-tui's `matchesKey`, never through literal escape-sequence comparison：Pi 協商 Kitty keyboard protocol（見 [architecture.md §DEC-010](../architecture.md#dec-010-key-辨識一律走-pi-tui-的-matcheskey)），協商成功的終端上 esc 與 enter 以 CSI-u 抵達。游標 SHALL always point at an existing account，包含 walk 中途抛錯、帳號清單變短的情況。
 
-Destructive operations (`rm`, `login`) SHALL NOT be reachable from the view：它們需要巳狀對話框，而巳狀 `ctx.ui.custom()` 漏帶 `{ overlay: true }` 會讓 base component 的 promise 永不 resolve（見 `pi.md` extension gotchas）。`use` 非破壞性且可逆，不需確認。
+Destructive operations (`rm`, `login`) SHALL NOT be reachable from the view：它們需要巢狀對話框，而巢狀 `ctx.ui.custom()` 漏帶 `{ overlay: true }` 會讓 base component 的 promise 永不 resolve（見 `pi.md` extension gotchas）。`use` 非破壞性且可逆，不需確認。唯一的例外是 [REQ-012](#req-012-banked-reset-from-the-usage-view) 的 reset：它的確認是 view component 自己的一個 state，畫在自己的 rows 裡，不開任何 nested UI，所以那個 gotcha 碰不到它。
 
 | AC | Given | When | Then |
 |---|---|---|---|
@@ -194,6 +194,36 @@ Colour is the entire feature：no glyph, no extra column, no layout change。[AC
 | AC-028 | limit 無 `resets_at`、窗長認不出、窗期未達 `max(60s, 1% of period)`，或用量 < 5% | 渲染該 meter | 顏色為 pace 之前的絕對門檻結果（70 / 90），與本功能上線前一致 |
 | AC-029 | 任何 payload、任何寬度 | 以 `color: false` 渲染 | 輸出與 pace 上線前逐 byte 相同（AC-011a 的 golden fixtures 不變）；一列 meter 只讀一次 clock，顏色與倒數描述同一瞬間 |
 | AC-030 | limit 的 `resets_at` 無法解析，或 Codex `reset_at` 超出 Date 範圍 | 渲染該 meter | 只損失 reset 欄位：bar 與百分比照常渲染、顏色為絕對門檻、輸出不含 `NaN`、不抛錯 |
+
+### REQ-012: Banked reset from the usage view
+
+WHEN the user presses `x` on an account row of the in-session usage view ([REQ-010](#req-010-in-session-usage-view)), the extension SHALL look up the banked usage-limit reset that account would redeem next, show an inline confirmation naming it, and redeem it only after `y`. 兩個 provider 都發這種券：Codex 叫 reset credit，Anthropic 叫 limit reset（社群稱 banked reset）；兩者都沒有公開文件，wire contract 的來源記在 [architecture.md §DEC-014](../architecture.md#dec-014-banked-reset-是-view-的-inline-state)。
+
+哪一張：Codex 用最早到期的 `available` credit（用後面那張會讓這張白白過期）；Anthropic 用 server 在 `next_grant_id` 指名的 grant，其他 grant 會被以 `not_next_grant` 拒絕。Lookup SHALL be fresh at `x`, and an unreadable lookup reply SHALL report a failed check, never "no resets"：畫面上的張數可能已經是幾分鐘前的，而確認必須指名 redeem 要送出的那一張。確認內容包含券名、期限、會補滿哪些窗、剩餘張數，以及 server 可能拒絕的原因（Codex 只在至少補滿一個窗時才扣券；Anthropic 的券可能要求已經撞到上限）。
+
+Confirmation 是 view 的 state，不是第二個 `ctx.ui.custom()`。它開著的時候接管鍵盤：`esc` 與 `n` 的意思是「保留這張券」，只關確認、不關 view。Redeem 送出後沒有可以收回的東西，所以 in flight 期間所有按鍵無效。Redeem SHALL never be retried automatically：每次嘗試帶新的 idempotency key，重送等於一個新的 request。
+
+結果分三類，訊息各自說清楚券還在不在：
+
+- `reset`：券已使用、limit 已改變，view 重新抓 usage。這是除了 `r` 之外唯一會 refetch 的動作（對照 AC-023 的 zero-refetch）。
+- Server 明確拒絕（Codex `nothing_to_reset`/`no_credit`/`already_redeemed`、Anthropic `not_limited`/`already_used`/`cooldown`/`ineligible`/`unavailable`、HTTP 401/403/429），以及 redeem request 送出之前的失敗（Anthropic 的 profile 查詢或 organization 驗證）：不 refetch，狀態列說這次請求沒有消耗任何東西，並照實說出原因——多數情況券仍可用（`nothing_to_reset`、`not_limited`、`cooldown`、狀態碼拒絕），但 `already_redeemed`/`already_used` 表示那張券已被用掉，`no_credit` 表示沒有可用的券。
+- 曖昧（redeem 送出後的 5xx、timeout、無法解析的 body）：可能已經 commit，所以說 `not confirmed` 並提示按 `r` 確認，絕不說 `nothing was used`。
+
+Credential：store profile 走 [REQ-005](#req-005-single-flight-refresh) 的 locked refresh（一個 store task，DEC-013）；built-in login 讀 `auth.json` 快照並且 SHALL NOT refresh it（DEC-005），過期時只提示、不發 request。
+
+Count：meter block 下的 `credits` 列顯示剩餘張數。Codex 來自 `rate_limit_reset_credits.available_count`（既有的 Python parity 列，AC-011a 釘住）；Anthropic 是 `cedar_ember.grants[].resets_left` 的總和，沿用同一個標籤，讓同一個概念在畫面上只有一個詞。為 0 或區塊不存在時不出現這列。CLI 共用同一個 renderer，所以 `seat usage` 也顯示張數，但 redeem 只在 view 裡。
+
+Anthropic 以 client identity 判斷資格（實測：其他 User-Agent 拿到 `ineligible_reason: "surface"`），所以所有 Claude request（usage、profile、redeem）SHALL carry Claude Code's identity：`User-Agent: claude-cli/<version> (external, cli)` 與 `x-app: cli`。Usage URL 帶 `cedar_ember=1`（沒帶就沒有這個區塊），不帶 `skip_spend=1`（實測會改變 meter 要畫的 `extra_usage`）。
+
+Scope：只有 view 能 redeem，沒有 `/seat reset` 指令、也沒有 CLI 指令。Anthropic 的另一個 reset program `juniper_tide`（每週一次的 session-limit reset，實驗中的功能）不在範圍內。
+
+| AC | Given | When | Then |
+|---|---|---|---|
+| AC-035 | 帳號有可用的券 | view 載入後按 `x` | meter block 有 `credits N`；確認列出券名、期限、剩餘張數，有拒絕風險時加上原因；按 `y` 之前零個 redeem request；沒有券時只顯示狀態列、不開確認 |
+| AC-036 | 確認已開啟 | 按 `esc` 或 `n`；或在 redeem in flight 時按 `esc` / `y` | 前者只關確認、view 仍開著、零 redeem；後者全部無效，恰好送出一個 redeem |
+| AC-037 | 已按 `y` | server 回 `reset`、明確拒絕、或曖昧的失敗 | `reset`：usage 被 refetch，狀態列說 reset used；拒絕：零 refetch，狀態列說這次沒有消耗並照實說明原因（券保留、券已被用掉、或沒有券）；曖昧：說 `not confirmed`，絕不說 `nothing was used` |
+| AC-038 | 游標在 built-in login | redeem；或快照已過期 | 使用 `auth.json` 快照的 access token，`auth.json` byte-identical；快照過期時只提示，不 refresh、不發 request |
+| AC-039 | 任何 Claude request | 送出 | 帶 `claude-cli/<version> (external, cli)` UA 與 `x-app: cli`；usage URL 帶 `cedar_ember=1`、不帶 `skip_spend` |
 
 ## Non-functional
 

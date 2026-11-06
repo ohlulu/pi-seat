@@ -10,7 +10,15 @@ import {
 	type StorageLockResult,
 } from "../../src/store/storage.ts";
 import type { RefreshCallback } from "../../src/store/refresh.ts";
-import { builtinUsage, envUsageFetchOptions, fetchCodexUsage, profileUsage, readBuiltinSnapshot } from "../../src/usage/fetch.ts";
+import {
+	CLAUDE_CLI_USER_AGENT,
+	CLAUDE_USAGE_URL,
+	builtinUsage,
+	envUsageFetchOptions,
+	fetchCodexUsage,
+	profileUsage,
+	readBuiltinSnapshot,
+} from "../../src/usage/fetch.ts";
 import { planLayout } from "../../src/usage/layout.ts";
 import { meterLine, type ClaudeUsage } from "../../src/usage/render.ts";
 
@@ -198,15 +206,24 @@ describe("T037 regression: profile errors never leak token material", () => {
 });
 
 describe("Python-parity request headers", () => {
-	test("Claude: bearer, anthropic-beta, claude-code UA", async () => {
+	test("Claude: bearer, anthropic-beta, and the Claude Code identity resets are gated on (REQ-012)", async () => {
 		captured = [];
 		const backend = seedBackend(cred("rt-h", Date.now() + 3_600_000));
 		await profileUsage(backend, "anthropic", "personal", async (c) => c, { claudeUrl });
 		const headers = captured[0]!.headers;
 		expect(headers["authorization"]).toBe("Bearer at-rt-h");
 		expect(headers["anthropic-beta"]).toBe("oauth-2025-04-20");
-		expect(headers["user-agent"]).toBe("claude-code/2.1.69");
+		// Any other client identity gets `ineligible_reason: "surface"` back.
+		expect(headers["user-agent"]).toBe(CLAUDE_CLI_USER_AGENT);
+		expect(headers["user-agent"]).toMatch(/^claude-cli\/\d+\.\d+\.\d+ \(external, cli\)$/);
+		expect(headers["x-app"]).toBe("cli");
 		expect(headers["accept"]).toBe("application/json");
+	});
+
+	test("Claude: the production usage URL asks for the limit-reset block", () => {
+		expect(new URL(CLAUDE_USAGE_URL).searchParams.get("cedar_ember")).toBe("1");
+		// skip_spend=1 changes extra_usage, which the meters render.
+		expect(new URL(CLAUDE_USAGE_URL).searchParams.has("skip_spend")).toBe(false);
 	});
 
 	test("Codex: seat UA plus ChatGPT-Account-Id when present", async () => {

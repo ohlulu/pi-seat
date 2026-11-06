@@ -1,5 +1,16 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- Banked usage-limit resets can be spent from the `/seat` view. Codex grants reset credits ("Full reset (Weekly + 5 hr)") and Anthropic grants limit resets. Neither provider documents an API for them, so the contracts come from openai/codex's own client and from Claude Code 2.1.280's `/limit-reset` command. Press `x` on an account and the view looks up the reset that account would use next: the Codex credit closest to expiring, or the grant Anthropic names next. It then shows an inline confirmation with the reset's name, deadline, the windows it refills, how many are left, and any reason the server may refuse (Codex only spends a credit that refills something; an Anthropic reset may require being at a limit). `y` spends it and `n`/`esc` keep it. `esc` here closes only the confirmation, not the view. Once the request is sent, keys do nothing until it returns. A used reset refetches the meters. A refusal says this attempt used nothing and why: usually the reset is kept, but it can also be that the reset was already used elsewhere or that none is available. An ambiguous failure (a 5xx, a timeout, an unreadable reply) says the reset was *not confirmed* and asks you to press `r` to check, because it may have gone through. The redeem is never retried automatically. The confirmation is drawn inside the view itself, so it does not open nested UI. Pi's built-in login can spend its resets too, using the `auth.json` access token as-is: seat still never refreshes or writes Pi's grant, and an expired token only produces a hint (REQ-012, DEC-014).
+- Claude accounts now show their unused limit resets under the meters, on the same `credits` row Codex already used for reset credits. This applies to `seat usage` as well; spending a reset is only possible in the view.
+
+### Changed
+
+- Claude usage requests now identify as Claude Code (`User-Agent: claude-cli/2.1.280 (external, cli)`, `x-app: cli`) and ask for the limit-reset block (`?cedar_ember=1`). Anthropic decides reset eligibility from the client identity: under seat's old `claude-code/2.1.69` agent every account reported `ineligible_reason: "surface"`. If the pinned version is ever rejected as too old, the view says to update pi-seat.
+
 ## [0.4.0] - 2026-10-14
 
 ### Fixed

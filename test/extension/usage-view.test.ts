@@ -29,9 +29,12 @@ import {
 	isCloseKey,
 	isDownKey,
 	isEnterKey,
+	isResetKey,
 	isUpKey,
+	RESET_CONFIRM_LEGEND,
 	type UsageViewDeps,
 } from "../../src/extension/usage-view.ts";
+import { CODEX_RESET_CONSUME_URL, CODEX_RESET_CREDITS_URL } from "../../src/usage/resets.ts";
 
 const FRESH = Date.UTC(2026, 0, 15, 12, 0, 0) + 3_600_000;
 const NOW = () => new Date(Date.UTC(2026, 0, 15, 12, 0, 0));
@@ -110,6 +113,8 @@ function makeView(
 		claudeUrl?: string;
 		color?: boolean;
 		clock?: { ms: number };
+		/** Routes REQ-012's reset endpoints; usage requests still reach the fixture server. */
+		fetchImpl?: typeof fetch;
 	} = {},
 ): Harness {
 	const backend = new InMemorySeatStorageBackend();
@@ -152,7 +157,9 @@ function makeView(
 			claudeUrl: options.claudeUrl ?? claudeUrl,
 			codexUrl: options.codexUrl ?? codexUrl,
 			now: () => harness.clock.ms,
+			...(options.fetchImpl !== undefined ? { fetchImpl: options.fetchImpl } : {}),
 		},
+		resetRequestId: () => "req-view-1",
 		color: options.color ?? false,
 		now: () => new Date(harness.clock.ms),
 		timeZone: "UTC",
@@ -563,5 +570,227 @@ describe("render probe: widths 2\u2013200 never overflow", () => {
 		const narrow = h.view.render(12);
 		expect(narrow.every((line) => visibleWidth(line) <= 12)).toBe(true);
 		expect(narrow.some((line) => line.includes("…"))).toBe(true);
+	});
+});
+
+describe("REQ-012: a banked reset is redeemed from the view, behind an inline confirmation", () => {
+	const ORG = "6f1c2a40-1111-4222-8333-944455556666";
+	const PROFILE_URL = "https://api.anthropic.com/api/oauth/profile";
+	const REDEEM_URL = `https://api.anthropic.com/api/organizations/${ORG}/reset_rate_limits`;
+	const GRANT = {
+		id: "grant_a1",
+		label: "Opus 5.5 launch reset",
+		resets_left: 1,
+		ends_at: "2026-01-22T00:00:00+00:00",
+		clears: ["five_hour", "seven_day"],
+		use_requires_limit: false,
+	};
+
+	interface Sent {
+		method: string;
+		url: string;
+		body: unknown;
+	}
+
+	/**
+	 * Usage requests are answered here too, so the Claude payload can carry a
+	 * reset block; they still count in `fetches`. Reset endpoints answer from
+	 * `routes`; anything else is a test bug and 404s.
+	 */
+	function resetFetch(routes: Record<string, () => Response>, cedar: unknown): { fetchImpl: typeof fetch; sent: Sent[] } {
+		const sent: Sent[] = [];
+		const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+			const url = String(input);
+			const method = init?.method ?? "GET";
+			if (url === claudeUrl) {
+				fetches += 1;
+				return Response.json({ ...CLAUDE_PAYLOAD, cedar_ember: cedar });
+			}
+			if (url === codexUrl) {
+				fetches += 1;
+				return Response.json({ ...CODEX_PAYLOAD, rate_limit_reset_credits: { available_count: 2 } });
+			}
+			sent.push({ method, url, body: typeof init?.body === "string" ? JSON.parse(init.body) : undefined });
+			const route = routes[`${method} ${url}`];
+			return route ? route() : new Response("not found", { status: 404 });
+		}) as typeof fetch;
+		return { fetchImpl, sent };
+	}
+
+	const banked = { eligible: true, at_limit: true, grants: [GRANT], next_grant_id: GRANT.id };
+
+	async function openOnWork(fetchImpl: typeof fetch): Promise<Harness> {
+		const h = makeView({ profiles: { work: cred("rt-w") }, aliases: {}, default: "work", fetchImpl });
+		h.view.start();
+		await h.settle();
+		return h;
+	}
+
+	test("the meters show the count, and `x` opens a confirmation naming the exact grant", async () => {
+		const { fetchImpl, sent } = resetFetch({}, banked);
+		const h = await openOnWork(fetchImpl);
+		const before = h.view.render(100).join("\n");
+		expect(before).toMatch(/credits\s+1/);
+		expect(before).toContain("x reset");
+
+		h.view.handleInput("x");
+		await h.settle();
+		const text = h.view.render(100).join("\n");
+		expect(text).toContain("reset · work (anthropic)");
+		expect(text).toContain("  Opus 5.5 launch reset\n");
+		expect(text).toContain("  use by Jan 22 00:00\n  refills 5h, weekly\n  1 left");
+		expect(text).toContain(RESET_CONFIRM_LEGEND);
+		// The confirmation replaces the legend; nothing has been POSTed.
+		expect(text).not.toContain("x reset");
+		expect(sent.filter((s) => s.method === "POST")).toEqual([]);
+	});
+
+	test("n and esc keep the reset — and esc does not close the view", async () => {
+		const { fetchImpl, sent } = resetFetch({}, banked);
+		const h = await openOnWork(fetchImpl);
+		for (const key of ["n", "\x1b"]) {
+			h.view.handleInput("x");
+			await h.settle();
+			expect(h.view.render(100).join("\n")).toContain(RESET_CONFIRM_LEGEND);
+			h.view.handleInput(key);
+			expect(h.view.render(100).join("\n")).not.toContain(RESET_CONFIRM_LEGEND);
+		}
+		expect(h.closed).toBe(0);
+		expect(sent.filter((s) => s.method === "POST")).toEqual([]);
+	});
+
+	test("y redeems once, ignores keys while in flight, then refetches the meters", async () => {
+		let release: () => void = () => {};
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const { fetchImpl, sent } = resetFetch(
+			{
+				[`GET ${PROFILE_URL}`]: () => Response.json({ organization: { uuid: ORG } }),
+				[`POST ${REDEEM_URL}`]: () => Response.json({ result: "reset", resets_left: 0, cleared: ["five_hour"] }),
+			},
+			banked,
+		);
+		const gated = (async (input: string | URL | Request, init?: RequestInit) => {
+			if (String(input) === REDEEM_URL) await gate;
+			return fetchImpl(input, init);
+		}) as typeof fetch;
+		const h = await openOnWork(gated);
+		h.view.handleInput("x");
+		await h.settle();
+
+		const fetchesBefore = fetches;
+		h.view.handleInput("y");
+		await h.settle();
+		expect(h.view.render(100).join("\n")).toContain("using reset…");
+		// A sent redeem cannot be called back: no cancel, no close, no second send.
+		h.view.handleInput("\x1b");
+		h.view.handleInput("y");
+		expect(h.closed).toBe(0);
+
+		release();
+		await h.settle();
+		const posts = sent.filter((s) => s.method === "POST");
+		expect(posts).toHaveLength(1);
+		expect(posts[0]!.body).toEqual({ program: "cedar_ember", grant_id: "grant_a1", request_id: "req-view-1" });
+		// A used reset changed the limits, so this is the one action that refetches.
+		expect(fetches).toBeGreaterThan(fetchesBefore);
+		const text = h.view.render(100).join("\n");
+		expect(text).toContain("work: reset used · 5h refilled · 0 left");
+		expect(text).toContain("x reset");
+	});
+
+	test("a refusal keeps the meters as they are and says so", async () => {
+		const { fetchImpl } = resetFetch(
+			{
+				[`GET ${PROFILE_URL}`]: () => Response.json({ organization: { uuid: ORG } }),
+				[`POST ${REDEEM_URL}`]: () => Response.json({ result: "not_limited" }),
+			},
+			{ ...banked, at_limit: false, grants: [{ ...GRANT, use_requires_limit: true }] },
+		);
+		const h = await openOnWork(fetchImpl);
+		h.view.handleInput("x");
+		await h.settle();
+		expect(h.view.render(100).join("\n")).toContain("works only at a usage limit");
+		const fetchesBefore = fetches;
+		h.view.handleInput("y");
+		await h.settle();
+		expect(fetches).toBe(fetchesBefore);
+		expect(h.view.render(100).join("\n")).toContain("work: not at a usage limit · reset kept");
+	});
+
+	test("nothing banked: a status line, no confirmation", async () => {
+		const { fetchImpl } = resetFetch({}, { eligible: false, ineligible_reason: "no_grant", grants: [], next_grant_id: null });
+		const h = await openOnWork(fetchImpl);
+		h.view.handleInput("x");
+		await h.settle();
+		const text = h.view.render(100).join("\n");
+		expect(text).toContain("work: no limit resets available");
+		expect(text).not.toContain(RESET_CONFIRM_LEGEND);
+	});
+
+	test("the built-in Codex login redeems on Pi's snapshot, leaving auth.json untouched", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "seat-view-reset-"));
+		try {
+			const codexAuth = join(dir, "auth.json");
+			writeFileSync(
+				codexAuth,
+				JSON.stringify({ "openai-codex": { type: "oauth", refresh: "rt-cx", access: "at-cx", expires: FRESH, accountId: "acct-1" } }),
+				{ mode: 0o600 },
+			);
+			const before = Bun.file(codexAuth).size;
+			const { fetchImpl, sent } = resetFetch(
+				{
+					[`GET ${CODEX_RESET_CREDITS_URL}`]: () =>
+						Response.json({ available_count: 1, credits: [{ id: "credit-1", status: "available", title: "Full reset (Weekly + 5 hr)" }] }),
+					[`POST ${CODEX_RESET_CONSUME_URL}`]: () => Response.json({ code: "nothing_to_reset" }),
+				},
+				null,
+			);
+			const h = makeView({ profiles: { work: cred("rt-w") }, aliases: {}, default: "work", auth: codexAuth, fetchImpl });
+			h.view.start();
+			await h.settle();
+			// Walk to the Codex built-in row: the last account (the cursor clamps).
+			for (let i = 0; i < 5; i += 1) h.view.handleInput("j");
+			h.view.handleInput("x");
+			await h.settle();
+			expect(h.view.render(100).join("\n")).toContain("reset · Codex (openai-codex)");
+			h.view.handleInput("y");
+			await h.settle();
+			expect(sent.find((s) => s.method === "POST")?.body).toEqual({ redeem_request_id: "req-view-1", credit_id: "credit-1" });
+			expect(h.view.render(100).join("\n")).toContain("Codex: nothing to reset right now · reset kept");
+			expect(Bun.file(codexAuth).size).toBe(before);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
+	test("x is matched through matchesKey, like every other key", () => {
+		expect(isResetKey("x")).toBe(true);
+		expect(isResetKey("r")).toBe(false);
+	});
+
+	test("render probe: the checking and confirmation frames never overflow at widths 2–200", async () => {
+		const { fetchImpl } = resetFetch({}, { ...banked, at_limit: false, grants: [{ ...GRANT, use_requires_limit: true }] });
+		const h = await openOnWork(fetchImpl);
+		h.view.handleInput("x");
+		for (const settled of [false, true]) {
+			if (settled) await h.settle();
+			for (let width = 2; width <= 200; width += 1) {
+				h.view.invalidate();
+				for (const line of h.view.buildRows(width)) expect(visibleWidth(line)).toBeLessThanOrEqual(width);
+			}
+		}
+		expect(h.view.render(100).join("\n")).toContain(RESET_CONFIRM_LEGEND);
+	});
+
+	test("at 40 columns the deadline and the keys are still on screen", async () => {
+		const { fetchImpl } = resetFetch({}, { ...banked, at_limit: false, grants: [{ ...GRANT, use_requires_limit: true }] });
+		const h = await openOnWork(fetchImpl);
+		h.view.handleInput("x");
+		await h.settle();
+		const text = h.view.render(40).join("\n");
+		expect(text).toContain("use by Jan 22 00:00");
+		expect(text).toContain(RESET_CONFIRM_LEGEND);
 	});
 });

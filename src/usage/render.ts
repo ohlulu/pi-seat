@@ -259,8 +259,31 @@ export interface ClaudeLimit {
 	resets_at?: string;
 }
 
+/** One banked limit reset on offer (REQ-012). Only the fields seat reads. */
+export interface ClaudeResetGrant {
+	id?: string;
+	label?: string;
+	resets_left?: number;
+	ends_at?: string | null;
+	clears?: string[];
+	paused?: boolean;
+	usable_now?: boolean;
+	use_requires_limit?: boolean;
+}
+
+/** The `cedar_ember` block of `/api/oauth/usage?cedar_ember=1`. */
+export interface ClaudeResetStatus {
+	eligible?: boolean;
+	ineligible_reason?: string | null;
+	at_limit?: boolean;
+	grants?: ClaudeResetGrant[];
+	next_grant_id?: string | null;
+	cooldown_until?: string | null;
+}
+
 export interface ClaudeUsage {
 	limits?: ClaudeLimit[];
+	cedar_ember?: ClaudeResetStatus | null;
 	extra_usage?: {
 		is_enabled?: boolean;
 		used_credits?: number;
@@ -290,7 +313,20 @@ export function renderClaudeUsage(layout: Layout, data: ClaudeUsage, options: Re
 		const limit = (extra.monthly_limit ?? 0) / scale;
 		lines.push(detailLine(layout, "extra", `$${used.toFixed(2)} / $${limit.toFixed(2)}`, options));
 	}
+	const resets = claudeResetsLeft(data);
+	// Same label as Codex's reset-credit row, so one concept has one word on screen.
+	if (resets) lines.push(detailLine(layout, "credits", String(resets), options));
 	return lines;
+}
+
+/** Limit resets still unused across every grant; 0 when the block is absent. */
+export function claudeResetsLeft(data: ClaudeUsage): number {
+	let total = 0;
+	for (const grant of data.cedar_ember?.grants ?? []) {
+		const left = grant.resets_left;
+		if (typeof left === "number" && Number.isInteger(left) && left > 0) total += left;
+	}
+	return total;
 }
 
 // --- Codex block ------------------------------------------------------------

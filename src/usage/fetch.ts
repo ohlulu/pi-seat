@@ -1,6 +1,7 @@
 /**
- * Usage endpoint clients (REQ-006) — same endpoints and headers as the Python
- * seat. Two hard rules from DEC-005:
+ * Usage endpoint clients (REQ-006) — the Python seat's endpoints; Claude now
+ * identifies as Claude Code so the limit-reset block is populated (REQ-012).
+ * Two hard rules from DEC-005:
  *
  * - A stored (seat-owned) profile MAY be refreshed on demand, and only through
  *   the REQ-005 locked single-flight path — a dormant profile's usage no
@@ -16,8 +17,18 @@ import { decodeStore, readForeignFileNoFollow, type SeatStorageBackend } from ".
 import { redactTokenText } from "../store/redact.ts";
 import type { ClaudeUsage, CodexUsage } from "./render.ts";
 
-export const CLAUDE_USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
-export const CODEX_USAGE_URL = "https://chatgpt.com/backend-api/wham/usage";
+export const CLAUDE_API_BASE = "https://api.anthropic.com";
+export const CODEX_API_BASE = "https://chatgpt.com/backend-api";
+/** `cedar_ember=1` adds the limit-reset block (REQ-012); without it the field is absent. */
+export const CLAUDE_USAGE_URL = `${CLAUDE_API_BASE}/api/oauth/usage?cedar_ember=1`;
+export const CODEX_USAGE_URL = `${CODEX_API_BASE}/wham/usage`;
+
+/**
+ * Anthropic decides limit-reset eligibility from the client identity: any
+ * other User-Agent gets `ineligible_reason: "surface"`, and a stale version
+ * gets `cli_version`. Bump this alongside Claude Code releases.
+ */
+export const CLAUDE_CLI_USER_AGENT = "claude-cli/2.1.280 (external, cli)";
 export const USAGE_TIMEOUT_MS = 10_000;
 
 export interface UsageFetchOptions {
@@ -75,22 +86,19 @@ async function getJson(
 	return response.json();
 }
 
-/** Claude oauth/usage with the Python seat's exact headers. */
-export async function fetchClaudeUsage(access: string, options: UsageFetchOptions = {}): Promise<ClaudeUsage> {
-	return (await getJson(
-		options.claudeUrl ?? CLAUDE_USAGE_URL,
-		{
-			Authorization: `Bearer ${access}`,
-			"anthropic-beta": "oauth-2025-04-20",
-			Accept: "application/json",
-			"User-Agent": "claude-code/2.1.69",
-		},
-		options,
-	)) as ClaudeUsage;
+/** Headers for every Claude OAuth endpoint seat calls: usage, profile, limit reset. */
+export function claudeHeaders(access: string): Record<string, string> {
+	return {
+		Authorization: `Bearer ${access}`,
+		"anthropic-beta": "oauth-2025-04-20",
+		Accept: "application/json",
+		"User-Agent": CLAUDE_CLI_USER_AGENT,
+		"x-app": "cli",
+	};
 }
 
-/** Codex wham/usage with the Python seat's exact headers. */
-export async function fetchCodexUsage(credential: SeatCredential, options: UsageFetchOptions = {}): Promise<CodexUsage> {
+/** Headers for every Codex backend endpoint seat calls: usage, reset credits. */
+export function codexHeaders(credential: SeatCredential): Record<string, string> {
 	const headers: Record<string, string> = {
 		Authorization: `Bearer ${credential.access}`,
 		Accept: "application/json",
@@ -98,7 +106,17 @@ export async function fetchCodexUsage(credential: SeatCredential, options: Usage
 	};
 	const accountId = credential["accountId"];
 	if (typeof accountId === "string" && accountId.length > 0) headers["ChatGPT-Account-Id"] = accountId;
-	return (await getJson(options.codexUrl ?? CODEX_USAGE_URL, headers, options)) as CodexUsage;
+	return headers;
+}
+
+/** Claude oauth/usage, including the limit-reset block. */
+export async function fetchClaudeUsage(access: string, options: UsageFetchOptions = {}): Promise<ClaudeUsage> {
+	return (await getJson(options.claudeUrl ?? CLAUDE_USAGE_URL, claudeHeaders(access), options)) as ClaudeUsage;
+}
+
+/** Codex wham/usage with the Python seat's exact headers. */
+export async function fetchCodexUsage(credential: SeatCredential, options: UsageFetchOptions = {}): Promise<CodexUsage> {
+	return (await getJson(options.codexUrl ?? CODEX_USAGE_URL, codexHeaders(credential), options)) as CodexUsage;
 }
 
 export type ProfileUsageResult =
