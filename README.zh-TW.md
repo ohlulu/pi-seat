@@ -4,7 +4,7 @@
 
 [Pi](https://github.com/badlogic/pi-mono) 的多帳號管理工具——每個 session 可獨立切換 Anthropic 與 OpenAI Codex 的 OAuth 帳號，並在終端機直接看用量。
 
-- **命名 profile** — `work`、`personal`、`team`…每個 profile 持有獨立的 OAuth grant，存放在獨佔 store，永不寫入 Pi 的 `auth.json`。
+- **命名 profile** — `work`、`personal`、`team`…每個 profile 持有獨立的 OAuth grant，存放在獨佔 store，永不寫入 Pi 的 `auth.json`。Anthropic profile 也可以改存 Console API key，在方案用量與 API 計費之間切換只要一個指令。
 - **Session pin** — 透過 `PI_SEAT` 環境變數，同時開兩個 Pi session 各用不同帳號。
 - **用量圖表** — 每個 profile 的 5 小時與每週用量 bar，CLI 直接呈現。顏色看的是消耗速度而不是用量高低：照目前速度會在重置前超支就是紅色，接近超支是黃色，還有餘裕是綠色。
 - **Fail-closed** — credential 無法 refresh 並驗證時，跑在該 provider 上的 turn 直接中止，絕不讓請求騎在過期或錯誤的帳號上；壞掉的 profile 也擋不住跑在其他 provider 上的 turn。
@@ -82,9 +82,29 @@ seat status --plain     # TSV 輸出，供 shell prompt 使用
 
 `use default` 清除預設、還原 Pi 內建登入。`rm`、`rename` 與可重複的 `-a <alias>`（`login` 和 `use` 都支援）語意如你所料。
 
+### Anthropic API key
+
+Anthropic profile 可以存 Claude Console 的 API key，取代 OAuth grant。用它發出的請求會計入該 key 所屬的 Console organization，不佔方案用量；Max、Ultra、Team 方案每月附贈的 API credit 就是花在這裡（[說明](https://support.claude.com/en/articles/17154008-monthly-api-credits-for-max-ultra-and-team-plans)）。
+
+```
+/seat login console --api-key -a c    # masked 輸入；存入前先向 Anthropic 驗證 key
+/seat use c                           # 切到 API 計費；/seat use work 切回來
+```
+
+```sh
+seat login console --api-key          # CLI：從 stdin 讀 key 並關閉 echo，永不經過 argv
+PI_SEAT=console pi                    # 把單一 session pin 在這把 key 上
+```
+
+以下情況會拒絕存入：key 是 Claude OAuth token（`sk-ant-oat…`）或 Admin key，或 Anthropic 的驗證沒有回成功。API-key profile 沒有方案用量 meter：usage view 與 `seat` 只列出它並附一行說明，`x` 也沒有 reset 可用。Pi 會把這個 session 標成 API 計費，而不是 subscription。只有 `anthropic` 接受 API key。
+
+如果 `~/.pi/agent/models.json` 覆寫了 `anthropic` 的 `user-agent` header，API-key 請求也會帶上它，seat 拿不掉。Anthropic 的每月 credit 排除 interactive Claude Code，所以第一個 turn 之後請到 Console 的 billing 頁面確認。
+
+含 API-key profile 的 store 無法被 pi-seat 0.5.0 以前的版本讀取，降版前請先移除該 profile。
+
 ## 安全設計
 
-Profile 存於 `~/.pi/agent/seat.json`（0600、file lock、atomic write）。每個 profile 獨佔一份 OAuth grant——credential 永不與 Pi 的 `auth.json` 互相複製，因為 Anthropic refresh token 是 single-use，共享 grant 必然導致 double-spend。跨 process 的 token refresh 為 single-flight。
+Profile 存於 `~/.pi/agent/seat.json`（0600、file lock、atomic write）。API key 也存在這裡，永不印出。每個 OAuth profile 獨佔一份 grant——credential 永不與 Pi 的 `auth.json` 互相複製，因為 Anthropic refresh token 是 single-use，共享 grant 必然導致 double-spend。跨 process 的 token refresh 為 single-flight。
 
 ## License
 

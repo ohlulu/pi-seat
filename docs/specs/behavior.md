@@ -17,7 +17,7 @@ Id policy：`REQ-###` 與 `AC-###` 是被 `src/`、`test/`、`scripts/` 直接�
 
 ### REQ-001: Exclusive credential store
 
-The system SHALL store named OAuth profiles for `anthropic` and `openai-codex` in an exclusive store file. The system SHALL never mutate `auth.json`, and SHALL never copy an `auth.json` credential into the store. Read-only access to `auth.json` is limited to exactly two enumerated uses: the built-in usage snapshot ([REQ-006](#req-006-usage-meters-in-the-cli)), and redeeming that login's banked reset ([REQ-012](#req-012-banked-reset-from-the-usage-view)), which sends the snapshot's access token and never refreshes it; the snapshot content SHALL never be persisted into `seat.json`.
+The system SHALL store named profiles for `anthropic` and `openai-codex` in an exclusive store file: OAuth grants for both providers, plus Anthropic Console API keys for `anthropic` ([REQ-013](#req-013-anthropic-api-key-profiles)). The system SHALL never mutate `auth.json`, and SHALL never copy an `auth.json` credential into the store. Read-only access to `auth.json` is limited to exactly two enumerated uses: the built-in usage snapshot ([REQ-006](#req-006-usage-meters-in-the-cli)), and redeeming that login's banked reset ([REQ-012](#req-012-banked-reset-from-the-usage-view)), which sends the snapshot's access token and never refreshes it; the snapshot content SHALL never be persisted into `seat.json`.
 
 store 路徑：`$PI_CODING_AGENT_DIR/seat.json`（未設 env 時為 `~/.pi/agent/seat.json`），權限 0600，atomic write，cross-process file lock。每個 named profile 持有獨立的 OAuth grant——credential 永不與 auth.json 複製共享，因為 Anthropic refresh token 是 single-use，共享 grant 必然導致 double-spend。
 
@@ -40,7 +40,7 @@ Lost-response semantics：refresh 已 dispatch 但 response 遺失（timeout、c
 
 `/seat login <selector>` SHALL mint a new OAuth grant through the provider's own login flow and store it under the label. Capturing an existing `auth.json` credential into the store is forbidden：在獨佔 store 架構下，捕捉共享 grant 正是必須禁止的操作（見 [§Retired](#retired) 的 `save`）。
 
-保留 alias 習慣：`-a <alias>` repeatable；`rm`、`rename`、alias resolution 語意與 Python seat 相同。
+保留 alias 習慣：`-a <alias>` repeatable；`rm`、`rename`、alias resolution 語意與 Python seat 相同。`--api-key` 改為儲存一把 Console API key，見 [REQ-013](#req-013-anthropic-api-key-profiles)。
 
 Login 互動對齊 Pi 內建 `/login` 體驗：WHEN the provider flow yields an auth URL or device code, the extension SHALL attempt to open the system browser (best-effort, never fatal) and SHALL render the URL as a clickable (OSC 8) link; completion SHALL be reported with an explicit success or failure notification naming the stored label.
 
@@ -51,6 +51,26 @@ Login 互動對齊 Pi 內建 `/login` 體驗：WHEN the provider flow yields an 
 | AC-012 | `/seat login work` 完成 OAuth | 登入成功 | store 新增 work profile；auth.json 未變 |
 | AC-013 | label 與既有 profile 重名 | login | 確認後才覆蓋（destructive confirm） |
 | AC-021 | login flow 發出 auth_url / device_code 事件 | 事件抵達 | browser opener 被呼叫恰一次（失敗不中斷 flow）；notify 含可點擊 URL；完成時有具名 success/failure 訊息 |
+
+### REQ-013: Anthropic API-key profiles
+
+The store SHALL also hold named `anthropic` profiles whose credential is an Anthropic Console API key, so a session switches between subscription OAuth and Console API billing with the same `use` / `PI_SEAT` / alias mechanics. 動機：Max、Ultra、Team 方案每月發一筆 API credit 到使用者連結的 Console organization，只有該 organization 的 API key 發出的 API 呼叫會扣這筆 credit；Pi 透過 seat 用 OAuth grant 時扣的是 plan 額度。
+
+- Scope：只限 `anthropic`。`openai-codex` 走 ChatGPT backend；OpenAI platform key 屬於 Pi 另一個 `openai` provider，seat 不管理。
+- Login：`/seat login <selector> --api-key [-a <alias>]…`（CLI `seat login <selector> --api-key …` 同義）不走 OAuth flow，改為讀一把 key。Extension 以 masked input 讀取（每字元顯示 `•`，key 永不出現在畫面上）；CLI 從 stdin 讀一行，stdin 是 TTY 時關閉 echo，所以 key 不會進 argv 或 shell history。既有 label 的覆蓋確認同 AC-013。
+- Validation：key SHALL start with `sk-ant-`，and SHALL NOT be an OAuth token（`sk-ant-oat…`，pi-ai 會把它當 OAuth 送出）or an Admin key（`sk-ant-admin…`，不能呼叫 Messages API）。Console 目前發 `sk-ant-api03-…` 與 `sk-ant-usr-…` 兩種形狀；其他 `sk-ant-` 形狀交給 live check 判斷。通過 prefix 後送一個 `GET /v1/models`（不產生 token 用量）；非 2xx 或網路失敗即拒絕儲存。
+- Runtime：API-key profile 沒有 refresh、沒有 expiry，[REQ-005](#req-005-single-flight-refresh) 的 refresh 與 [REQ-004](#req-004-fail-closed-runtime-application) 的 invalid_grant block 都不適用。Selection、overlay、sentinel 與 per-request provider（AC-034）跟 OAuth profile 相同，request 走 `x-api-key`。Seat 回報給 Pi 的 auth 狀態 SHALL be `api_key`, not OAuth，所以 Pi 不會把它當成 subscription。
+- Usage：API-key profile 沒有 plan meter。CLI 與 view 照樣列出該帳號，下方一行說明 `API key — no plan meters; usage bills to its Console organization`。這不算 failure（CLI exit code 不受影響），active 時照樣亮點。`--json` 不在 `profiles` 裡列它，`active` 照樣指名它。View 上對它按 `x` 只回報它沒有 banked reset，不發 request。`seat status --plain` 的 expires 欄是 `-`。
+- Secrets：key 與 OAuth token 同一等級：存在 0600 的 store、所有錯誤訊息都經 redaction、永不印出。
+- Downgrade：store 仍是 version 1，只是多了一種 credential type。0.5.0 以前的 pi-seat 讀到含 API-key profile 的 store 會整份拒絕（全部 provider fail closed），刪掉該 profile 或升級即恢復；沒有 API-key profile 的 store 不受影響。
+
+| AC | Given | When | Then |
+|---|---|---|---|
+| AC-040 | 既有、只含 OAuth profile 的 `seat.json`（version 1） | 新版載入，以及任何不新增 API key 的操作 | 解析成功，未變更的內容 byte-identical；`openai-codex` 底下的 `api_key` credential 被 schema 拒絕 |
+| AC-041 | `/seat login console --api-key` 或 `seat login console --api-key` | 輸入合法 key | live check 通過後 store 新增 `{ type: "api_key", key }` profile；key 不出現在畫面、stdout、stderr 或 argv；`auth.json` 未變 |
+| AC-042 | 輸入 `sk-ant-oat…`、`sk-ant-admin…`、非 `sk-ant-` 開頭的字串，或 live check 回非 2xx | login | 拒絕、store 未變、錯誤訊息不含 key |
+| AC-043 | pin 或 default 指向 API-key profile | turn 與 subagent child 的 request | request auth 是該 key、零 refresh request；Pi 的 auth check 回報 `api_key` |
+| AC-044 | API-key profile 存在 | `seat`、`/seat` view、在該列按 `x` | 該列顯示 no-plan-meters 說明，active 時亮點；CLI exit 0；`x` 零 request |
 
 ## Selection & runtime
 
@@ -137,7 +157,7 @@ CLI synopsis 與 I/O 契約（與 Python 版一致）：
 | `seat status [--plain]` | 狀態；`--plain` 輸出 TSV |
 | `seat whoami [--plain]` | 離線：報告 store default 與（pi session 內）當前 pin |
 | `seat use <selector> [-a\|--alias <alias>]…` / `seat <selector> [-a …]` | 寫 global default（shorthand 同義）；`-a` 同時把 alias 指向目標 profile（沿用 Python seat 的 use 語意） |
-| `seat login <selector> [-a\|--alias <alias>]…` | named login，alias repeatable |
+| `seat login <selector> [--api-key] [-a\|--alias <alias>]…` | named login，alias repeatable；`--api-key` 從 stdin 讀 Console API key（[REQ-013](#req-013-anthropic-api-key-profiles)） |
 | `seat rm <selector> [--force\|--no-input]` | 刪除 profile |
 | `seat rename <old-selector> <new-label>` | 改名；old selector 決定 provider |
 

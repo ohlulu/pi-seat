@@ -11,7 +11,7 @@
  *   "fix".
  */
 
-import type { ProviderId, SeatCredential } from "../store/schema.ts";
+import { credentialSecrets, type ProviderId, type SeatCredential, type SeatOAuthCredential } from "../store/schema.ts";
 import { ensureFreshProfile, isExpired, type RefreshCallback } from "../store/refresh.ts";
 import { decodeStore, readForeignFileNoFollow, type SeatStorageBackend } from "../store/storage.ts";
 import { redactTokenText } from "../store/redact.ts";
@@ -98,7 +98,7 @@ export function claudeHeaders(access: string): Record<string, string> {
 }
 
 /** Headers for every Codex backend endpoint seat calls: usage, reset credits. */
-export function codexHeaders(credential: SeatCredential): Record<string, string> {
+export function codexHeaders(credential: SeatOAuthCredential): Record<string, string> {
 	const headers: Record<string, string> = {
 		Authorization: `Bearer ${credential.access}`,
 		Accept: "application/json",
@@ -115,7 +115,7 @@ export async function fetchClaudeUsage(access: string, options: UsageFetchOption
 }
 
 /** Codex wham/usage with the Python seat's exact headers. */
-export async function fetchCodexUsage(credential: SeatCredential, options: UsageFetchOptions = {}): Promise<CodexUsage> {
+export async function fetchCodexUsage(credential: SeatOAuthCredential, options: UsageFetchOptions = {}): Promise<CodexUsage> {
 	return (await getJson(options.codexUrl ?? CODEX_USAGE_URL, codexHeaders(credential), options)) as CodexUsage;
 }
 
@@ -124,6 +124,7 @@ export type ProfileUsageResult =
 	| { ok: false; label: string; error: string };
 
 export interface PreparedProfile {
+	/** An API key passes through untouched: it has nothing to refresh (REQ-013). */
 	credential: SeatCredential;
 	/** Every credential read or sent, so errors redact what was involved (T037/T042). */
 	secrets: string[];
@@ -158,7 +159,7 @@ export async function prepareProfile(
 	const secrets: string[] = [];
 	try {
 		const stored = backend.read((current) => decodeStore(current)).providers[provider]?.profiles[label];
-		if (stored) secrets.push(stored.access, stored.refresh);
+		if (stored) secrets.push(...credentialSecrets(stored));
 	} catch {
 		// Store unreadable → pattern-based redaction still applies below.
 	}
@@ -168,9 +169,9 @@ export async function prepareProfile(
 			// This read is unlocked, so a concurrent same-label replacement means
 			// the refresh sends a credential we have never seen. Redaction has to
 			// follow what was actually sent, not what we read (T042).
-			onAttempt: (sent) => secrets.push(sent.access, sent.refresh),
+			onAttempt: (sent) => secrets.push(...credentialSecrets(sent)),
 		});
-		secrets.push(outcome.credential.access, outcome.credential.refresh);
+		secrets.push(...credentialSecrets(outcome.credential));
 		return { ok: true, label, prepared: { credential: outcome.credential, secrets, refreshed: outcome.refreshed } };
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
@@ -189,11 +190,14 @@ export async function fetchPreparedUsage(
 	prepared: PreparedProfile,
 	options: UsageFetchOptions = {},
 ): Promise<ProfileUsageResult> {
+	const credential = prepared.credential;
+	// The usage endpoints are plan endpoints; a Console key has no plan.
+	if (credential.type === "api_key") return { ok: false, label, error: "API-key profile has no plan usage" };
 	try {
 		const usage =
 			provider === "anthropic"
-				? await fetchClaudeUsage(prepared.credential.access, options)
-				: await fetchCodexUsage(prepared.credential, options);
+				? await fetchClaudeUsage(credential.access, options)
+				: await fetchCodexUsage(credential, options);
 		return { ok: true, label, usage, refreshed: prepared.refreshed };
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
@@ -225,7 +229,7 @@ export type BuiltinUsageResult =
 	| undefined;
 
 /** Read-only auth.json snapshot for one provider; undefined when absent. */
-export function readBuiltinSnapshot(authPath: string, provider: ProviderId): SeatCredential | undefined {
+export function readBuiltinSnapshot(authPath: string, provider: ProviderId): SeatOAuthCredential | undefined {
 	const content = readForeignFileNoFollow(authPath);
 	if (content === undefined) return undefined;
 	let raw: unknown;
@@ -239,7 +243,7 @@ export function readBuiltinSnapshot(authPath: string, provider: ProviderId): Sea
 	if (!entry || typeof entry !== "object" || Array.isArray(entry)) return undefined;
 	const cred = entry as Record<string, unknown>;
 	if (cred["type"] !== "oauth" || typeof cred["access"] !== "string") return undefined;
-	return cred as unknown as SeatCredential;
+	return cred as unknown as SeatOAuthCredential;
 }
 
 /**

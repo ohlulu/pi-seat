@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { emptyStore, type SeatCredential } from "../../src/store/schema.ts";
+import { emptyStore, type SeatOAuthCredential } from "../../src/store/schema.ts";
 import {
 	InMemorySeatStorageBackend,
 	decodeStore,
@@ -21,6 +21,7 @@ import {
 } from "../../src/usage/fetch.ts";
 import { planLayout } from "../../src/usage/layout.ts";
 import { meterLine, type ClaudeUsage } from "../../src/usage/render.ts";
+import { asOAuth } from "../helpers/credentials.ts";
 
 const CLAUDE_PAYLOAD = {
 	limits: [{ kind: "session", percent: 42, resets_at: "2026-01-15T14:31:00+00:00" }],
@@ -58,11 +59,11 @@ afterAll(() => {
 	server.stop(true);
 });
 
-function cred(refresh: string, expires: number, extra: Record<string, unknown> = {}): SeatCredential {
+function cred(refresh: string, expires: number, extra: Record<string, unknown> = {}): SeatOAuthCredential {
 	return { type: "oauth", refresh, access: `at-${refresh}`, expires, ...extra };
 }
 
-function seedBackend(credential: SeatCredential): InMemorySeatStorageBackend {
+function seedBackend(credential: SeatOAuthCredential): InMemorySeatStorageBackend {
 	const backend = new InMemorySeatStorageBackend();
 	const store = emptyStore();
 	store.providers.anthropic = {
@@ -92,7 +93,7 @@ describe("AC-010: dormant expired profile refreshes through the lock, then rende
 
 		// The rotation went through the locked store, not a local variable.
 		const persisted = backend.read((c) => decodeStore(c));
-		expect(persisted.providers.anthropic?.profiles["personal"]?.refresh).toBe("rt-new");
+		expect(asOAuth(persisted.providers.anthropic?.profiles["personal"])?.refresh).toBe("rt-new");
 
 		// The usage payload renders a bar on the shared layout.
 		const layout = planLayout(80);
@@ -144,13 +145,13 @@ describe("T037 regression: profile errors never leak token material", () => {
 	});
 
 	test("T042: a same-label replacement between the unlocked read and the locked re-read stays redacted", async () => {
-		const old: SeatCredential = {
+		const old: SeatOAuthCredential = {
 			type: "oauth",
 			refresh: "OLD_SECRET_REFRESH",
 			access: "OLD_SECRET_ACCESS",
 			expires: Date.now() - 60_000,
 		};
-		const replacement: SeatCredential = {
+		const replacement: SeatOAuthCredential = {
 			type: "oauth",
 			refresh: "NEW_SECRET_REFRESH",
 			access: "NEW_SECRET_ACCESS",

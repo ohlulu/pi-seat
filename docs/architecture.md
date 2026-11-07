@@ -42,6 +42,7 @@ Per-request provider（[DEC-013](#dec-013-seat-auth-rides-a-registered-provider)
 - `CredentialStore.modify` 的 callback 回傳 `undefined` 表示「不改變 entry」（`AuthStorage.modify` 實證不寫檔）。Seat 擁有 provider 時，`oauth.refresh` 就回傳 `undefined`。這違反 `OAuthAuth.refresh` 宣告的回傳型別，是整個設計最脆弱的一點：Pi 若改成「空值即登出」，seat-owned provider 會變成未設定，表現是 fail-closed 而非退回 `auth.json`。
 - 私有：`ModelRuntime.builtins`（structural cast 讀取）。Seat 包的是 Pi 自己會用的那個 instance，remote-catalog wrapper 在內、`models.json` override 尚未套用，所以 override 仍只在 seat 之上 compose 一次。缺少這個 slice 時不註冊，parent 仍由 overlay 保護，child 退回修正前的行為。
 - Pi 在 `/reload` 時不清除已註冊的 provider，所以 seat 在 `session_shutdown` 歸還。
+- pi-ai 的 Anthropic transport 只看 key 的前綴決定 auth 形式（Pi 1.5.0 `anthropic-messages.js` `isOAuthToken = apiKey.includes("sk-ant-oat")`）：OAuth token 走 Bearer + Claude Code identity，其他字串走 `x-api-key`。API-key profile（[DEC-015](#dec-015-api-key-profile-是-schema-v1-的第二種-credential)）靠的就是這一點，seat 不需要也無法告訴 transport credential 的種類。
 
 ## Decisions
 
@@ -61,6 +62,7 @@ Per-request provider（[DEC-013](#dec-013-seat-auth-rides-a-registered-provider)
 ### DEC-003: Store schema v1 與 lock protocol
 
 - Choice: 單檔 `seat.json`：`{ version: 1, providers: { <id>: { default?: label, profiles: { label: credential }, aliases: { alias: label } } } }`。own-property 存取（label 是使用者輸入，防 `__proto__`）、0600、O_NOFOLLOW、atomic rename、`proper-lockfile`（與 Pi 同一套 lock 函式庫，但鎖自己的檔案）。
+- Credential 有兩種形狀（OAuth grant 與 Anthropic API key），見 [DEC-015](#dec-015-api-key-profile-是-schema-v1-的第二種-credential)。
 - Alternatives: 沿用 claude-profiles.json 格式（無 provider 維度、identities 欄位已無用途）。
 - Satisfies: REQ-001, REQ-005, REQ-007。
 
@@ -174,6 +176,16 @@ Ownership fencing——lock compromised 後禁止 commit，失鎖狀態下寫入
 - REQ-001 的放寬：built-in login 的 redeem 只是拿 `auth.json` 快照的 access token 送一個 POST，不 refresh、不寫檔，與 usage snapshot 屬於同一種唯讀使用；DEC-005 的「auth.json 是 Pi 的 grant」不變。
 - Concurrency：只有 credential 準備碰 store，以一個 `StoreSchedule` task 執行（DEC-013）；lookup 與 redeem 是純網路，在 task 外。
 - Satisfies: REQ-012, REQ-001, REQ-010。
+
+### DEC-015: API-key profile 是 schema v1 的第二種 credential
+
+- Choice: `SeatCredential` 改為 discriminated union：既有的 `{ type: "oauth", refresh, access, expires, … }`，加上 `{ type: "api_key", key }`，只允許出現在 `anthropic`。Store 維持 `version: 1`。Coordinator 的 `resolveSeat` 對 API-key profile 跳過 refresh 與 `toAuth`，直接回 `{ apiKey: key }`；之後的 overlay、sentinel、per-request provider 都不分種類。Wrapper 的 `apiKey.check` 回報被選中 profile 的 credential type。Login 由 `src/extension/api-key.ts` 驗證（prefix + `GET /v1/models`），extension 用包住 pi-tui `Input` 的 masked component 讀 key，CLI 從 stdin 讀並關閉 echo。
+- Alternatives: (a) 在 `models.json` 另立一個 `anthropic-console` provider；(b) store 升到 `version: 2` 並附 migration；(c) 只在有 API-key profile 時寫 v2；(d) key 走 Pi 內建 `ctx.ui.input`，或只在 CLI 輸入；(e) 只做 prefix 檢查。
+- Rationale: (a) 使用者否決：model id（`anthropic/claude-*`）與所有既有 model 設定會分裂成兩套，切換也不再是一個 seat 指令。(b) 任何一次 mutation（連 `/seat use` 都算）都會讓舊版 pi-seat 整份拒絕 store，即使使用者根本沒加 API key，還要多一段 migration。(c) 降級體驗最好，代價是兩種寫入格式要維護與測試；以這個套件的使用規模不值得。v1 additive 的代價是降級時錯誤訊息只說 `credential.type must be "oauth"`，而且只在真的有 API-key profile 時發生，REQ-013 已寫明。(d) Pi 自己的 `/login` API-key prompt 也不遮蔽，但 key 在畫面上就可能被錄影或截圖帶走；只開放 CLI 又逼使用者離開 Pi。包住 `Input` 讓 paste、Kitty 鍵盤協定與刪除鍵的行為都沿用 pi-tui，seat 只負責 render 遮蔽後的那一行。(e) 貼錯或撤銷的 key 要等到第一個 turn 才以 401 出現；`GET /v1/models` 不產生 token 用量，代價只是 login 需要網路。
+- 前綴判斷：pi-ai 只以 `sk-ant-oat` 認定 OAuth（見 §Pi compatibility），所以 Console 新發的 `sk-ant-usr-…` key 也走 `x-api-key`。validation 拒絕 `sk-ant-oat` 是因為它在 runtime 會被當成 OAuth 送出，拒絕 `sk-ant-admin` 是因為它不能呼叫 Messages API；其餘 `sk-ant-` 形狀交給 live check，不維護白名單。
+- Header 優先序：`models.json` 的 provider-level `headers` 在 Pi 的 composer 裡蓋在 request auth 之上（Pi 1.5.0 `provider-composer.js` 的 `withConfiguredAuth`），所以 seat 無法替 API-key request 換掉使用者設定的 `user-agent`。Anthropic 的 credit 規則排除 interactive Claude Code，卻沒說怎麼辨識；`user-agent: claude-cli/…` 是可能的訊號。這是使用者 config 層的決定，不是 seat 能修的。
+- Auth 狀態：Pi 的 `isUsingSubscription` 讀的是 `apiKey.check` 回傳的 type。Seat 原本只要擁有 provider 就回 `oauth`，對 API-key profile 會讓 Pi 把 API 計費誤標成 subscription，所以 coordinator 的 `owns` 改為回傳被選中 profile 的 credential type。
+- Satisfies: REQ-013, REQ-001, REQ-004, REQ-007。
 
 ## Related
 

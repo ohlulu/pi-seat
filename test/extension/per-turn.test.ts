@@ -99,3 +99,64 @@ describe("per-turn re-apply (REQ-004 two-turn tests)", () => {
 		expect(h.runtime.keys.get("anthropic")).toBe("at-rt-work"); // still the pin
 	});
 });
+
+describe("AC-043: an API-key profile (REQ-013)", () => {
+	const KEY = "sk-ant-api03-FAKE-turn-key";
+
+	test("the overlay and every request carry the key, with zero refresh or toAuth", async () => {
+		const h = makeHarness({
+			sections: {
+				anthropic: {
+					default: "console",
+					profiles: { console: { type: "api_key", key: KEY }, work: cred("rt-work", EXPIRED) },
+				},
+			},
+		});
+
+		await runTurn(h, "anthropic");
+		expect(h.aborts).toEqual([]);
+		expect(h.runtime.keys.get("anthropic")).toBe(KEY);
+		expect(await h.coordinator.requestAuth("anthropic")).toEqual({ apiKey: KEY });
+		expect(await h.coordinator.owns("anthropic")).toBe("api_key");
+		// The expired OAuth profile beside it is never touched: it is not selected.
+		expect(h.counters).toEqual({ refresh: 0, toAuth: 0 });
+	});
+
+	test("switching between an OAuth profile and the key re-applies each turn", async () => {
+		const h = makeHarness({
+			sections: {
+				anthropic: {
+					default: "work",
+					profiles: { console: { type: "api_key", key: KEY }, work: cred("rt-work", FRESH) },
+				},
+			},
+		});
+
+		await runTurn(h, "anthropic");
+		expect(h.runtime.keys.get("anthropic")).toBe("at-rt-work");
+		expect(await h.coordinator.owns("anthropic")).toBe("oauth");
+
+		mutateStore(h.backend, (store) => {
+			store.providers.anthropic!.default = "console";
+		});
+		await runTurn(h, "anthropic");
+		expect(h.runtime.keys.get("anthropic")).toBe(KEY);
+		expect(h.aborts).toEqual([]);
+	});
+
+	test("a selection naming a deleted profile is owned as missing and fails closed", async () => {
+		const h = makeHarness({
+			sections: { anthropic: { profiles: { console: { type: "api_key", key: KEY } } } },
+			pins: { anthropic: "console" },
+		});
+		mutateStore(h.backend, (store) => {
+			delete store.providers.anthropic!.profiles["console"];
+		});
+
+		expect(await h.coordinator.owns("anthropic")).toBe("missing");
+		await runTurn(h, "anthropic");
+		expect(h.aborts).toHaveLength(1);
+		expect(h.aborts[0]).not.toContain(KEY);
+		expect(h.runtime.streamCalls).toBe(0);
+	});
+});

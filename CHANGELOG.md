@@ -1,5 +1,16 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- Anthropic profiles can hold a Claude Console API key instead of an OAuth grant, so a session moves between plan usage and Console API billing with the usual `/seat use`, `PI_SEAT` and aliases. Max, Ultra and Team plans now include a monthly API credit for one linked Console organization, and only that organization's API keys spend it; a seat OAuth profile spends the plan's limits instead. `/seat login <label> --api-key` reads the key through a masked prompt (one `•` per character). `seat login <label> --api-key` reads it from stdin, with echo off on a terminal, so it never reaches argv or shell history. Before storing, seat refuses a Claude OAuth token (`sk-ant-oat…`, which Pi would send as OAuth) and an Admin key, then sends one tokenless `GET /v1/models` and refuses anything but success. Both of today's Console shapes (`sk-ant-api03-…`, `sk-ant-usr-…`) are accepted. An API-key profile has no refresh and no expiry. Turns, subagent children and the per-turn overlay send it as `x-api-key`, and Pi's auth status reports it as an API key rather than a subscription. The usage view and `seat` list it with a no-plan-meters note: it is not a failure, it lights up when active, and `x` sends nothing. `seat status` marks it `[API key]`, and `--plain` prints `-` for its expiry. `--json` leaves it out of `profiles` but still names it as `active`. Only `anthropic` accepts keys. The store stays `version: 1`, and an OAuth-only `seat.json` is untouched. A store holding an API-key profile cannot be read by pi-seat 0.5.0 or older: remove that profile before downgrading (REQ-013, DEC-015).
+
+### Changed
+
+- Errors from seat now mask any `sk-ant-…` string by pattern, on top of the exact-secret redaction they already had.
+- The `login` overwrite prompt, the `login` success line and the `rm` confirmation now say "credential" instead of "grant", because a profile may hold a key.
+
 ## [0.5.0] - 2026-11-06
 
 ### Added

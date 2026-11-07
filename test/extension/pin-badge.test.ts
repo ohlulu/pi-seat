@@ -5,12 +5,12 @@
  * colour, the no-pin silence, and the re-set on every session_start.
  */
 import { afterEach, describe, expect, test } from "bun:test";
-import type { SeatCredential } from "../../src/store/schema.ts";
+import type { SeatOAuthCredential } from "../../src/store/schema.ts";
 import { cleanupLoadedExtensions, loadExtension } from "./load-extension.ts";
 
 const FRESH = Date.now() + 3_600_000;
 
-function cred(refresh: string): SeatCredential {
+function cred(refresh: string): SeatOAuthCredential {
 	return { type: "oauth", refresh, access: `at-${refresh}`, expires: FRESH };
 }
 

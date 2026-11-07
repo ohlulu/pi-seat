@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { emptyStore, type SeatCredential } from "../../src/store/schema.ts";
+import { emptyStore, type SeatOAuthCredential } from "../../src/store/schema.ts";
 import { InMemorySeatStorageBackend, decodeStore, encodeStore } from "../../src/store/storage.ts";
 import type { SeatProviderAdapter } from "../../src/extension/oauth.ts";
 import { runCli, type CliDeps } from "../../src/cli/main.ts";
@@ -7,6 +7,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import pkg from "../../package.json" with { type: "json" };
+import { asOAuth } from "../helpers/credentials.ts";
 
 const FRESH = Date.now() + 3_600_000;
 
@@ -43,7 +44,7 @@ afterAll(() => {
 	rmSync(fixtureDir, { recursive: true, force: true });
 });
 
-function cred(refresh: string): SeatCredential {
+function cred(refresh: string): SeatOAuthCredential {
 	return { type: "oauth", refresh, access: `at-${refresh}`, expires: FRESH };
 }
 
@@ -96,7 +97,7 @@ function makeCli(
 		oauth: {
 			login: async () => cred(`rt-minted-${id}`) as never,
 			refresh: async (c) => c,
-			toAuth: async (c) => ({ apiKey: (c as SeatCredential).access }) as never,
+			toAuth: async (c) => ({ apiKey: (c as SeatOAuthCredential).access }) as never,
 		},
 	}));
 
@@ -121,6 +122,7 @@ function makeCli(
 				return options.confirmAnswer ?? true;
 			},
 			input: async () => undefined,
+			secret: async () => undefined,
 		},
 		termWidth: 80,
 		color: false,
@@ -250,7 +252,7 @@ describe("usage", () => {
 		});
 		for (const adapter of cli.deps.adapters) {
 			adapter.oauth.refresh = async (c) => {
-				throw new Error(`refresh ${(c as SeatCredential).refresh} rejected (access ${(c as SeatCredential).access})`);
+				throw new Error(`refresh ${(c as SeatOAuthCredential).refresh} rejected (access ${(c as SeatOAuthCredential).access})`);
 			};
 		}
 		expect(await cli.run("usage", "--json")).toBe(1);
@@ -305,7 +307,7 @@ describe("mutations via CLI", () => {
 		const cli = makeCli();
 		expect(await cli.run("login", "openai-codex:backup", "-a", "b")).toBe(0);
 		const store = cli.backend.read((c) => decodeStore(c));
-		expect(store.providers["openai-codex"]?.profiles["backup"]?.refresh).toBe("rt-minted-openai-codex");
+		expect(asOAuth(store.providers["openai-codex"]?.profiles["backup"])?.refresh).toBe("rt-minted-openai-codex");
 		expect(store.providers["openai-codex"]?.aliases["b"]).toBe("backup");
 	});
 
@@ -403,6 +405,101 @@ describe("T039: codex usage renders every stored profile plus the builtin snapsh
 		expect(await cli.run("usage", "--json")).toBe(0);
 		const doc = JSON.parse(cli.out.join("\n")) as Record<string, any>;
 		expect(doc["openai-codex"].rate_limit).toBeDefined(); // legacy: usage sits directly under the provider key
+	});
+});
+
+describe("REQ-013: API-key profiles via CLI", () => {
+	const KEY = "sk-ant-api03-FAKE-cli-key";
+
+	function withModelsEndpoint(cli: Cli, status: number): string[] {
+		const keys: string[] = [];
+		cli.deps.fetchOptions = {
+			...cli.deps.fetchOptions,
+			fetchImpl: (async (url: string | URL | Request, init?: RequestInit) => {
+				if (String(url).includes("/v1/models")) {
+					keys.push((init?.headers as Record<string, string>)["x-api-key"] ?? "");
+					return new Response("{}", { status });
+				}
+				return fetch(url, init);
+			}) as unknown as typeof fetch,
+		};
+		return keys;
+	}
+
+	test("AC-041: `seat login <label> --api-key` reads the key from the secret prompt, verifies, stores", async () => {
+		const cli = makeCli();
+		const keys = withModelsEndpoint(cli, 200);
+		const prompts: string[] = [];
+		cli.deps.io.secret = async (question) => {
+			prompts.push(question);
+			return `${KEY}\n`;
+		};
+
+		expect(await cli.run("login", "console", "--api-key", "-a", "c")).toBe(0);
+		expect(prompts).toHaveLength(1);
+		expect(keys).toEqual([KEY]);
+		const store = cli.backend.read((c) => decodeStore(c));
+		expect(store.providers.anthropic?.profiles["console"]).toEqual({ type: "api_key", key: KEY });
+		expect(store.providers.anthropic?.aliases["c"]).toBe("console");
+		expect([...cli.out, ...cli.errs].join("\n")).not.toContain(KEY);
+		expect(cli.out).toEqual([]); // diagnostics only, on stderr
+	});
+
+	test("AC-042: a rejected key exits 1, stores nothing, and never echoes", async () => {
+		const cli = makeCli();
+		withModelsEndpoint(cli, 401);
+		cli.deps.io.secret = async () => KEY;
+		const before = cli.backend.read((c) => c);
+
+		expect(await cli.run("login", "console", "--api-key")).toBe(1);
+		expect(cli.backend.read((c) => c)).toBe(before);
+		expect(cli.errs.join("\n")).toContain("HTTP 401");
+		expect(cli.errs.join("\n")).not.toContain(KEY);
+	});
+
+	test("openai-codex refuses --api-key before prompting; an empty prompt cancels", async () => {
+		const cli = makeCli();
+		let prompted = 0;
+		cli.deps.io.secret = async () => {
+			prompted += 1;
+			return undefined;
+		};
+		expect(await cli.run("login", "openai-codex:main", "--api-key")).toBe(1);
+		expect(prompted).toBe(0);
+
+		expect(await cli.run("login", "console", "--api-key")).toBe(1);
+		expect(prompted).toBe(1);
+		expect(cli.errs.some((e) => e.includes("login cancelled"))).toBe(true);
+	});
+
+	test("AC-044: status marks the key profile; usage shows its row and still exits 0", async () => {
+		const cli = makeCli();
+		cli.backend.withLock((current) => {
+			const store = decodeStore(current);
+			store.providers.anthropic!.profiles["console"] = { type: "api_key", key: KEY };
+			store.providers.anthropic!.default = "console";
+			return { result: undefined, next: encodeStore(store) };
+		});
+
+		expect(await cli.run("status", "--plain")).toBe(0);
+		expect(cli.out.find((r) => r.startsWith("console\t"))).toBe("console\tactive\t-\t-");
+
+		cli.out.length = 0;
+		expect(await cli.run("status")).toBe(0);
+		expect(cli.out).toContain("  console [API key]");
+
+		cli.out.length = 0;
+		expect(await cli.run()).toBe(0);
+		const text = cli.out.join("\n");
+		expect(text).toContain("● console");
+		expect(text).toContain("no plan meters");
+		expect(text).not.toContain(KEY);
+
+		cli.out.length = 0;
+		expect(await cli.run("usage", "--json")).toBe(0);
+		const doc = JSON.parse(cli.out.join("\n")) as Record<string, any>;
+		expect(doc["anthropic"].active).toBe("console");
+		expect(Object.keys(doc["anthropic"].profiles).sort()).toEqual(["personal", "work"]);
 	});
 });
 

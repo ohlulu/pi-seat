@@ -12,7 +12,9 @@ export function redactTokenText(text: string, exactSecrets: readonly string[] = 
 	return (exact ? text.replace(exact, "<redacted>") : text)
 		.replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, "Bearer <redacted>")
 		.replace(/"(access|refresh|access_token|refresh_token|token)"\s*:\s*"[^"]+"/gi, '"$1":"<redacted>"')
-		.replace(/\b(access|refresh)[_-][A-Za-z0-9._~+/=-]+/gi, "$1-<redacted>");
+		.replace(/\b(access|refresh)[_-][A-Za-z0-9._~+/=-]+/gi, "$1-<redacted>")
+		// Anthropic API keys and OAuth tokens (REQ-013), even when no exact secret was known.
+		.replace(/\bsk-ant-[A-Za-z0-9._~+/=-]+/g, "sk-ant-<redacted>");
 }
 
 const escapeRegExp = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");

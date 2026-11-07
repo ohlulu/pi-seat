@@ -27,7 +27,14 @@
 // cleanupSessionResources (root export) dispatches to the registered
 // closeOpenAICodexWebSocketSessions cleanup — same close, loadable path.
 import { cleanupSessionResources, type ModelAuth } from "@earendil-works/pi-ai";
-import { PROVIDER_IDS, type ProviderId, type SeatCredential } from "../store/schema.ts";
+import {
+	PROVIDER_IDS,
+	credentialFingerprint,
+	credentialSecrets,
+	type ProviderId,
+	type SeatCredential,
+	type SeatCredentialType,
+} from "../store/schema.ts";
 import { InvalidGrantError, ensureFreshProfile } from "../store/refresh.ts";
 import { decodeStore, type SeatStorageBackend } from "../store/storage.ts";
 import { resolveSelection } from "../store/selector.ts";
@@ -37,6 +44,13 @@ import { redactTokenText } from "../store/redact.ts";
 
 /** Non-secret sentinel installed after an abort; never a working credential. */
 export const SEAT_SENTINEL_API_KEY = "pi-seat-auth-failed";
+
+/**
+ * What seat owns a provider with: the selected profile's credential type, or
+ * `missing` when the selected label names no stored profile (its requests fail
+ * closed). Every value is truthy; "not owned" is undefined.
+ */
+export type SeatOwnership = SeatCredentialType | "missing";
 
 /** The slice of Pi's internal ModelRuntime that seat relies on. */
 export interface SeatRuntime {
@@ -102,8 +116,8 @@ export interface CoordinatorOptions {
 
 interface BlockedState {
 	label: string;
-	/** Refresh token of the credential that died; a rotated one clears the block. */
-	refresh: string;
+	/** Fingerprint of the credential that died; a replacement login clears the block. */
+	fingerprint: string;
 	reason: string;
 }
 
@@ -117,6 +131,7 @@ interface BlockedState {
 type Identity = { kind: "label"; label: string; fingerprint: string } | { kind: "builtin" };
 
 function accountFingerprint(credential: SeatCredential): string {
+	if (credential.type === "api_key") return `key:${credential.key}`;
 	const accountId = credential["accountId"];
 	return typeof accountId === "string" && accountId.length > 0 ? `id:${accountId}` : `rt:${credential.refresh}`;
 }
@@ -138,14 +153,18 @@ export class SeatRuntimeAuthCoordinator {
 	}
 
 	/**
-	 * True when seat owns `provider`'s auth (a pin or a store default). Throws a
-	 * seat error when the store cannot be read — the caller must fail closed.
+	 * What seat owns `provider`'s auth with (a pin or a store default), or
+	 * undefined when Pi's built-in login owns it. Throws a seat error when the
+	 * store cannot be read — the caller must fail closed.
 	 */
-	owns(provider: ProviderId): Promise<boolean> {
+	owns(provider: ProviderId): Promise<SeatOwnership | undefined> {
 		return this.serialize(async () => {
 			try {
 				const store = this.options.backend.read((current) => decodeStore(current));
-				return resolveSelection(store, provider, this.options.pins[provider]).source !== "builtin";
+				const selection = resolveSelection(store, provider, this.options.pins[provider]);
+				if (selection.source === "builtin") return undefined;
+				const profiles = store.providers[provider]?.profiles ?? {};
+				return Object.hasOwn(profiles, selection.label) ? profiles[selection.label]!.type : "missing";
 			} catch (error) {
 				throw new Error(failureMessage(provider, errorMessage(error)));
 			}
@@ -264,17 +283,15 @@ export class SeatRuntimeAuthCoordinator {
 
 		// Redactable even when the failure happens inside refresh, before any
 		// rotation exists.
-		const stored = store.providers[provider]?.profiles[label];
-		if (stored) secrets.push(stored.access, stored.refresh);
+		const profiles = store.providers[provider]?.profiles ?? {};
+		const stored = Object.hasOwn(profiles, label) ? profiles[label] : undefined;
+		if (stored) secrets.push(...credentialSecrets(stored));
 
 		// Persistent fail-closed: a dead grant blocks this provider until a
-		// replacement login rotates the stored refresh token (AC-007).
+		// replacement login rotates the stored credential (AC-007).
 		const block = this.blocked[provider];
 		if (block && block.label === label) {
-			const currentRefresh = Object.hasOwn(store.providers[provider]?.profiles ?? {}, label)
-				? store.providers[provider]?.profiles[label]?.refresh
-				: undefined;
-			if (currentRefresh === block.refresh) throw new Error(block.reason);
+			if (stored !== undefined && credentialFingerprint(stored) === block.fingerprint) throw new Error(block.reason);
 			delete this.blocked[provider]; // replacement login cleared it
 		}
 
@@ -292,22 +309,24 @@ export class SeatRuntimeAuthCoordinator {
 				...(nowOption !== undefined ? { now: nowOption } : {}),
 				onAttempt: (attempted) => {
 					sent = attempted;
-					secrets.push(attempted.access, attempted.refresh);
+					secrets.push(...credentialSecrets(attempted));
 				},
 			});
 			credential = outcome.credential;
-			secrets.push(credential.access, credential.refresh);
+			secrets.push(...credentialSecrets(credential));
 		} catch (error) {
 			if (error instanceof InvalidGrantError) {
-				const deadRefresh = sent?.refresh ?? store.providers[provider]?.profiles[label]?.refresh;
-				if (deadRefresh !== undefined) {
-					this.blocked[provider] = { label, refresh: deadRefresh, reason: error.message };
+				const dead = sent ?? stored;
+				if (dead !== undefined) {
+					this.blocked[provider] = { label, fingerprint: credentialFingerprint(dead), reason: error.message };
 				}
 			}
 			throw error;
 		}
 
-		const auth = await adapter.oauth.toAuth(credential);
+		// An API key is already request auth (REQ-013): pi-ai sends anything
+		// that is not an `sk-ant-oat` token as x-api-key.
+		const auth = credential.type === "api_key" ? { apiKey: credential.key } : await adapter.oauth.toAuth(credential);
 		validateModelAuth(auth, adapter.displayName);
 		return { kind: "seat", label, credential, auth };
 	}

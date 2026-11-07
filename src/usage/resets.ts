@@ -18,7 +18,7 @@
  * request, not a replay. A failure says how to check instead.
  */
 
-import type { ProviderId, SeatCredential } from "../store/schema.ts";
+import type { ProviderId, SeatOAuthCredential } from "../store/schema.ts";
 import type { RefreshCallback } from "../store/refresh.ts";
 import { isExpired } from "../store/refresh.ts";
 import type { SeatStorageBackend } from "../store/storage.ts";
@@ -88,7 +88,9 @@ export interface ResetCredentialDeps {
 	fetchOptions?: UsageFetchOptions;
 }
 
-export type ResetCredential = { ok: true; credential: SeatCredential; secrets: string[] } | { ok: false; message: string };
+export const API_KEY_NO_RESETS = "API-key profile — banked resets belong to a Claude plan login";
+
+export type ResetCredential = { ok: true; credential: SeatOAuthCredential; secrets: string[] } | { ok: false; message: string };
 
 /**
  * The credential a reset for this account rides on.
@@ -108,9 +110,11 @@ export async function resetCredential(
 		const result = await deps.schedule(() =>
 			prepareProfile(deps.backend, account.provider, label, deps.refreshFor(account.provider), deps.fetchOptions ?? {}),
 		);
-		return result.ok
-			? { ok: true, credential: result.prepared.credential, secrets: result.prepared.secrets }
-			: { ok: false, message: result.error };
+		if (!result.ok) return { ok: false, message: result.error };
+		const credential = result.prepared.credential;
+		// Banked resets belong to a plan login; a Console key has none (REQ-013).
+		if (credential.type === "api_key") return { ok: false, message: API_KEY_NO_RESETS };
+		return { ok: true, credential, secrets: result.prepared.secrets };
 	}
 	const credential = readBuiltinSnapshot(deps.authPath, account.provider);
 	if (credential === undefined) return { ok: false, message: "Pi has no login for this provider" };
@@ -126,7 +130,7 @@ export async function resetCredential(
 /** The reset this account would redeem next, or why there is none. */
 export async function findResetOffer(
 	provider: ProviderId,
-	credential: SeatCredential,
+	credential: SeatOAuthCredential,
 	options: UsageFetchOptions = {},
 ): Promise<ResetLookup> {
 	return provider === "anthropic" ? findClaudeOffer(credential, options) : findCodexOffer(credential, options);
@@ -139,7 +143,7 @@ interface CodexCredit {
 	title?: unknown;
 }
 
-async function findCodexOffer(credential: SeatCredential, options: UsageFetchOptions): Promise<ResetLookup> {
+async function findCodexOffer(credential: SeatOAuthCredential, options: UsageFetchOptions): Promise<ResetLookup> {
 	const body = (await request("GET", CODEX_RESET_CREDITS_URL, codexHeaders(credential), undefined, options)).json;
 	const record = asRecord(body);
 	// Only a well-formed empty list means "none"; an unreadable one is a failed lookup.
@@ -176,7 +180,7 @@ const CLAUDE_INELIGIBLE: Record<string, string> = {
 	expired: "your reset expired",
 };
 
-async function findClaudeOffer(credential: SeatCredential, options: UsageFetchOptions): Promise<ResetLookup> {
+async function findClaudeOffer(credential: SeatOAuthCredential, options: UsageFetchOptions): Promise<ResetLookup> {
 	const usage = await fetchClaudeUsage(credential.access, options);
 	const status = usage.cedar_ember;
 	if (status === undefined || status === null) return { kind: "none", message: "no limit-reset program on this account" };
@@ -216,7 +220,7 @@ async function findClaudeOffer(credential: SeatCredential, options: UsageFetchOp
 
 /** Spend `offer`. Never throws: every failure is an outcome that names what to do. */
 export async function redeemReset(
-	credential: SeatCredential,
+	credential: SeatOAuthCredential,
 	offer: ResetOffer,
 	secrets: readonly string[],
 	options: ResetRequestOptions = {},
@@ -243,7 +247,7 @@ const CODEX_OUTCOMES: Record<string, string> = {
 };
 
 async function redeemCodex(
-	credential: SeatCredential,
+	credential: SeatOAuthCredential,
 	offer: ResetOffer,
 	requestId: string,
 	options: ResetRequestOptions,
@@ -276,7 +280,7 @@ const CLAUDE_OUTCOMES: Record<string, string> = {
 };
 
 async function redeemClaude(
-	credential: SeatCredential,
+	credential: SeatOAuthCredential,
 	offer: ResetOffer,
 	requestId: string,
 	options: ResetRequestOptions,

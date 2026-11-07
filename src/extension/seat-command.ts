@@ -16,6 +16,8 @@ import { parseSelector, resolveSelection } from "../store/selector.ts";
 import type { UsageFetchOptions } from "../usage/fetch.ts";
 import { selectionSummary } from "../usage/report.ts";
 import { adapterFor, toRefreshCallback, type SeatProviderAdapter } from "./oauth.ts";
+import { apiKeyCredential, assertApiKeyProvider } from "./api-key.ts";
+import { SecretInput } from "./secret-input.ts";
 import { openBrowser, type BrowserOpener } from "./open-browser.ts";
 import { UsageView } from "./usage-view.ts";
 import {
@@ -68,7 +70,7 @@ export async function runSeatCommand(args: string, ctx: ExtensionCommandContext,
 		switch (head) {
 			case "help":
 				ctx.ui.notify(
-					"usage: /seat [use] <selector> [-a <alias>]… | login <selector> [-a <alias>]… | rm <selector> | rename <old> <new> | status",
+					"usage: /seat [use] <selector> [-a <alias>]… | login <selector> [--api-key] [-a <alias>]… | rm <selector> | rename <old> <new> | status",
 					"info",
 				);
 				return;
@@ -144,16 +146,29 @@ async function handleUse(rest: string[], ctx: ExtensionCommandContext, deps: Sea
 	ctx.ui.notify(`seat: ${describeUseResult(result, deps.pins)}`, "info");
 }
 
+const API_KEY_FLAG = "--api-key";
+
 async function handleLogin(rest: string[], ctx: ExtensionCommandContext, deps: SeatCommandDeps): Promise<void> {
-	const { selector, aliases } = parseSelectorWithAliases(rest, "usage: /seat login <selector> [-a <alias>]…");
+	const apiKey = rest.includes(API_KEY_FLAG);
+	const { selector, aliases } = parseSelectorWithAliases(
+		rest.filter((token) => token !== API_KEY_FLAG),
+		"usage: /seat login <selector> [--api-key] [-a <alias>]…",
+	);
 	// Validate grammar and charset, then run the overwrite check, all BEFORE the
-	// OAuth flow — the browser round-trip is never wasted on a login the user
-	// then declines to store (AC-013). The check is a pure read; the final
-	// locked store re-detects any race.
+	// OAuth flow or the key prompt — neither is wasted on a login the user then
+	// declines to store (AC-013). The check is a pure read; the final locked
+	// store re-detects any race.
 	const parsed = parseSelector(selector);
 	if (parsed.name === DEFAULT_KEYWORD) throw new CommandError(`"${DEFAULT_KEYWORD}" is a reserved name`);
 	for (const alias of aliases) {
 		if (!isValidLabel(alias)) throw new CommandError(`invalid alias "${alias}" (":" and "," are not allowed)`);
+	}
+	if (apiKey) {
+		assertApiKeyProvider(parsed.provider);
+		// The key is read through a masked component; RPC and print modes have none.
+		if (ctx.mode !== "tui") {
+			throw new CommandError("--api-key needs the interactive TUI; from a terminal, run `seat login <label> --api-key`");
+		}
 	}
 	const exists = await deps.schedule(() =>
 		deps.backend.read((current) => {
@@ -163,7 +178,7 @@ async function handleLogin(rest: string[], ctx: ExtensionCommandContext, deps: S
 	);
 	let confirmedOverwrite = false;
 	if (exists) {
-		const ok = await ctx.ui.confirm("seat login", `Profile "${parsed.name}" already exists. Overwrite its grant?`);
+		const ok = await ctx.ui.confirm("seat login", `Profile "${parsed.name}" already exists. Overwrite its credential?`);
 		if (!ok) {
 			ctx.ui.notify("seat: login cancelled; existing profile kept", "info");
 			return;
@@ -171,11 +186,21 @@ async function handleLogin(rest: string[], ctx: ExtensionCommandContext, deps: S
 		confirmedOverwrite = true;
 	}
 
-	const adapter = adapterFor(deps.adapters, parsed.provider);
-	const controller = new AbortController();
-	const credential = (await adapter.oauth.login(
-		buildInteraction(ctx, controller.signal, deps.openBrowser ?? openBrowser),
-	)) as SeatCredential;
+	let credential: SeatCredential;
+	if (apiKey) {
+		const minted = await readApiKey(ctx, parsed.name, deps);
+		if (minted === undefined) {
+			ctx.ui.notify("seat: login cancelled; nothing stored", "info");
+			return;
+		}
+		credential = minted;
+	} else {
+		const adapter = adapterFor(deps.adapters, parsed.provider);
+		const controller = new AbortController();
+		credential = (await adapter.oauth.login(
+			buildInteraction(ctx, controller.signal, deps.openBrowser ?? openBrowser),
+		)) as SeatCredential;
+	}
 
 	const result = await deps.schedule(() =>
 		runMutation(deps.backend, (store) => loginProfile(store, selector, credential, aliases, { confirmedOverwrite })),
@@ -184,9 +209,40 @@ async function handleLogin(rest: string[], ctx: ExtensionCommandContext, deps: S
 	// "success" is spelled out because notify("info") renders as one dim line: the
 	// word is the only thing distinguishing a completed login from progress noise.
 	ctx.ui.notify(
-		`seat: login success — stored ${result.provider} profile "${result.label}"${aliases.length > 0 ? ` (aliases: ${aliases.join(", ")})` : ""}${result.overwrote ? " (overwrote previous grant)" : ""}`,
+		`seat: login success — stored ${result.provider} ${apiKey ? "API-key " : ""}profile "${result.label}"${aliases.length > 0 ? ` (aliases: ${aliases.join(", ")})` : ""}${result.overwrote ? " (overwrote previous credential)" : ""}`,
 		"info",
 	);
+}
+
+/**
+ * REQ-013: read a Console API key through the masked input, then validate it
+ * (shape + one live request). Undefined when the user cancels.
+ */
+async function readApiKey(
+	ctx: ExtensionCommandContext,
+	label: string,
+	deps: SeatCommandDeps,
+): Promise<SeatCredential | undefined> {
+	const input = await ctx.ui.custom<string | undefined>((tui, _theme, _keybindings, done) => {
+		const view = new SecretInput(`Anthropic Console API key for "${label}"`, {
+			onSubmit: (value) => done(value),
+			onCancel: () => done(undefined),
+		});
+		return {
+			render: (width: number) => view.render(width),
+			handleInput: (data: string) => {
+				view.handleInput(data);
+				tui.requestRender();
+			},
+			invalidate: () => view.invalidate(),
+		};
+	});
+	if (input === undefined) return undefined;
+	const fetchImpl = deps.fetchOptions?.fetchImpl;
+	return apiKeyCredential(input, {
+		...(fetchImpl !== undefined ? { fetchImpl } : {}),
+		onVerifying: () => ctx.ui.notify("seat: verifying the key with Anthropic…", "info"),
+	});
 }
 
 async function handleRm(rest: string[], ctx: ExtensionCommandContext, deps: SeatCommandDeps): Promise<void> {
@@ -200,16 +256,16 @@ async function handleRm(rest: string[], ctx: ExtensionCommandContext, deps: Seat
 	if (pre.action === "needs-confirm") {
 		// T036: a confirmation covers exactly one grant fingerprint; a stale
 		// result means the grant changed mid-prompt and the user re-confirms.
-		let expectedRefresh = pre.refresh;
+		let expectedFingerprint = pre.fingerprint;
 		for (let attempt = 0; attempt < 5; attempt += 1) {
-			const ok = await ctx.ui.confirm("seat rm", `Delete profile "${pre.label}" and its grant? This cannot be undone.`);
+			const ok = await ctx.ui.confirm("seat rm", `Delete profile "${pre.label}" and its credential? This cannot be undone.`);
 			if (!ok) {
 				ctx.ui.notify("seat: rm cancelled", "info");
 				return;
 			}
 			const result = await deps.schedule(() =>
 				runMutation(deps.backend, (store) =>
-					removeSelection(store, selector, { confirmedProfileRemoval: true, expectedRefresh }),
+					removeSelection(store, selector, { confirmedProfileRemoval: true, expectedFingerprint }),
 				),
 			);
 			if (result.action === "profile-removed") {
@@ -218,7 +274,7 @@ async function handleRm(rest: string[], ctx: ExtensionCommandContext, deps: Seat
 			}
 			if (result.action === "stale") {
 				ctx.ui.notify(`seat: profile "${result.label}" changed while waiting for confirmation; please re-confirm`, "warning");
-				expectedRefresh = result.currentRefresh;
+				expectedFingerprint = result.currentFingerprint;
 				continue;
 			}
 			throw new CommandError("rm raced another mutation; try again");

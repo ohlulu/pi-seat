@@ -4,7 +4,7 @@
 
 Named multi-account manager for [Pi](https://github.com/badlogic/pi-mono) — switch between Anthropic and OpenAI Codex OAuth accounts per session, with usage meters in your terminal.
 
-- **Named profiles** — `work`, `personal`, `team`… each holding its own OAuth grant in an exclusive store. Pi's own `auth.json` is never written.
+- **Named profiles** — `work`, `personal`, `team`… each holding its own OAuth grant in an exclusive store. Pi's own `auth.json` is never written. An Anthropic profile can hold a Console API key instead, so switching between plan usage and API billing is one command.
 - **Session pinning** — run two Pi sessions on two different accounts at the same time via the `PI_SEAT` env var.
 - **Usage meters** — 5-hour and weekly usage bars for every profile, right in the CLI. Bars are coloured by burn rate, not level: red when the current pace projects past the limit before the window resets, yellow when it is close, green when there is room to spare.
 - **Fail-closed** — if a credential cannot be refreshed and verified, turns on that provider abort. No request ever rides a stale or wrong account, and a dead profile never blocks a turn running on another provider.
@@ -82,9 +82,29 @@ seat status --plain     # TSV output for shell prompts
 
 `use default` clears the default and restores Pi's built-in login. `rm`, `rename`, and repeatable `-a <alias>` (on both `login` and `use`) work as expected.
 
+### Anthropic API keys
+
+An Anthropic profile can hold a Claude Console API key instead of an OAuth grant. Requests on it bill the key's Console organization instead of your plan's usage limits; that is where the monthly API credit that Max, Ultra and Team plans include is spent ([details](https://support.claude.com/en/articles/17154008-monthly-api-credits-for-max-ultra-and-team-plans)).
+
+```
+/seat login console --api-key -a c    # masked prompt; the key is checked with Anthropic before it is stored
+/seat use c                           # switch to API billing; /seat use work switches back
+```
+
+```sh
+seat login console --api-key          # CLI: reads the key from stdin with echo off, never from argv
+PI_SEAT=console pi                    # pin one session to the key
+```
+
+The key is refused if it is a Claude OAuth token (`sk-ant-oat…`) or an Admin key, or if Anthropic answers the check with anything but success. An API-key profile has no plan meters: the usage view and `seat` list it with a one-line note, and `x` has no reset to spend. Pi labels the session as API billing, not a subscription. Only `anthropic` takes API keys.
+
+If `~/.pi/agent/models.json` overrides the `anthropic` `user-agent` header, that header is also sent on API-key requests, and seat cannot strip it. Anthropic excludes interactive Claude Code from the monthly credit, so check your Console billing after the first turn.
+
+A store holding an API-key profile cannot be read by pi-seat 0.5.0 or older. Remove the profile before downgrading.
+
 ## How it stays safe
 
-Profiles live in `~/.pi/agent/seat.json` (0600, file-locked, atomic writes). Every profile owns an exclusive OAuth grant — credentials are never copied from or into Pi's `auth.json`, because Anthropic refresh tokens are single-use and a shared grant would double-spend. Token refreshes are single-flight across processes.
+Profiles live in `~/.pi/agent/seat.json` (0600, file-locked, atomic writes). API keys are stored there too and are never printed. Every OAuth profile owns an exclusive grant — credentials are never copied from or into Pi's `auth.json`, because Anthropic refresh tokens are single-use and a shared grant would double-spend. Token refreshes are single-flight across processes.
 
 ## License
 

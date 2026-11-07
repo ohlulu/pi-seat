@@ -14,9 +14,12 @@
  *   and we never received the new token; the grant is unrecoverable and the
  *   caller must fail closed until a replacement login. The stored credential is
  *   NOT deleted (AC-007).
+ *
+ * An API-key profile (REQ-013) has nothing to refresh: it is returned as
+ * stored, without taking the write lock.
  */
 
-import type { ProviderId, SeatCredential } from "./schema.ts";
+import type { ProviderId, SeatCredential, SeatOAuthCredential } from "./schema.ts";
 import { decodeStore, encodeStore, type SeatStorageBackend } from "./storage.ts";
 
 /**
@@ -26,7 +29,7 @@ import { decodeStore, encodeStore, type SeatStorageBackend } from "./storage.ts"
  * abort signal for timeout enforcement.
  */
 export interface RefreshCallback {
-	(credential: SeatCredential, signal: AbortSignal): Promise<SeatCredential>;
+	(credential: SeatOAuthCredential, signal: AbortSignal): Promise<SeatOAuthCredential>;
 }
 
 /** Persistent failure: the grant is dead; re-login is required. */
@@ -49,8 +52,13 @@ export class ProfileNotFoundError extends Error {
 /** Refresh when the token expires within this window, not only after expiry. */
 export const EXPIRY_SKEW_MS = 60_000;
 
-export function isExpired(credential: SeatCredential, nowMs: number, skewMs: number = EXPIRY_SKEW_MS): boolean {
+export function isExpired(credential: SeatOAuthCredential, nowMs: number, skewMs: number = EXPIRY_SKEW_MS): boolean {
 	return credential.expires <= nowMs + skewMs;
+}
+
+/** True when the credential is an OAuth grant due for a refresh; API keys never are. */
+function needsRefresh(credential: SeatCredential, nowMs: number, skewMs: number): credential is SeatOAuthCredential {
+	return credential.type === "oauth" && isExpired(credential, nowMs, skewMs);
 }
 
 export interface RefreshOptions {
@@ -66,7 +74,7 @@ export interface RefreshOptions {
 	 * read: otherwise a block binds to a grant nobody sent, and an error
 	 * echoing the sent credential is "redacted" with the wrong secrets.
 	 */
-	onAttempt?: (credential: SeatCredential) => void;
+	onAttempt?: (credential: SeatOAuthCredential) => void;
 }
 
 export interface RefreshOutcome {
@@ -93,7 +101,7 @@ export async function ensureFreshProfile(
 
 	// Unlocked fast path: a fresh credential needs no lock at all.
 	const fast = readProfile(backend, provider, label);
-	if (!isExpired(fast, now(), skewMs)) return { credential: fast, refreshed: false };
+	if (!needsRefresh(fast, now(), skewMs)) return { credential: fast, refreshed: false };
 
 	return backend.withLockAsync<RefreshOutcome>(async (current) => {
 		// Locked re-check: another process may have rotated the credential
@@ -102,7 +110,7 @@ export async function ensureFreshProfile(
 		const section = store.providers[provider];
 		const credential = section ? readOwn(section.profiles, label) : undefined;
 		if (!section || !credential) throw new ProfileNotFoundError(provider, label);
-		if (!isExpired(credential, now(), skewMs)) {
+		if (!needsRefresh(credential, now(), skewMs)) {
 			return { result: { credential, refreshed: false } };
 		}
 
@@ -129,9 +137,9 @@ function readOwn<T>(map: Record<string, T>, key: string): T | undefined {
 
 async function callWithTimeout(
 	refresh: RefreshCallback,
-	credential: SeatCredential,
+	credential: SeatOAuthCredential,
 	timeoutMs: number,
-): Promise<SeatCredential> {
+): Promise<SeatOAuthCredential> {
 	const controller = new AbortController();
 	const timer = setTimeout(() => controller.abort(), timeoutMs);
 	try {

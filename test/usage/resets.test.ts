@@ -9,7 +9,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { emptyStore, type SeatCredential } from "../../src/store/schema.ts";
+import { emptyStore, type SeatOAuthCredential } from "../../src/store/schema.ts";
 import { InMemorySeatStorageBackend, encodeStore } from "../../src/store/storage.ts";
 import { createStoreSchedule } from "../../src/store/scheduler.ts";
 import { CLAUDE_CLI_USER_AGENT } from "../../src/usage/fetch.ts";
@@ -19,6 +19,7 @@ import {
 	findResetOffer,
 	redeemReset,
 	resetCredential,
+	API_KEY_NO_RESETS,
 	type ResetOffer,
 } from "../../src/usage/resets.ts";
 
@@ -45,8 +46,8 @@ function mockFetch(routes: Record<string, () => Response>): { fetchImpl: typeof 
 	return { fetchImpl, sent };
 }
 
-function cred(name: string, extra: Record<string, unknown> = {}): SeatCredential {
-	return { type: "oauth", refresh: `rt-${name}`, access: `at-${name}`, expires: NOW + 3_600_000, ...extra } as SeatCredential;
+function cred(name: string, extra: Record<string, unknown> = {}): SeatOAuthCredential {
+	return { type: "oauth", refresh: `rt-${name}`, access: `at-${name}`, expires: NOW + 3_600_000, ...extra } as SeatOAuthCredential;
 }
 
 const CLAUDE_USAGE = "https://api.anthropic.com/api/oauth/usage?cedar_ember=1";
@@ -316,7 +317,7 @@ describe("the credential a reset rides on", () => {
 				backend: new InMemorySeatStorageBackend(),
 				authPath,
 				schedule: createStoreSchedule(),
-				refreshFor: () => async (c: SeatCredential) => {
+				refreshFor: () => async (c: SeatOAuthCredential) => {
 					refreshCalls.push(c.refresh);
 					return c;
 				},
@@ -355,5 +356,36 @@ describe("the credential a reset rides on", () => {
 			{ provider: "anthropic", kind: "profile", label: "work" },
 		);
 		expect(result.ok && result.credential.access).toBe("at-rotated");
+	});
+
+	test("AC-044: an API-key profile has no reset to ride on, and nothing is sent", async () => {
+		const backend = new InMemorySeatStorageBackend();
+		const store = emptyStore();
+		store.providers.anthropic = {
+			profiles: Object.assign(Object.create(null), { console: { type: "api_key", key: "sk-ant-api03-FAKE" } }),
+			aliases: Object.create(null),
+		};
+		backend.withLock(() => ({ result: undefined, next: encodeStore(store) }));
+		let requests = 0;
+		const result = await resetCredential(
+			{
+				backend,
+				authPath: "/nonexistent/auth.json",
+				schedule: createStoreSchedule(),
+				refreshFor: () => async () => {
+					throw new Error("an API key is never refreshed");
+				},
+				fetchOptions: {
+					now: () => NOW,
+					fetchImpl: (async () => {
+						requests += 1;
+						return new Response("{}");
+					}) as unknown as typeof fetch,
+				},
+			},
+			{ provider: "anthropic", kind: "profile", label: "console" },
+		);
+		expect(result).toEqual({ ok: false, message: API_KEY_NO_RESETS });
+		expect(requests).toBe(0);
 	});
 });

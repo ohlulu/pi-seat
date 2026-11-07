@@ -11,7 +11,7 @@
  * Exit 0 = commit refused as expected; the parent asserts the lock survived.
  */
 import { mkdirSync, rmSync } from "node:fs";
-import { emptyStore, type SeatCredential } from "../../src/store/schema.ts";
+import { emptyStore, type SeatOAuthCredential } from "../../src/store/schema.ts";
 import { FileSeatStorageBackend, encodeStore } from "../../src/store/storage.ts";
 
 const [storePath] = process.argv.slice(2);
@@ -21,7 +21,7 @@ if (!storePath) {
 }
 
 function clobberContent(): string {
-	const credential: SeatCredential = {
+	const credential: SeatOAuthCredential = {
 		type: "oauth",
 		refresh: "rt-stale-clobber",
 		access: "at-stale-clobber",

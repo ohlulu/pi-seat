@@ -28,7 +28,7 @@
  */
 
 import { Key, matchesKey } from "@earendil-works/pi-tui";
-import type { SeatCredential, SeatStore } from "../store/schema.ts";
+import type { SeatOAuthCredential, SeatStore } from "../store/schema.ts";
 import type { StoreSchedule } from "../store/scheduler.ts";
 import { decodeStore } from "../store/storage.ts";
 import { redactTokenText } from "../store/redact.ts";
@@ -76,7 +76,7 @@ export const RESET_CONFIRM_LEGEND = "y use reset · n/esc keep it";
  */
 type ResetFlow =
 	| { phase: "checking"; account: UsageAccount }
-	| { phase: "confirm"; account: UsageAccount; offer: ResetOffer; credential: SeatCredential; secrets: string[] }
+	| { phase: "confirm"; account: UsageAccount; offer: ResetOffer; credential: SeatOAuthCredential; secrets: string[] }
 	| { phase: "redeeming"; account: UsageAccount; offer: ResetOffer };
 
 /**

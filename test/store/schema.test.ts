@@ -7,6 +7,7 @@ import {
 	serializeStore,
 	type SeatStore,
 } from "../../src/store/schema.ts";
+import { asOAuth } from "../helpers/credentials.ts";
 
 function cred(refresh = "rt-1", access = "at-1", expires = 1_900_000_000_000) {
 	return { type: "oauth", refresh, access, expires };
@@ -53,9 +54,9 @@ describe("parseStore", () => {
 		const store = parseStore(validDoc());
 		expect(store.version).toBe(1);
 		expect(store.providers.anthropic?.default).toBe("work");
-		expect(store.providers.anthropic?.profiles["work"]?.refresh).toBe("rt-w");
+		expect(asOAuth(store.providers.anthropic?.profiles["work"])?.refresh).toBe("rt-w");
 		expect(store.providers.anthropic?.aliases["w"]).toBe("work");
-		expect(store.providers["openai-codex"]?.profiles["main"]?.refresh).toBe("rt-c");
+		expect(asOAuth(store.providers["openai-codex"]?.profiles["main"])?.refresh).toBe("rt-c");
 
 		const reparsed = parseStore(JSON.parse(serializeStore(store)));
 		expect(reparsed).toEqual(store);
@@ -65,7 +66,7 @@ describe("parseStore", () => {
 		const doc = validDoc() as Record<string, any>;
 		doc.providers.anthropic.profiles.work.scopes = ["user:inference"];
 		const store = parseStore(doc);
-		expect(store.providers.anthropic?.profiles["work"]?.["scopes"]).toEqual(["user:inference"]);
+		expect(asOAuth(store.providers.anthropic?.profiles["work"])?.["scopes"]).toEqual(["user:inference"]);
 	});
 
 	test("rejects non-object roots and wrong version", () => {
@@ -148,5 +149,52 @@ describe("emptyStore", () => {
 	test("is a valid store", () => {
 		const store: SeatStore = emptyStore();
 		expect(parseStore(JSON.parse(serializeStore(store)))).toEqual(store);
+	});
+});
+
+describe("REQ-013: api_key credentials", () => {
+	const KEY = "sk-ant-api03-FAKE-test-key";
+
+	function docWith(provider: string, credential: unknown): unknown {
+		return { version: 1, providers: { [provider]: { profiles: { console: credential }, aliases: {} } } };
+	}
+
+	test("AC-040: an OAuth-only version-1 store round-trips byte-identical", () => {
+		const text = serializeStore(parseStore(validDoc()));
+		expect(serializeStore(parseStore(JSON.parse(text)))).toBe(text);
+		expect(JSON.parse(text).version).toBe(1);
+	});
+
+	test("an anthropic api_key profile parses and round-trips beside OAuth profiles", () => {
+		const doc = validDoc() as { providers: { anthropic: { profiles: Record<string, unknown> } } };
+		doc.providers.anthropic.profiles["console"] = { type: "api_key", key: KEY };
+		const store = parseStore(doc);
+		expect(store.version).toBe(1);
+		expect(store.providers.anthropic?.profiles["console"]).toEqual({ type: "api_key", key: KEY });
+		expect(asOAuth(store.providers.anthropic?.profiles["work"])?.refresh).toBe("rt-w");
+		expect(parseStore(JSON.parse(serializeStore(store)))).toEqual(store);
+	});
+
+	test("AC-040: openai-codex refuses an api_key credential", () => {
+		expect(() => parseStore(docWith("openai-codex", { type: "api_key", key: KEY }))).toThrow(
+			'provider "openai-codex" does not accept api_key credentials',
+		);
+	});
+
+	test("a malformed api_key credential is refused", () => {
+		for (const bad of [
+			{ type: "api_key" },
+			{ type: "api_key", key: "" },
+			{ type: "api_key", key: 42 },
+			{ type: "api_key", key: "sk-ant-api03-has space" },
+			{ type: "api_key", key: "sk-ant-api03-line\nbreak" },
+			{ type: "api_key", key: KEY, refresh: "rt" },
+		]) {
+			expect(() => parseStore(docWith("anthropic", bad))).toThrow(SchemaError);
+		}
+	});
+
+	test("an unknown credential type names both accepted types", () => {
+		expect(() => parseStore(docWith("anthropic", { type: "bearer", key: KEY }))).toThrow('must be "oauth" or "api_key"');
 	});
 });

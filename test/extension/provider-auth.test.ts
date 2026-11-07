@@ -46,7 +46,7 @@ function fakeProvider(id: string, calls: string[] = []): Provider {
 
 function source(owned: Partial<Record<ProviderId, string>>): SeatAuthSource {
 	return {
-		owns: async (provider) => owned[provider] !== undefined,
+		owns: async (provider) => (owned[provider] !== undefined ? "oauth" : undefined),
 		requestAuth: async (provider): Promise<ModelAuth | undefined> =>
 			owned[provider] !== undefined ? { apiKey: owned[provider] } : undefined,
 	};
@@ -109,6 +109,21 @@ describe("AC-034: the registered provider", () => {
 	});
 });
 
+describe("AC-043: an API-key selection (REQ-013)", () => {
+	test("check reports api_key, so Pi does not label it a subscription", async () => {
+		const apiKeySource: SeatAuthSource = {
+			owns: async () => "api_key",
+			requestAuth: async () => ({ apiKey: "sk-ant-api03-FAKE" }),
+		};
+		const wrapper = wrapProvider("anthropic", fakeProvider("anthropic"), apiKeySource);
+		const input = { ctx: { env: async () => undefined, fileExists: async () => false }, signal: new AbortController().signal };
+
+		expect(await wrapper.auth.apiKey!.check!(input)).toEqual({ type: "api_key", source: "pi-seat" });
+		expect((await wrapper.auth.apiKey!.resolve(input))?.auth.apiKey).toBe("sk-ant-api03-FAKE");
+		expect(await wrapper.auth.oauth!.toAuth(stored)).toEqual({ apiKey: "sk-ant-api03-FAKE" });
+	});
+});
+
 describe("AC-034: ownership that flips between refresh and toAuth", () => {
 	const dirs: string[] = [];
 	afterEach(() => {
@@ -132,7 +147,7 @@ describe("AC-034: ownership that flips between refresh and toAuth", () => {
 			owns: async () => {
 				const answer = owned;
 				owned = false;
-				return answer;
+				return answer ? "oauth" : undefined;
 			},
 			requestAuth: async () => undefined,
 		};

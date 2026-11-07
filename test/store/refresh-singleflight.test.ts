@@ -2,21 +2,22 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { emptyStore, type SeatCredential } from "../../src/store/schema.ts";
+import { emptyStore, type SeatOAuthCredential } from "../../src/store/schema.ts";
 import {
 	RefreshTimeoutError,
 	ensureFreshProfile,
 	type RefreshCallback,
 } from "../../src/store/refresh.ts";
 import { FileSeatStorageBackend, encodeStore } from "../../src/store/storage.ts";
+import { asOAuth } from "../helpers/credentials.ts";
 
 const WORKER = new URL("./refresh-worker.ts", import.meta.url).pathname;
 
-function expiredCred(): SeatCredential {
+function expiredCred(): SeatOAuthCredential {
 	return { type: "oauth", refresh: "rt-expired", access: "at-old", expires: Date.now() - 60_000 };
 }
 
-function seedStore(path: string, credential: SeatCredential): void {
+function seedStore(path: string, credential: SeatOAuthCredential): void {
 	const store = emptyStore();
 	store.providers.anthropic = {
 		profiles: Object.assign(Object.create(null), { work: credential }),
@@ -86,7 +87,7 @@ describe("single-flight refresh (AC-009)", () => {
 			};
 			const outcome = await ensureFreshProfile(backend, "anthropic", "work", working);
 			expect(outcome.refreshed).toBe(true);
-			expect(outcome.credential.refresh).toBe("rt-rotated-2");
+			expect(asOAuth(outcome.credential)?.refresh).toBe("rt-rotated-2");
 			expect(readFileSync(storePath, "utf8")).toContain("rt-rotated-2");
 		} finally {
 			rmSync(dir, { recursive: true, force: true });

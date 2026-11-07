@@ -14,7 +14,7 @@ import { setKittyProtocolActive, visibleWidth } from "@earendil-works/pi-tui";
 import { mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { emptyStore, type SeatCredential } from "../../src/store/schema.ts";
+import { emptyStore, type SeatOAuthCredential } from "../../src/store/schema.ts";
 import { InMemorySeatStorageBackend, decodeStore, encodeStore } from "../../src/store/storage.ts";
 import type { RefreshCallback } from "../../src/store/refresh.ts";
 import { createStoreSchedule } from "../../src/store/scheduler.ts";
@@ -86,7 +86,7 @@ afterAll(() => {
 	rmSync(fixtureDir, { recursive: true, force: true });
 });
 
-function cred(refresh: string, expires = FRESH): SeatCredential {
+function cred(refresh: string, expires = FRESH): SeatOAuthCredential {
 	return { type: "oauth", refresh, access: `at-${refresh}`, expires };
 }
 
@@ -104,7 +104,7 @@ interface Harness {
 
 function makeView(
 	options: {
-		profiles?: Record<string, SeatCredential>;
+		profiles?: Record<string, SeatOAuthCredential>;
 		aliases?: Record<string, string>;
 		default?: string;
 		pins?: Record<string, string>;

@@ -9,7 +9,7 @@
  */
 
 import type { ModelAuth, OAuthCredential, ProviderAuthInteraction } from "@earendil-works/pi-ai";
-import type { ProviderId, SeatCredential } from "../store/schema.ts";
+import type { ProviderId, SeatOAuthCredential } from "../store/schema.ts";
 import { InvalidGrantError, type RefreshCallback } from "../store/refresh.ts";
 
 export interface ProviderOwnedOAuth {
@@ -82,7 +82,7 @@ export function adapterFor(adapters: SeatProviderAdapter[], provider: ProviderId
  * fail-closed until re-login); everything else stays transient.
  */
 export function toRefreshCallback(adapter: SeatProviderAdapter): RefreshCallback {
-	return async (credential: SeatCredential, signal: AbortSignal): Promise<SeatCredential> => {
+	return async (credential: SeatOAuthCredential, signal: AbortSignal): Promise<SeatOAuthCredential> => {
 		let rotated: OAuthCredential;
 		try {
 			rotated = await adapter.oauth.refresh(asOAuthCredential(credential), signal);
@@ -98,13 +98,13 @@ export function toRefreshCallback(adapter: SeatProviderAdapter): RefreshCallback
 	};
 }
 
-/** SeatCredential and Pi's OAuthCredential are structurally identical. */
-function asOAuthCredential(credential: SeatCredential): OAuthCredential {
+/** SeatOAuthCredential and Pi's OAuthCredential are structurally identical. */
+function asOAuthCredential(credential: SeatOAuthCredential): OAuthCredential {
 	return credential as OAuthCredential;
 }
 
-function asSeatCredential(credential: OAuthCredential): SeatCredential {
-	return credential as SeatCredential;
+function asSeatCredential(credential: OAuthCredential): SeatOAuthCredential {
+	return credential as SeatOAuthCredential;
 }
 
 function isInvalidGrant(error: unknown): boolean {

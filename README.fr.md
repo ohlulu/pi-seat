@@ -4,7 +4,7 @@
 
 Gestionnaire multi-comptes pour [Pi](https://github.com/badlogic/pi-mono) : basculez entre vos comptes OAuth Anthropic et OpenAI Codex par session, avec des jauges d'utilisation dans votre terminal.
 
-- **Profils nommés** — `work`, `personal`, `team`… chacun détient son propre grant OAuth dans un store exclusif. Le `auth.json` de Pi n'est jamais modifié.
+- **Profils nommés** — `work`, `personal`, `team`… chacun détient son propre grant OAuth dans un store exclusif. Le `auth.json` de Pi n'est jamais modifié. Un profil Anthropic peut contenir à la place une clé API de la Console : passer de l'usage du forfait à la facturation API tient en une commande.
 - **Épinglage par session** — lancez deux sessions Pi sur deux comptes différents en même temps via la variable d'environnement `PI_SEAT`.
 - **Jauges d'utilisation** — barres d'utilisation sur 5 heures et hebdomadaires pour chaque profil, directement dans la CLI. La couleur traduit le rythme de consommation, pas le niveau : rouge lorsque le rythme actuel dépasse la limite avant la réinitialisation, jaune quand c'est juste, vert quand il reste de la marge.
 - **Fail-closed** — si une credential ne peut pas être rafraîchie et vérifiée, les tours de ce provider sont interrompus. Aucune requête ne part avec un compte périmé ou erroné, et un profil mort ne bloque jamais un tour qui tourne sur un autre provider.
@@ -82,9 +82,29 @@ seat status --plain     # sortie TSV pour les prompts shell
 
 `use default` efface le défaut et restaure la connexion intégrée de Pi. `rm`, `rename` et l'option répétable `-a <alias>` (sur `login` comme sur `use`) fonctionnent comme attendu.
 
+### Clés API Anthropic
+
+Un profil Anthropic peut contenir une clé API de la Claude Console au lieu d'un grant OAuth. Les requêtes faites avec ce profil sont facturées à l'organisation Console de la clé, et non sur les limites d'usage de votre forfait ; c'est là que se dépense le crédit API mensuel inclus dans les forfaits Max, Ultra et Team ([détails](https://support.claude.com/en/articles/17154008-monthly-api-credits-for-max-ultra-and-team-plans)).
+
+```
+/seat login console --api-key -a c    # saisie masquée ; la clé est vérifiée auprès d'Anthropic avant d'être enregistrée
+/seat use c                           # passe en facturation API ; /seat use work revient
+```
+
+```sh
+seat login console --api-key          # CLI : lit la clé sur stdin sans écho, jamais depuis argv
+PI_SEAT=console pi                    # épingle une session sur la clé
+```
+
+La clé est refusée si c'est un jeton OAuth Claude (`sk-ant-oat…`) ou une clé Admin, ou si Anthropic ne répond pas par un succès à la vérification. Un profil à clé API n'a pas de jauges de forfait : la vue d'usage et `seat` l'affichent avec une note d'une ligne, et `x` n'a aucun reset à dépenser. Pi indique la session comme facturée à l'API, pas comme un abonnement. Seul `anthropic` accepte les clés API.
+
+Si `~/.pi/agent/models.json` remplace l'en-tête `user-agent` d'`anthropic`, cet en-tête part aussi avec les requêtes à clé API et seat ne peut pas le retirer. Anthropic exclut Claude Code interactif du crédit mensuel : vérifiez la facturation dans la Console après le premier tour.
+
+pi-seat 0.5.0 ou antérieur ne sait pas lire un store contenant un profil à clé API. Supprimez ce profil avant de revenir à une version antérieure.
+
 ## Conception de sécurité
 
-Les profils vivent dans `~/.pi/agent/seat.json` (0600, verrou de fichier, écritures atomiques). Chaque profil possède un grant OAuth exclusif : les credentials ne sont jamais copiées depuis ou vers le `auth.json` de Pi, car les refresh tokens Anthropic sont à usage unique et un grant partagé provoquerait une double dépense. Les rafraîchissements de token sont single-flight entre processus.
+Les profils vivent dans `~/.pi/agent/seat.json` (0600, verrou de fichier, écritures atomiques). Les clés API y sont aussi stockées et ne sont jamais affichées. Chaque profil OAuth possède un grant exclusif : les credentials ne sont jamais copiées depuis ou vers le `auth.json` de Pi, car les refresh tokens Anthropic sont à usage unique et un grant partagé provoquerait une double dépense. Les rafraîchissements de token sont single-flight entre processus.
 
 ## Licence
 

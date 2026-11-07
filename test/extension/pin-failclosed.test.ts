@@ -1,17 +1,17 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import type { SeatCredential } from "../../src/store/schema.ts";
+import type { SeatOAuthCredential } from "../../src/store/schema.ts";
 import { cleanupLoadedExtensions, loadExtension, type LoadedExtension } from "./load-extension.ts";
 
 const FRESH = Date.now() + 3_600_000;
 
-function cred(refresh: string): SeatCredential {
+function cred(refresh: string): SeatOAuthCredential {
 	return { type: "oauth", refresh, access: `at-${refresh}`, expires: FRESH };
 }
 
 afterEach(cleanupLoadedExtensions);
 
 /** Anthropic-only seeding, which is all these fail-closed cases need. */
-function load(pin: string, anthropic: Record<string, SeatCredential>): LoadedExtension {
+function load(pin: string, anthropic: Record<string, SeatOAuthCredential>): LoadedExtension {
 	return loadExtension({ pin, profiles: { anthropic } });
 }
 

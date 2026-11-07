@@ -7,7 +7,8 @@
  */
 import { ensureFreshProfile, type RefreshCallback } from "../../src/store/refresh.ts";
 import { FileSeatStorageBackend } from "../../src/store/storage.ts";
-import type { SeatCredential } from "../../src/store/schema.ts";
+import type { SeatOAuthCredential } from "../../src/store/schema.ts";
+import { asOAuth } from "../helpers/credentials.ts";
 
 const [storePath, tokenUrl] = process.argv.slice(2);
 if (!storePath || !tokenUrl) {
@@ -15,7 +16,7 @@ if (!storePath || !tokenUrl) {
 	process.exit(2);
 }
 
-const refresh: RefreshCallback = async (credential: SeatCredential, signal: AbortSignal) => {
+const refresh: RefreshCallback = async (credential: SeatOAuthCredential, signal: AbortSignal) => {
 	const response = await fetch(tokenUrl, {
 		method: "POST",
 		body: JSON.stringify({ refresh_token: credential.refresh }),
@@ -29,5 +30,5 @@ const refresh: RefreshCallback = async (credential: SeatCredential, signal: Abor
 
 const backend = new FileSeatStorageBackend(storePath);
 const outcome = await ensureFreshProfile(backend, "anthropic", "work", refresh);
-console.log(JSON.stringify({ refresh: outcome.credential.refresh, refreshed: outcome.refreshed }));
+console.log(JSON.stringify({ refresh: asOAuth(outcome.credential)?.refresh, refreshed: outcome.refreshed }));
 process.exit(0);

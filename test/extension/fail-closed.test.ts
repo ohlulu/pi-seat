@@ -1,13 +1,14 @@
 import { beforeEach, describe, expect, test } from "bun:test";
-import type { SeatCredential } from "../../src/store/schema.ts";
+import type { SeatOAuthCredential } from "../../src/store/schema.ts";
 import { decodeStore } from "../../src/store/storage.ts";
 import { SEAT_SENTINEL_API_KEY } from "../../src/extension/runtime-auth.ts";
 import { cred, makeHarness as makeSharedHarness, mutateStore, runTurn, type AdapterBehavior, type Harness } from "./harness.ts";
+import { asOAuth } from "../helpers/credentials.ts";
 
 const FRESH_EXPIRES = Date.now() + 3_600_000;
 const EXPIRED_EXPIRES = Date.now() - 60_000;
 
-function makeHarness(credential: SeatCredential, behavior: AdapterBehavior): Harness {
+function makeHarness(credential: SeatOAuthCredential, behavior: AdapterBehavior): Harness {
 	return makeSharedHarness({
 		sections: { anthropic: { default: "work", profiles: { work: credential } } },
 		behavior,
@@ -15,7 +16,7 @@ function makeHarness(credential: SeatCredential, behavior: AdapterBehavior): Har
 }
 
 function storedRefresh(h: Harness): string | undefined {
-	return h.backend.read((current) => decodeStore(current)).providers.anthropic?.profiles["work"]?.refresh;
+	return asOAuth(h.backend.read((current) => decodeStore(current)).providers.anthropic?.profiles["work"])?.refresh;
 }
 
 describe("AC-007: invalid_grant is persistent fail-closed", () => {

@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { emptyStore, type SeatCredential } from "../../src/store/schema.ts";
+import { emptyStore, type SeatOAuthCredential } from "../../src/store/schema.ts";
 import {
 	FileSeatStorageBackend,
 	decodeStore,
@@ -11,6 +11,7 @@ import {
 	readForeignFileNoFollow,
 	type FileSeatStorageOptions,
 } from "../../src/store/storage.ts";
+import { asOAuth } from "../helpers/credentials.ts";
 
 function withTempDir(fn: (dir: string) => void): void {
 	const dir = mkdtempSync(join(tmpdir(), "seat-storage-"));
@@ -21,7 +22,7 @@ function withTempDir(fn: (dir: string) => void): void {
 	}
 }
 
-function cred(refresh: string): SeatCredential {
+function cred(refresh: string): SeatOAuthCredential {
 	return { type: "oauth", refresh, access: "at", expires: 1_900_000_000_000 };
 }
 
@@ -133,7 +134,7 @@ describe("FileSeatStorageBackend (AC-002)", () => {
 			const storage = backend(dir);
 			storage.withLock(() => ({ result: undefined, next: storeWithProfile("rt-1") }));
 			const seen = storage.withLock((current) => ({ result: decodeStore(current) }));
-			expect(seen.providers.anthropic?.profiles["work"]?.refresh).toBe("rt-1");
+			expect(asOAuth(seen.providers.anthropic?.profiles["work"])?.refresh).toBe("rt-1");
 		});
 	});
 

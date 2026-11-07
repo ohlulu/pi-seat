@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { emptyStore, type SeatCredential, type SeatStore } from "../../src/store/schema.ts";
+import { emptyStore, type SeatOAuthCredential, type SeatStore } from "../../src/store/schema.ts";
 import {
 	SelectorError,
 	parsePinSpec,
@@ -9,7 +9,7 @@ import {
 	resolveSelection,
 } from "../../src/store/selector.ts";
 
-function cred(refresh: string): SeatCredential {
+function cred(refresh: string): SeatOAuthCredential {
 	return { type: "oauth", refresh, access: "at", expires: 1_900_000_000_000 };
 }
 
@@ -23,7 +23,7 @@ function storeWith(config: {
 		["openai-codex", config.codex],
 	] as const) {
 		if (!section) continue;
-		const profiles = Object.create(null) as Record<string, SeatCredential>;
+		const profiles = Object.create(null) as Record<string, SeatOAuthCredential>;
 		for (const label of section.profiles) profiles[label] = cred(`rt-${label}`);
 		const aliases = Object.assign(Object.create(null), section.aliases ?? {});
 		store.providers[provider] = section.default !== undefined

@@ -4,7 +4,7 @@
 
 Gestor de múltiples cuentas para [Pi](https://github.com/badlogic/pi-mono): cambia entre cuentas OAuth de Anthropic y OpenAI Codex por sesión, con medidores de uso en tu terminal.
 
-- **Perfiles con nombre** — `work`, `personal`, `team`… cada uno con su propio grant OAuth en un almacén exclusivo. El `auth.json` de Pi nunca se modifica.
+- **Perfiles con nombre** — `work`, `personal`, `team`… cada uno con su propio grant OAuth en un almacén exclusivo. El `auth.json` de Pi nunca se modifica. Un perfil de Anthropic puede guardar en su lugar una API key de la Console, así que pasar del uso del plan a la facturación por API es un solo comando.
 - **Fijación por sesión** — ejecuta dos sesiones de Pi con dos cuentas distintas a la vez mediante la variable de entorno `PI_SEAT`.
 - **Medidores de uso** — barras de uso de 5 horas y semanales para cada perfil, directamente en la CLI. El color refleja el ritmo de consumo, no el nivel: rojo cuando al ritmo actual se superará el límite antes de que se reinicie la ventana, amarillo cuando queda justo y verde cuando sobra margen.
 - **Fail-closed** — si una credencial no puede refrescarse y verificarse, se abortan los turnos de ese proveedor. Ninguna petición viaja con una cuenta obsoleta o equivocada, y un perfil muerto nunca bloquea un turno que corre en otro proveedor.
@@ -82,9 +82,29 @@ seat status --plain     # salida TSV para prompts de shell
 
 `use default` borra el predeterminado y restaura el login integrado de Pi. `rm`, `rename` y el repetible `-a <alias>` (tanto en `login` como en `use`) funcionan como esperas.
 
+### API keys de Anthropic
+
+Un perfil de Anthropic puede guardar una API key de la Claude Console en lugar de un grant OAuth. Las solicitudes con ese perfil se facturan a la organización de Console de la key, no a los límites de uso de tu plan; ahí se gasta el crédito mensual de API que incluyen los planes Max, Ultra y Team ([detalles](https://support.claude.com/en/articles/17154008-monthly-api-credits-for-max-ultra-and-team-plans)).
+
+```
+/seat login console --api-key -a c    # entrada enmascarada; la key se verifica con Anthropic antes de guardarla
+/seat use c                           # pasa a facturación por API; /seat use work vuelve
+```
+
+```sh
+seat login console --api-key          # CLI: lee la key de stdin sin eco, nunca de argv
+PI_SEAT=console pi                    # fija una sesión a la key
+```
+
+La key se rechaza si es un token OAuth de Claude (`sk-ant-oat…`) o una Admin key, o si Anthropic no responde con éxito a la verificación. Un perfil con API key no tiene medidores del plan: la vista de uso y `seat` lo muestran con una nota de una línea, y `x` no tiene ningún reset que gastar. Pi marca la sesión como facturación por API, no como suscripción. Solo `anthropic` acepta API keys.
+
+Si `~/.pi/agent/models.json` sobrescribe el header `user-agent` de `anthropic`, ese header también viaja en las solicitudes con API key y seat no puede quitarlo. Anthropic excluye Claude Code interactivo del crédito mensual, así que revisa la facturación en la Console después del primer turno.
+
+pi-seat 0.5.0 o anterior no puede leer un almacén que contenga un perfil con API key. Elimina ese perfil antes de bajar de versión.
+
 ## Diseño de seguridad
 
-Los perfiles viven en `~/.pi/agent/seat.json` (0600, bloqueo de archivo, escrituras atómicas). Cada perfil posee un grant OAuth exclusivo: las credenciales nunca se copian desde ni hacia el `auth.json` de Pi, porque los refresh tokens de Anthropic son de un solo uso y un grant compartido provocaría un doble gasto. Los refrescos de token son single-flight entre procesos.
+Los perfiles viven en `~/.pi/agent/seat.json` (0600, bloqueo de archivo, escrituras atómicas). Las API keys también se guardan ahí y nunca se imprimen. Cada perfil OAuth posee un grant exclusivo: las credenciales nunca se copian desde ni hacia el `auth.json` de Pi, porque los refresh tokens de Anthropic son de un solo uso y un grant compartido provocaría un doble gasto. Los refrescos de token son single-flight entre procesos.
 
 ## Licencia
 

@@ -7,7 +7,7 @@
  * content and one profile is lost.
  */
 import { FileSeatStorageBackend, decodeStore, encodeStore } from "../../src/store/storage.ts";
-import type { ProviderSection, SeatCredential } from "../../src/store/schema.ts";
+import type { ProviderSection, SeatOAuthCredential } from "../../src/store/schema.ts";
 
 const [storePath, label, holdMsRaw] = process.argv.slice(2);
 if (!storePath || !label) {
@@ -16,7 +16,7 @@ if (!storePath || !label) {
 }
 const holdMs = Number(holdMsRaw ?? "0");
 
-const credential: SeatCredential = {
+const credential: SeatOAuthCredential = {
 	type: "oauth",
 	refresh: `rt-${label}`,
 	access: `at-${label}`,
@@ -29,7 +29,7 @@ backend.withLock((current) => {
 	let section: ProviderSection | undefined = store.providers.anthropic;
 	if (!section) {
 		section = {
-			profiles: Object.create(null) as Record<string, SeatCredential>,
+			profiles: Object.create(null) as Record<string, SeatOAuthCredential>,
 			aliases: Object.create(null) as Record<string, string>,
 		};
 		store.providers.anthropic = section;

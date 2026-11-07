@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { decodeStore, encodeStore, FileSeatStorageBackend } from "../../src/store/storage.ts";
 import { cred } from "./harness.ts";
 import { cleanupLoadedExtensions, loadExtension, type LoadedExtension, type LoadOptions } from "./load-extension.ts";
+import { asOAuth } from "../helpers/credentials.ts";
 
 /**
  * AC-034 regression: a pi-subagents foreground child runs on a FRESH
@@ -165,7 +166,7 @@ describe("AC-034: subagent children resolve seat credentials, never auth.json", 
 		expect(readFileSync(authPath(loaded), "utf8")).toBe(authJsonBefore);
 		// AC-007: the dead credential stays in the store for a replacement login.
 		const store = new FileSeatStorageBackend(join(loaded.dir, "seat.json")).read((current) => decodeStore(current));
-		expect(store.providers.anthropic?.profiles["work"]?.refresh).toBe("rt-seat-dead");
+		expect(asOAuth(store.providers.anthropic?.profiles["work"])?.refresh).toBe("rt-seat-dead");
 	});
 
 	test("an invalid PI_SEAT fails the child closed with the startup error", async () => {

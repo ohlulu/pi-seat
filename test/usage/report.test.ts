@@ -17,11 +17,13 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { emptyStore, type SeatCredential } from "../../src/store/schema.ts";
+import { emptyStore, type SeatOAuthCredential } from "../../src/store/schema.ts";
 import { FileSeatStorageBackend, decodeStore, encodeStore } from "../../src/store/storage.ts";
 import type { RefreshCallback } from "../../src/store/refresh.ts";
 import { createStoreSchedule } from "../../src/store/scheduler.ts";
-import { collectUsage } from "../../src/usage/report.ts";
+import { API_KEY_USAGE_HINT, collectUsage, isLive, renderAccountBlock, usageSections } from "../../src/usage/report.ts";
+import { planLayout } from "../../src/usage/layout.ts";
+import { asOAuth } from "../helpers/credentials.ts";
 
 const CLAUDE_PAYLOAD = { limits: [{ kind: "session", percent: 42, resets_at: "2026-01-15T14:31:00+00:00" }] };
 
@@ -30,16 +32,16 @@ afterEach(() => {
 	for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
-function expired(tag: string): SeatCredential {
+function expired(tag: string): SeatOAuthCredential {
 	return { type: "oauth", refresh: `rt-${tag}`, access: `at-${tag}`, expires: Date.now() - 60_000 };
 }
 
-function fresh(tag: string): SeatCredential {
+function fresh(tag: string): SeatOAuthCredential {
 	return { type: "oauth", refresh: `rt-${tag}`, access: `at-${tag}`, expires: Date.now() + 3_600_000 };
 }
 
 /** Real on-disk store with a real lock; `auth.json` deliberately absent. */
-function seed(profiles: Record<string, SeatCredential>, defaultLabel: string) {
+function seed(profiles: Record<string, SeatOAuthCredential>, defaultLabel: string) {
 	const dir = mkdtempSync(join(tmpdir(), "seat-report-"));
 	dirs.push(dir);
 	const storePath = join(dir, "seat.json");
@@ -122,7 +124,7 @@ describe("collectUsage concurrency (DEC-011)", () => {
 		await walk;
 		await server.stop(true);
 
-		expect(store.providers.anthropic?.profiles["stale"]?.access).toBe("at-rotated"); // it ran after the commit
+		expect(asOAuth(store.providers.anthropic?.profiles["stale"])?.access).toBe("at-rotated"); // it ran after the commit
 		expect(elapsed).toBeLessThan(2_000); // a sync-lock deadlock waits out the 5s timeout
 	});
 
@@ -181,3 +183,51 @@ describe("collectUsage concurrency (DEC-011)", () => {
 		expect(accounts.map((a) => a.name)).toEqual(emitted);
 	});
 });
+
+describe("AC-044: an API-key profile in the walk (REQ-013)", () => {
+	test("renders a no-meter row without preparing or fetching it, and still takes the live dot", async () => {
+		const { backend, authPath } = seed({ work: fresh("work") }, "work");
+		backend.withLock((current) => {
+			const store = decodeStore(current);
+			store.providers.anthropic!.profiles["console"] = { type: "api_key", key: "sk-ant-api03-FAKE-report" };
+			store.providers.anthropic!.default = "console";
+			return { result: undefined, next: encodeStore(store) };
+		});
+		const store = backend.read((current) => decodeStore(current));
+		const refreshed: string[] = [];
+		const fetched: string[] = [];
+
+		const accounts = await collectUsage({
+			backend,
+			store,
+			authPath,
+			pins: {},
+			refreshFor: () => async (c) => {
+				refreshed.push(c.refresh);
+				return c;
+			},
+			fetchOptions: {
+				fetchImpl: (async (_url: string, init?: RequestInit) => {
+					fetched.push((init?.headers as Record<string, string>)["Authorization"] ?? "");
+					return Response.json(CLAUDE_PAYLOAD);
+				}) as unknown as typeof fetch,
+			},
+		});
+
+		const anthropic = accounts.filter((a) => a.provider === "anthropic");
+		expect(anthropic.map((a) => a.name)).toEqual(["console", "work"]); // the selection leads
+		expect(anthropic[0]).toMatchObject({
+			note: "API key",
+			result: { ok: false, hint: API_KEY_USAGE_HINT, failed: false, unmetered: true },
+		});
+		expect(fetched).toEqual(["Bearer at-work"]); // only the OAuth profile hit the endpoint
+		expect(refreshed).toEqual([]);
+
+		const sections = usageSections(store, {});
+		const block = renderAccountBlock(planLayout(80), anthropic[0]!, { color: false, now: () => new Date() }, isLive(sections, anthropic[0]!));
+		expect(block[0]).toContain("● console");
+		expect(block.join("\n")).toContain("no plan meters");
+		expect(block.join("\n")).not.toContain("sk-ant-");
+	});
+});
+

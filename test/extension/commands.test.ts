@@ -1,16 +1,17 @@
 import { describe, expect, test } from "bun:test";
 import type { ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
-import { emptyStore, type SeatCredential } from "../../src/store/schema.ts";
+import { emptyStore, type SeatOAuthCredential } from "../../src/store/schema.ts";
 import { InMemorySeatStorageBackend, decodeStore, encodeStore } from "../../src/store/storage.ts";
 import { resolveSelection } from "../../src/store/selector.ts";
 import type { SeatProviderAdapter } from "../../src/extension/oauth.ts";
 import { runSeatCommand, type SeatCommandDeps } from "../../src/extension/seat-command.ts";
 import { createStoreSchedule } from "../../src/store/scheduler.ts";
 import { makeHarness, runTurn } from "./harness.ts";
+import { asOAuth } from "../helpers/credentials.ts";
 
 const FRESH = Date.now() + 3_600_000;
 
-function cred(refresh: string): SeatCredential {
+function cred(refresh: string): SeatOAuthCredential {
 	return { type: "oauth", refresh, access: `at-${refresh}`, expires: FRESH };
 }
 
@@ -92,7 +93,7 @@ function fakeCtx(mode: FakeMode = "rpc"): FakeCtx {
 	return state;
 }
 
-function loginAdapters(minted: SeatCredential, calls: { login: number }): SeatProviderAdapter[] {
+function loginAdapters(minted: SeatOAuthCredential, calls: { login: number }): SeatProviderAdapter[] {
 	const make = (id: "anthropic" | "openai-codex"): SeatProviderAdapter => ({
 		id,
 		displayName: id,
@@ -104,7 +105,7 @@ function loginAdapters(minted: SeatCredential, calls: { login: number }): SeatPr
 			refresh: async () => {
 				throw new Error("refresh not under test");
 			},
-			toAuth: async (c) => ({ apiKey: (c as SeatCredential).access }) as never,
+			toAuth: async (c) => ({ apiKey: (c as SeatOAuthCredential).access }) as never,
 		},
 	});
 	return [make("anthropic"), make("openai-codex")];
@@ -238,7 +239,7 @@ describe("AC-012: /seat login via fake OAuth flow", () => {
 
 		expect(calls.login).toBe(1);
 		const store = backend.read((c) => decodeStore(c));
-		expect(store.providers["openai-codex"]?.profiles["main"]?.refresh).toBe("rt-minted");
+		expect(asOAuth(store.providers["openai-codex"]?.profiles["main"])?.refresh).toBe("rt-minted");
 		expect(store.providers["openai-codex"]?.aliases["m"]).toBe("main");
 		expect(f.notices.some((n) => n.includes(`stored openai-codex profile "main"`))).toBe(true);
 	});
@@ -268,8 +269,101 @@ describe("AC-013: overwrite requires confirm, and confirm precedes the OAuth flo
 		expect(f.confirmCalls).toHaveLength(1);
 		expect(calls.login).toBe(1);
 		const store = backend.read((c) => decodeStore(c));
-		expect(store.providers.anthropic?.profiles["work"]?.refresh).toBe("rt-new");
-		expect(f.notices.some((n) => n.includes("overwrote previous grant"))).toBe(true);
+		expect(asOAuth(store.providers.anthropic?.profiles["work"])?.refresh).toBe("rt-new");
+		expect(f.notices.some((n) => n.includes("overwrote previous credential"))).toBe(true);
+	});
+});
+
+describe("AC-041 / AC-042: /seat login --api-key (REQ-013)", () => {
+	const KEY = "sk-ant-api03-FAKE-command-key";
+
+	/** A models endpoint answering `status`, recording every key it was sent. */
+	function modelsEndpoint(status: number) {
+		const keys: string[] = [];
+		const fetchImpl = (async (_url: string, init?: RequestInit) => {
+			keys.push((init?.headers as Record<string, string>)["x-api-key"] ?? "");
+			return new Response("{}", { status });
+		}) as unknown as typeof fetch;
+		return { keys, fetchImpl };
+	}
+
+	/** Start the command, wait for the masked input, type into it, then let the command finish. */
+	async function loginWithKey(f: FakeCtx, args: string, d: SeatCommandDeps, keystrokes: string[]): Promise<void> {
+		const running = runSeatCommand(args, f.ctx, d);
+		for (let i = 0; i < 200 && f.customs.length === 0; i += 1) await Bun.sleep(1);
+		const input = f.customs[0];
+		if (input === undefined) throw new Error("the masked input never opened");
+		for (const data of keystrokes) input.handleInput!(data);
+		await running;
+	}
+
+	test("AC-041: the key is read masked, verified once, and stored with its aliases", async () => {
+		const backend = seededBackend();
+		const endpoint = modelsEndpoint(200);
+		const f = fakeCtx("tui");
+		await loginWithKey(f, "login console --api-key -a c", deps(backend, { fetchOptions: { fetchImpl: endpoint.fetchImpl } }), [
+			`\x1b[200~${KEY}\x1b[201~`,
+			"\r",
+		]);
+
+		expect(endpoint.keys).toEqual([KEY]);
+		const store = backend.read((c) => decodeStore(c));
+		expect(store.providers.anthropic?.profiles["console"]).toEqual({ type: "api_key", key: KEY });
+		expect(store.providers.anthropic?.aliases["c"]).toBe("console");
+		expect(f.notices.some((n) => n.includes(`login success — stored anthropic API-key profile "console"`))).toBe(true);
+		expect(f.customs[0]!.render(120).join("\n")).not.toContain(KEY);
+		for (const notice of f.notices) expect(notice).not.toContain(KEY);
+	});
+
+	test("AC-042: a rejected key stores nothing and the notice never carries it", async () => {
+		const backend = seededBackend();
+		const before = backend.read((c) => c);
+		const f = fakeCtx("tui");
+		await loginWithKey(f, "login console --api-key", deps(backend, { fetchOptions: { fetchImpl: modelsEndpoint(401).fetchImpl } }), [
+			KEY,
+			"\r",
+		]);
+
+		expect(backend.read((c) => c)).toBe(before);
+		expect(f.notices.some((n) => n.includes("HTTP 401"))).toBe(true);
+		for (const notice of f.notices) expect(notice).not.toContain(KEY);
+	});
+
+	test("escape cancels with nothing stored and no request sent", async () => {
+		const backend = seededBackend();
+		const before = backend.read((c) => c);
+		const endpoint = modelsEndpoint(200);
+		const f = fakeCtx("tui");
+		await loginWithKey(f, "login console --api-key", deps(backend, { fetchOptions: { fetchImpl: endpoint.fetchImpl } }), ["sk", "\x1b"]);
+
+		expect(endpoint.keys).toEqual([]);
+		expect(backend.read((c) => c)).toBe(before);
+		expect(f.notices.some((n) => n.includes("login cancelled"))).toBe(true);
+	});
+
+	test("openai-codex and non-TUI sessions are refused before any key is read", async () => {
+		const backend = seededBackend();
+		const tui = fakeCtx("tui");
+		await runSeatCommand("login openai-codex:main --api-key", tui.ctx, deps(backend));
+		expect(tui.customs).toHaveLength(0);
+		expect(tui.notices.some((n) => n.includes("OAuth only"))).toBe(true);
+
+		const rpc = fakeCtx("rpc");
+		await runSeatCommand("login console --api-key", rpc.ctx, deps(backend));
+		expect(rpc.customs).toHaveLength(0);
+		expect(rpc.notices.some((n) => n.includes("needs the interactive TUI"))).toBe(true);
+	});
+
+	test("AC-013: an existing label is confirmed before the key prompt opens", async () => {
+		const backend = seededBackend();
+		const before = backend.read((c) => c);
+		const f = fakeCtx("tui");
+		f.confirmAnswer = false;
+		await runSeatCommand("login work --api-key", f.ctx, deps(backend));
+
+		expect(f.confirmCalls).toHaveLength(1);
+		expect(f.customs).toHaveLength(0);
+		expect(backend.read((c) => c)).toBe(before);
 	});
 });
 
@@ -322,7 +416,7 @@ describe("error surface", () => {
 
 describe("AC-021: login opens the browser and reports completion", () => {
 	/** Adapter whose login emits the given interaction events before minting. */
-	function emittingAdapters(minted: SeatCredential, events: ("auth_url" | "device_code")[]): SeatProviderAdapter[] {
+	function emittingAdapters(minted: SeatOAuthCredential, events: ("auth_url" | "device_code")[]): SeatProviderAdapter[] {
 		const make = (id: "anthropic" | "openai-codex"): SeatProviderAdapter => ({
 			id,
 			displayName: id,
@@ -344,7 +438,7 @@ describe("AC-021: login opens the browser and reports completion", () => {
 				refresh: async () => {
 					throw new Error("refresh not under test");
 				},
-				toAuth: async (c) => ({ apiKey: (c as SeatCredential).access }) as never,
+				toAuth: async (c) => ({ apiKey: (c as SeatOAuthCredential).access }) as never,
 			},
 		});
 		return [make("anthropic"), make("openai-codex")];

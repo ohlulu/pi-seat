@@ -3,12 +3,12 @@
  * the pinned ModelRuntime slice, plus a `stream` counter standing in for the
  * provider request), fake provider adapters, and an in-memory seeded store.
  */
-import { emptyStore, type ProviderId, type SeatCredential } from "../../src/store/schema.ts";
+import { emptyStore, type ProviderId, type SeatCredential, type SeatOAuthCredential } from "../../src/store/schema.ts";
 import { InMemorySeatStorageBackend, decodeStore, encodeStore } from "../../src/store/storage.ts";
 import type { SeatProviderAdapter } from "../../src/extension/oauth.ts";
 import { SeatRuntimeAuthCoordinator, type SeatRuntime } from "../../src/extension/runtime-auth.ts";
 
-export function cred(refresh: string, expires: number): SeatCredential {
+export function cred(refresh: string, expires: number): SeatOAuthCredential {
 	return { type: "oauth", refresh, access: `at-${refresh}`, expires };
 }
 
@@ -73,8 +73,8 @@ export class FakeRuntime implements SeatRuntime {
 }
 
 export interface AdapterBehavior {
-	refresh?: (cred: SeatCredential) => Promise<SeatCredential> | SeatCredential;
-	toAuth?: (cred: SeatCredential) => Promise<{ apiKey: string }> | { apiKey: string };
+	refresh?: (cred: SeatOAuthCredential) => Promise<SeatOAuthCredential> | SeatOAuthCredential;
+	toAuth?: (cred: SeatOAuthCredential) => Promise<{ apiKey: string }> | { apiKey: string };
 }
 
 export function fakeAdapters(
@@ -89,12 +89,12 @@ export function fakeAdapters(
 			refresh: async (credential) => {
 				counters.refresh += 1;
 				if (!behavior.refresh) throw new Error("unexpected refresh");
-				return (await behavior.refresh(credential as SeatCredential)) as never;
+				return (await behavior.refresh(credential as SeatOAuthCredential)) as never;
 			},
 			toAuth: async (credential) => {
 				counters.toAuth += 1;
-				const impl = behavior.toAuth ?? ((c: SeatCredential) => ({ apiKey: c.access }));
-				return (await impl(credential as SeatCredential)) as never;
+				const impl = behavior.toAuth ?? ((c: SeatOAuthCredential) => ({ apiKey: c.access }));
+				return (await impl(credential as SeatOAuthCredential)) as never;
 			},
 		},
 	});

@@ -11,7 +11,15 @@
  * owns the prompt.
  */
 
-import { isValidLabel, type ProviderId, type ProviderSection, type SeatCredential, type SeatStore } from "../store/schema.ts";
+import {
+	acceptsApiKey,
+	credentialFingerprint,
+	isValidLabel,
+	type ProviderId,
+	type ProviderSection,
+	type SeatCredential,
+	type SeatStore,
+} from "../store/schema.ts";
 import { decodeStore, encodeStore, type SeatStorageBackend } from "../store/storage.ts";
 import { parseSelector, resolveName } from "../store/selector.ts";
 
@@ -173,6 +181,10 @@ export function loginProfile(
 	if (label === DEFAULT_KEYWORD) throw new CommandError(`"${DEFAULT_KEYWORD}" is a reserved name`);
 	if (!isValidLabel(label)) throw new CommandError(`invalid label "${label}" (":" and "," are not allowed)`);
 	validateAliasNames(aliases);
+	// The schema refuses this on the next read; refusing it here keeps the store readable.
+	if (credential.type === "api_key" && !acceptsApiKey(selector.provider)) {
+		throw new CommandError(`${selector.provider} profiles take OAuth only; an API key is for anthropic`);
+	}
 
 	const sec = ensureSection(store, selector.provider);
 	if (own(sec.aliases, label) !== undefined) {
@@ -195,8 +207,8 @@ export function loginProfile(
 export type RemoveResult = MutationOutcome &
 	(
 		| { action: "alias-removed"; provider: ProviderId; alias: string; target: string }
-		| { action: "needs-confirm"; provider: ProviderId; label: string; refresh: string }
-		| { action: "stale"; provider: ProviderId; label: string; currentRefresh: string }
+		| { action: "needs-confirm"; provider: ProviderId; label: string; fingerprint: string }
+		| { action: "stale"; provider: ProviderId; label: string; currentFingerprint: string }
 		| { action: "profile-removed"; provider: ProviderId; label: string; droppedAliases: string[]; clearedDefault: boolean }
 	);
 
@@ -204,15 +216,16 @@ export type RemoveResult = MutationOutcome &
  * `rm <selector>`: an alias is removed immediately; removing a profile is
  * destructive (grant is lost) and requires `confirmedProfileRemoval`.
  *
- * TOCTOU guard (T036): needs-confirm carries the profile's refresh-token
- * fingerprint. A confirmed removal passes it back as `expectedRefresh`; if the
- * grant changed while the user was staring at the prompt, the mutation is
- * rejected as `stale` and the caller re-asks against the new grant.
+ * TOCTOU guard (T036): needs-confirm carries the profile's credential
+ * fingerprint (refresh token or API key). A confirmed removal passes it back as
+ * `expectedFingerprint`; if the credential changed while the user was staring
+ * at the prompt, the mutation is rejected as `stale` and the caller re-asks
+ * against the new one.
  */
 export function removeSelection(
 	store: SeatStore,
 	selectorInput: string,
-	options: { confirmedProfileRemoval?: boolean; expectedRefresh?: string } = {},
+	options: { confirmedProfileRemoval?: boolean; expectedFingerprint?: string } = {},
 ): RemoveResult {
 	const selector = parseSelector(selectorInput);
 	const sec = section(store, selector.provider);
@@ -229,11 +242,12 @@ export function removeSelection(
 	if (current === undefined) {
 		throw new CommandError(`no profile or alias "${label}" for provider "${selector.provider}"`);
 	}
+	const fingerprint = credentialFingerprint(current);
 	if (!options.confirmedProfileRemoval) {
-		return { changed: false, action: "needs-confirm", provider: selector.provider, label, refresh: current.refresh };
+		return { changed: false, action: "needs-confirm", provider: selector.provider, label, fingerprint };
 	}
-	if (options.expectedRefresh !== undefined && options.expectedRefresh !== current.refresh) {
-		return { changed: false, action: "stale", provider: selector.provider, label, currentRefresh: current.refresh };
+	if (options.expectedFingerprint !== undefined && options.expectedFingerprint !== fingerprint) {
+		return { changed: false, action: "stale", provider: selector.provider, label, currentFingerprint: fingerprint };
 	}
 
 	delete sec.profiles[label];

@@ -4,6 +4,9 @@
  * Shape:
  *   { version: 1, providers: { <id>: { default?: label, profiles: { label: credential }, aliases: { alias: label } } } }
  *
+ * A credential is an OAuth grant, or (anthropic only) a Console API key
+ * (DEC-015, REQ-013). The API-key type is additive: the version stays 1.
+ *
  * Labels and aliases are user input used as object keys, so parsing uses
  * own-property access only and all constructed maps are null-prototype —
  * a JSON document containing "__proto__" must never reach a prototype setter.
@@ -17,12 +20,40 @@ export function isProviderId(value: string): value is ProviderId {
 }
 
 /** Matches Pi's stored OAuthCredential (pi-ai auth/types). */
-export interface SeatCredential {
+export interface SeatOAuthCredential {
 	type: "oauth";
 	refresh: string;
 	access: string;
 	expires: number;
 	[key: string]: unknown;
+}
+
+/** An Anthropic Console API key (REQ-013): no refresh, no expiry. */
+export interface SeatApiKeyCredential {
+	type: "api_key";
+	key: string;
+}
+
+export type SeatCredential = SeatOAuthCredential | SeatApiKeyCredential;
+export type SeatCredentialType = SeatCredential["type"];
+
+/** Providers whose profiles may hold an API key; openai-codex takes OAuth only. */
+export function acceptsApiKey(provider: ProviderId): boolean {
+	return provider === "anthropic";
+}
+
+/**
+ * The secret that identifies this credential: the grant's refresh token, or
+ * the key itself. Used to bind confirmations and fail-closed blocks to one
+ * concrete credential; never printed.
+ */
+export function credentialFingerprint(credential: SeatCredential): string {
+	return credential.type === "oauth" ? credential.refresh : credential.key;
+}
+
+/** Every secret a credential carries, for exact-match redaction. */
+export function credentialSecrets(credential: SeatCredential): string[] {
+	return credential.type === "oauth" ? [credential.access, credential.refresh] : [credential.key];
 }
 
 export interface ProviderSection {
@@ -76,16 +107,21 @@ function ownKeys(obj: Record<string, unknown>): string[] {
 	return Object.keys(obj);
 }
 
-function parseCredential(raw: unknown, where: string): SeatCredential {
+function parseCredential(raw: unknown, where: string, provider: ProviderId): SeatCredential {
 	if (!isPlainObject(raw)) throw new SchemaError(`${where}: credential must be an object`);
-	if (own(raw, "type") !== "oauth") throw new SchemaError(`${where}: credential.type must be "oauth"`);
+	const type = own(raw, "type");
+	if (type === "api_key") {
+		if (!acceptsApiKey(provider)) throw new SchemaError(`${where}: provider "${provider}" does not accept api_key credentials`);
+		return parseApiKeyCredential(raw, where);
+	}
+	if (type !== "oauth") throw new SchemaError(`${where}: credential.type must be "oauth" or "api_key"`);
 	const refresh = own(raw, "refresh");
 	const access = own(raw, "access");
 	const expires = own(raw, "expires");
 	if (typeof refresh !== "string" || refresh.length === 0) throw new SchemaError(`${where}: credential.refresh must be a non-empty string`);
 	if (typeof access !== "string") throw new SchemaError(`${where}: credential.access must be a string`);
 	if (typeof expires !== "number" || !Number.isFinite(expires)) throw new SchemaError(`${where}: credential.expires must be a finite number`);
-	const cred = Object.create(null) as SeatCredential;
+	const cred = Object.create(null) as SeatOAuthCredential;
 	for (const key of ownKeys(raw)) {
 		if (FORBIDDEN_KEYS.has(key)) throw new SchemaError(`${where}: forbidden credential key "${key}"`);
 		Object.defineProperty(cred, key, { value: raw[key], enumerable: true, writable: true, configurable: true });
@@ -93,7 +129,23 @@ function parseCredential(raw: unknown, where: string): SeatCredential {
 	return cred;
 }
 
-function parseProviderSection(raw: unknown, provider: string): ProviderSection {
+/** The key ends up in a request header, so whitespace and line breaks are refused here too. */
+export function isWellFormedApiKey(key: string): boolean {
+	return key.length > 0 && !/\s/.test(key);
+}
+
+function parseApiKeyCredential(raw: Record<string, unknown>, where: string): SeatApiKeyCredential {
+	for (const key of ownKeys(raw)) {
+		if (key !== "type" && key !== "key") throw new SchemaError(`${where}: unknown api_key credential key "${key}"`);
+	}
+	const key = own(raw, "key");
+	if (typeof key !== "string" || !isWellFormedApiKey(key)) {
+		throw new SchemaError(`${where}: credential.key must be a non-empty string without whitespace`);
+	}
+	return nullProto<SeatApiKeyCredential>({ type: "api_key", key });
+}
+
+function parseProviderSection(raw: unknown, provider: ProviderId): ProviderSection {
 	if (!isPlainObject(raw)) throw new SchemaError(`providers.${provider} must be an object`);
 	for (const key of ownKeys(raw)) {
 		if (key !== "default" && key !== "profiles" && key !== "aliases") {
@@ -107,7 +159,7 @@ function parseProviderSection(raw: unknown, provider: string): ProviderSection {
 	for (const label of ownKeys(profilesRaw)) {
 		if (!isValidLabel(label)) throw new SchemaError(`providers.${provider}: invalid profile label "${label}"`);
 		Object.defineProperty(profiles, label, {
-			value: parseCredential(profilesRaw[label], `providers.${provider}.profiles.${label}`),
+			value: parseCredential(profilesRaw[label], `providers.${provider}.profiles.${label}`, provider),
 			enumerable: true,
 			writable: true,
 			configurable: true,

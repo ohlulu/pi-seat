@@ -7,7 +7,7 @@
  * the same "pure usage domain" layering as cells / layout / render.
  */
 
-import { PROVIDER_IDS, type ProviderId, type SeatStore } from "../store/schema.ts";
+import { PROVIDER_IDS, type ProviderId, type SeatCredentialType, type SeatStore } from "../store/schema.ts";
 import type { RefreshCallback } from "../store/refresh.ts";
 import type { SeatStorageBackend } from "../store/storage.ts";
 import type { StoreSchedule } from "../store/scheduler.ts";
@@ -43,8 +43,12 @@ export function builtinName(provider: ProviderId): string {
 export type UsageAccountResult =
 	| { ok: true; usage: ClaudeUsage | CodexUsage }
 	/** `failed` distinguishes "we could not read it" (CLI exit 1) from an
-	 * expected state like Pi's own token having expired. */
-	| { ok: false; hint: string; failed: boolean };
+	 * expected state like Pi's own token having expired. `unmetered` marks a
+	 * working credential that simply has no plan meters: an API key (REQ-013). */
+	| { ok: false; hint: string; failed: boolean; unmetered?: true };
+
+/** What an API-key profile shows instead of meters (REQ-013). */
+export const API_KEY_USAGE_HINT = "API key — no plan meters; usage bills to its Console organization";
 
 export interface UsageAccount {
 	provider: ProviderId;
@@ -147,7 +151,7 @@ function settleAccount(promise: Promise<UsageAccount | undefined>): Promise<Sett
 
 /** One account in walk order, before anything has been fetched for it. */
 type Slot =
-	| { kind: "profile"; provider: ProviderId; label: string; aliases: string[] }
+	| { kind: "profile"; provider: ProviderId; label: string; aliases: string[]; credential: SeatCredentialType }
 	| { kind: "builtin"; provider: ProviderId };
 
 /** Walk order, derived from the store snapshot alone — no I/O, no lock. */
@@ -170,6 +174,7 @@ function planSlots(deps: UsageCollectDeps): Slot[] {
 			kind: "profile",
 			provider,
 			label,
+			credential: section!.profiles[label]!.type,
 			aliases: Object.keys(section?.aliases ?? {})
 				.filter((alias) => section?.aliases[alias] === label)
 				.sort(),
@@ -180,6 +185,19 @@ function planSlots(deps: UsageCollectDeps): Slot[] {
 		else slots.push(...profiles, builtin);
 	}
 	return slots;
+}
+
+/** An API-key profile: nothing to prepare, nothing to fetch. */
+function apiKeyAccount(slot: Slot & { kind: "profile" }): UsageAccount {
+	return {
+		provider: slot.provider,
+		kind: "profile",
+		name: slot.label,
+		label: slot.label,
+		aliases: slot.aliases,
+		note: "API key",
+		result: { ok: false, hint: API_KEY_USAGE_HINT, failed: false, unmetered: true },
+	};
 }
 
 function profileAccount(slot: Slot & { kind: "profile" }, result: ProfileUsageResult): UsageAccount {
@@ -243,7 +261,7 @@ export async function collectUsage(
 	const prepared: (ProfilePrepareResult | undefined)[] = [];
 	for (const slot of slots) {
 		prepared.push(
-			slot.kind === "profile"
+			slot.kind === "profile" && slot.credential === "oauth"
 				? await schedule(() =>
 						prepareProfile(deps.backend, slot.provider, slot.label, deps.refreshFor(slot.provider), fetchOptions),
 					)
@@ -256,6 +274,7 @@ export async function collectUsage(
 		if (slot.kind === "builtin") {
 			return settleAccount(builtinUsage(deps.authPath, slot.provider, fetchOptions).then((b) => builtinAccount(slot.provider, b)));
 		}
+		if (slot.credential === "api_key") return settleAccount(Promise.resolve(apiKeyAccount(slot)));
 		const result = prepared[index];
 		if (result === undefined || !result.ok) {
 			// Preparation already failed; nothing to fetch, but the account still
@@ -285,8 +304,8 @@ export async function collectUsage(
 /** Header row plus the provider's meter block, or the failure hint. */
 export function renderAccountBlock(layout: Layout, account: UsageAccount, options: RenderOptions, live: boolean): string[] {
 	// The dot claims a working credential, so a failed account never lights up
-	// even when the selection points at it.
-	const dot = live && account.result.ok;
+	// even when the selection points at it. An API key works without meters.
+	const dot = live && (account.result.ok || account.result.unmetered === true);
 	const lines = [accountLine(layout, account.name, account.aliases, dot, account.note, options)];
 	if (account.result.ok) {
 		lines.push(

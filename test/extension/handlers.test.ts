@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { emptyStore, parseStore, type SeatCredential, type SeatStore } from "../../src/store/schema.ts";
+import { emptyStore, parseStore, type SeatOAuthCredential, type SeatStore } from "../../src/store/schema.ts";
 import { serializeStore } from "../../src/store/schema.ts";
 import {
 	CommandError,
@@ -10,8 +10,9 @@ import {
 	useSelection,
 } from "../../src/extension/commands.ts";
 import { InMemorySeatStorageBackend } from "../../src/store/storage.ts";
+import { asOAuth } from "../helpers/credentials.ts";
 
-function cred(refresh: string): SeatCredential {
+function cred(refresh: string): SeatOAuthCredential {
 	return { type: "oauth", refresh, access: `at-${refresh}`, expires: 1_900_000_000_000 };
 }
 
@@ -133,7 +134,7 @@ describe("loginProfile", () => {
 		const store = seeded();
 		const result = loginProfile(store, "openai-codex:backup", cred("rt-b"), ["b", "bk"]);
 		expect(result).toEqual({ changed: true, action: "stored", provider: "openai-codex", label: "backup", overwrote: false });
-		expect(store.providers["openai-codex"]?.profiles["backup"]?.refresh).toBe("rt-b");
+		expect(asOAuth(store.providers["openai-codex"]?.profiles["backup"])?.refresh).toBe("rt-b");
 		expect(store.providers["openai-codex"]?.aliases).toEqual(
 			Object.assign(Object.create(null), { b: "backup", bk: "backup" }),
 		);
@@ -144,11 +145,11 @@ describe("loginProfile", () => {
 		const store = seeded();
 		const first = loginProfile(store, "work", cred("rt-new"));
 		expect(first).toEqual({ changed: false, action: "needs-confirm", provider: "anthropic", label: "work" });
-		expect(store.providers.anthropic?.profiles["work"]?.refresh).toBe("rt-w"); // untouched
+		expect(asOAuth(store.providers.anthropic?.profiles["work"])?.refresh).toBe("rt-w"); // untouched
 
 		const confirmed = loginProfile(store, "work", cred("rt-new"), [], { confirmedOverwrite: true });
 		expect(confirmed).toEqual({ changed: true, action: "stored", provider: "anthropic", label: "work", overwrote: true });
-		expect(store.providers.anthropic?.profiles["work"]?.refresh).toBe("rt-new");
+		expect(asOAuth(store.providers.anthropic?.profiles["work"])?.refresh).toBe("rt-new");
 		assertValid(store);
 	});
 
@@ -163,6 +164,41 @@ describe("loginProfile", () => {
 	});
 });
 
+describe("REQ-013: API-key profiles in the mutation handlers", () => {
+	const KEY = "sk-ant-api03-FAKE-handler-key";
+
+	test("login stores an anthropic key; openai-codex refuses one and stays readable", () => {
+		const store = seeded();
+		expect(loginProfile(store, "console", { type: "api_key", key: KEY })).toMatchObject({ action: "stored" });
+		expect(store.providers.anthropic?.profiles["console"]).toEqual({ type: "api_key", key: KEY });
+
+		expect(() => loginProfile(store, "openai-codex:console", { type: "api_key", key: KEY })).toThrow(CommandError);
+		expect(store.providers["openai-codex"]?.profiles["console"]).toBeUndefined();
+		expect(() => parseStore(JSON.parse(serializeStore(store)))).not.toThrow();
+	});
+
+	test("T036 on a key: the confirmation binds to the key, a replaced key is stale", () => {
+		const store = seeded();
+		loginProfile(store, "console", { type: "api_key", key: KEY });
+		const pre = removeSelection(store, "console");
+		if (pre.action !== "needs-confirm") throw new Error("unreachable");
+		expect(pre.fingerprint).toBe(KEY);
+
+		store.providers.anthropic!.profiles["console"] = { type: "api_key", key: `${KEY}-rotated` };
+		const stale = removeSelection(store, "console", { confirmedProfileRemoval: true, expectedFingerprint: pre.fingerprint });
+		expect(stale.action).toBe("stale");
+		expect(store.providers.anthropic?.profiles["console"]).toBeDefined();
+	});
+
+	test("rename and use treat a key profile like any other", () => {
+		const store = seeded();
+		loginProfile(store, "console", { type: "api_key", key: KEY }, ["c"]);
+		renameProfile(store, "c", "billing");
+		expect(useSelection(store, "c")).toMatchObject({ action: "set", label: "billing" });
+		expect(store.providers.anthropic?.profiles["billing"]).toEqual({ type: "api_key", key: KEY });
+	});
+});
+
 describe("removeSelection", () => {
 	test("rm distinguishes alias vs profile: alias goes immediately", () => {
 		const store = seeded();
@@ -174,7 +210,7 @@ describe("removeSelection", () => {
 
 	test("profile removal is destructive: needs-confirm, then drops aliases and default", () => {
 		const store = seeded();
-		expect(removeSelection(store, "work")).toEqual({ changed: false, action: "needs-confirm", provider: "anthropic", label: "work", refresh: "rt-w" });
+		expect(removeSelection(store, "work")).toEqual({ changed: false, action: "needs-confirm", provider: "anthropic", label: "work", fingerprint: "rt-w" });
 
 		const confirmed = removeSelection(store, "work", { confirmedProfileRemoval: true });
 		expect(confirmed).toEqual({
@@ -201,16 +237,16 @@ describe("removeSelection", () => {
 		const pre = removeSelection(store, "work");
 		expect(pre.action).toBe("needs-confirm");
 		if (pre.action !== "needs-confirm") throw new Error("unreachable");
-		expect(pre.refresh).toBe("rt-w"); // fingerprint of the grant being confirmed
+		expect(pre.fingerprint).toBe("rt-w"); // fingerprint of the grant being confirmed
 
 		// The grant is replaced between confirm and commit.
 		store.providers.anthropic!.profiles["work"] = cred("rt-replaced");
-		const stale = removeSelection(store, "work", { confirmedProfileRemoval: true, expectedRefresh: pre.refresh });
-		expect(stale).toEqual({ changed: false, action: "stale", provider: "anthropic", label: "work", currentRefresh: "rt-replaced" });
-		expect(store.providers.anthropic?.profiles["work"]?.refresh).toBe("rt-replaced"); // untouched
+		const stale = removeSelection(store, "work", { confirmedProfileRemoval: true, expectedFingerprint: pre.fingerprint });
+		expect(stale).toEqual({ changed: false, action: "stale", provider: "anthropic", label: "work", currentFingerprint: "rt-replaced" });
+		expect(asOAuth(store.providers.anthropic?.profiles["work"])?.refresh).toBe("rt-replaced"); // untouched
 
 		// Re-confirmed against the current fingerprint → removal proceeds.
-		const removed = removeSelection(store, "work", { confirmedProfileRemoval: true, expectedRefresh: "rt-replaced" });
+		const removed = removeSelection(store, "work", { confirmedProfileRemoval: true, expectedFingerprint: "rt-replaced" });
 		expect(removed.action).toBe("profile-removed");
 		assertValid(store);
 	});
@@ -229,7 +265,7 @@ describe("renameProfile", () => {
 			retargetedAliases: ["w"],
 			retargetedDefault: true,
 		});
-		expect(store.providers.anthropic?.profiles["day"]?.refresh).toBe("rt-w");
+		expect(asOAuth(store.providers.anthropic?.profiles["day"])?.refresh).toBe("rt-w");
 		expect(store.providers.anthropic?.profiles["work"]).toBeUndefined();
 		expect(store.providers.anthropic?.aliases["w"]).toBe("day");
 		expect(store.providers.anthropic?.default).toBe("day");

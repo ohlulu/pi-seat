@@ -8,7 +8,7 @@
  *   seat status [--plain]               --plain: Anthropic-only 4-col TSV
  *   seat whoami [--plain]               offline: default + pin per provider
  *   seat use <selector> [-a|--alias <alias>]… | seat <selector> [-a …]
- *   seat login <selector> [-a|--alias <alias>]…
+ *   seat login <selector> [--api-key] [-a|--alias <alias>]…
  *   seat rm <selector> [--force|--no-input]
  *   seat rename <old-selector> <new-label>
  *
@@ -18,7 +18,7 @@
 
 import { join } from "node:path";
 import { homedir } from "node:os";
-import { PROVIDER_IDS, type ProviderId, type SeatStore } from "../store/schema.ts";
+import { PROVIDER_IDS, type ProviderId, type SeatCredential, type SeatStore } from "../store/schema.ts";
 import { FileSeatStorageBackend, decodeStore, type SeatStorageBackend } from "../store/storage.ts";
 import { SelectorError, parseSelector, resolvePins, resolveSelection } from "../store/selector.ts";
 import {
@@ -31,6 +31,7 @@ import {
 	useSelection,
 } from "../extension/commands.ts";
 import { adapterFor, createSeatProviderAdapters, toRefreshCallback, type SeatProviderAdapter } from "../extension/oauth.ts";
+import { apiKeyCredential, assertApiKeyProvider } from "../extension/api-key.ts";
 import type { UsageFetchOptions } from "../usage/fetch.ts";
 import { UsageReportRows, collectUsage, selectionSummary, usageSections } from "../usage/report.ts";
 import type { RenderOptions } from "../usage/render.ts";
@@ -52,6 +53,8 @@ export interface CliIo {
 	confirm(question: string): Promise<boolean>;
 	/** Free-text prompt for OAuth interactions (manual code paste). */
 	input(question: string): Promise<string | undefined>;
+	/** Secret prompt (REQ-013): never echoed, never taken from argv. */
+	secret(question: string): Promise<string | undefined>;
 }
 
 export interface CliDeps {
@@ -88,6 +91,10 @@ export function defaultDeps(): CliDeps {
 				process.stderr.write(`${question}: `);
 				return readStdinLine();
 			},
+			secret: async (question) => {
+				process.stderr.write(`${question}: `);
+				return readSecretLine();
+			},
 		},
 		termWidth: process.stdout.columns || Number(process.env["COLUMNS"]) || 80,
 		color: Boolean(process.stdout.isTTY) && process.env["NO_COLOR"] === undefined,
@@ -97,6 +104,44 @@ export function defaultDeps(): CliDeps {
 async function readStdinLine(): Promise<string | undefined> {
 	for await (const line of console) return line;
 	return undefined;
+}
+
+/**
+ * One line from stdin without echo. A piped stdin (`pbpaste | seat login …`)
+ * has no echo to suppress and is read as a line; a TTY is put in raw mode for
+ * the duration, so the key never reaches the screen or the scrollback.
+ */
+async function readSecretLine(): Promise<string | undefined> {
+	const stdin = process.stdin;
+	if (!stdin.isTTY) {
+		const line = await readStdinLine();
+		process.stderr.write("\n"); // nothing echoed the line's own newline
+		return line;
+	}
+	return new Promise((resolve) => {
+		let value = "";
+		const finish = (result: string | undefined): void => {
+			stdin.off("data", onData);
+			stdin.setRawMode(false);
+			stdin.pause();
+			process.stderr.write("\n");
+			resolve(result);
+		};
+		const onData = (chunk: Buffer | string): void => {
+			// Arrow keys and friends arrive as escape sequences; none belong in a key.
+			const text = String(chunk).replace(/\x1b\[[0-9;?]*[A-Za-z~]/g, "");
+			for (const char of text) {
+				if (char === "\r" || char === "\n") return finish(value);
+				if (char === "\u0003" || char === "\u0004") return finish(undefined); // Ctrl-C, Ctrl-D
+				if (char === "\u007f" || char === "\b") value = value.slice(0, -1);
+				else if (char >= " ") value += char;
+			}
+		};
+		stdin.setRawMode(true);
+		stdin.setEncoding("utf8");
+		stdin.on("data", onData);
+		stdin.resume();
+	});
 }
 
 export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
@@ -187,7 +232,7 @@ function printHelp(io: CliIo): void {
 			"  seat                                   usage (shorthand)",
 			"  seat <selector> [-a <alias>]…          switch default (shorthand)",
 			"  seat use <selector> [-a <alias>]…",
-			"  seat login <selector> [-a <alias>]…",
+			"  seat login <selector> [--api-key] [-a <alias>]…",
 			"  seat rm <selector> [--force|--no-input]",
 			"  seat rename <old-selector> <new-label>",
 			"  seat usage [--json]",
@@ -247,15 +292,15 @@ async function cmdRm(rest: string[], deps: CliDeps): Promise<number> {
 		// T036: each confirmation covers exactly one grant fingerprint. If the
 		// grant changes during the prompt, the removal is rejected as stale and
 		// the user is asked again about what is actually there now.
-		let expectedRefresh = pre.refresh;
+		let expectedFingerprint = pre.fingerprint;
 		for (let attempt = 0; attempt < 5; attempt += 1) {
-			const ok = await deps.io.confirm(`Delete profile "${pre.label}" and its grant?`);
+			const ok = await deps.io.confirm(`Delete profile "${pre.label}" and its credential?`);
 			if (!ok) {
 				deps.io.err("seat: rm cancelled");
 				return EXIT_FAIL;
 			}
 			const result = runMutation(deps.backend, (store) =>
-				removeSelection(store, selector, { confirmedProfileRemoval: true, expectedRefresh }),
+				removeSelection(store, selector, { confirmedProfileRemoval: true, expectedFingerprint }),
 			);
 			if (result.action === "profile-removed") {
 				deps.io.err(`seat: removed profile "${result.label}"`);
@@ -263,7 +308,7 @@ async function cmdRm(rest: string[], deps: CliDeps): Promise<number> {
 			}
 			if (result.action === "stale") {
 				deps.io.err(`seat: profile "${result.label}" changed while waiting for confirmation; please re-confirm`);
-				expectedRefresh = result.currentRefresh;
+				expectedFingerprint = result.currentFingerprint;
 				continue;
 			}
 			throw new CommandError("rm raced another mutation; try again");
@@ -276,15 +321,20 @@ async function cmdRm(rest: string[], deps: CliDeps): Promise<number> {
 }
 
 async function cmdLogin(rest: string[], deps: CliDeps): Promise<number> {
-	const { selector, aliases } = parseSelectorWithAliases(rest, "usage: seat login <selector> [-a <alias>]…");
+	const apiKey = rest.includes("--api-key");
+	const { selector, aliases } = parseSelectorWithAliases(
+		rest.filter((token) => token !== "--api-key"),
+		"usage: seat login <selector> [--api-key] [-a <alias>]…",
+	);
 	const parsed = parseSelector(selector);
+	if (apiKey) assertApiKeyProvider(parsed.provider);
 	const exists = deps.backend.read((current) => {
 		const store = decodeStore(current);
 		return Object.hasOwn(store.providers[parsed.provider]?.profiles ?? {}, parsed.name);
 	});
 	let confirmedOverwrite = false;
 	if (exists) {
-		const ok = await deps.io.confirm(`Profile "${parsed.name}" already exists. Overwrite its grant?`);
+		const ok = await deps.io.confirm(`Profile "${parsed.name}" already exists. Overwrite its credential?`);
 		if (!ok) {
 			deps.io.err("seat: login cancelled; existing profile kept");
 			return EXIT_FAIL;
@@ -292,7 +342,35 @@ async function cmdLogin(rest: string[], deps: CliDeps): Promise<number> {
 		confirmedOverwrite = true;
 	}
 
-	const adapter = adapterFor(deps.adapters, parsed.provider);
+	const credential = apiKey ? await readApiKey(parsed.name, deps) : await oauthLogin(parsed.provider, deps);
+	if (credential === undefined) {
+		deps.io.err("seat: login cancelled; nothing stored");
+		return EXIT_FAIL;
+	}
+
+	const result = runMutation(deps.backend, (store) =>
+		loginProfile(store, selector, credential, aliases, { confirmedOverwrite }),
+	);
+	if (result.action !== "stored") throw new CommandError("login raced another mutation; try again");
+	deps.io.err(
+		`seat: login success — stored ${result.provider} ${apiKey ? "API-key " : ""}profile "${result.label}"${result.overwrote ? " (overwrote previous credential)" : ""}`,
+	);
+	return EXIT_OK;
+}
+
+/** REQ-013: the key comes from stdin, never argv, and is validated before it is stored. */
+async function readApiKey(label: string, deps: CliDeps): Promise<SeatCredential | undefined> {
+	const input = await deps.io.secret(`Anthropic Console API key for "${label}" (input hidden)`);
+	if (input === undefined) return undefined;
+	const fetchImpl = deps.fetchOptions?.fetchImpl;
+	return apiKeyCredential(input, {
+		...(fetchImpl !== undefined ? { fetchImpl } : {}),
+		onVerifying: () => deps.io.err("seat: verifying the key with Anthropic…"),
+	});
+}
+
+async function oauthLogin(provider: ProviderId, deps: CliDeps): Promise<SeatCredential> {
+	const adapter = adapterFor(deps.adapters, provider);
 	const controller = new AbortController();
 	const credential = await adapter.oauth.login({
 		signal: controller.signal,
@@ -314,15 +392,7 @@ async function cmdLogin(rest: string[], deps: CliDeps): Promise<number> {
 			else if (event.type === "progress") deps.io.err(event.message);
 		},
 	});
-
-	const result = runMutation(deps.backend, (store) =>
-		loginProfile(store, selector, credential as never, aliases, { confirmedOverwrite }),
-	);
-	if (result.action !== "stored") throw new CommandError("login raced another mutation; try again");
-	deps.io.err(
-		`seat: login success — stored ${result.provider} profile "${result.label}"${result.overwrote ? " (overwrote previous grant)" : ""}`,
-	);
-	return EXIT_OK;
+	return credential as SeatCredential;
 }
 
 // --- status / whoami ---------------------------------------------------------
@@ -347,10 +417,10 @@ function cmdStatus(rest: string[], deps: CliDeps): number {
 				.filter((a) => section?.aliases[a] === label)
 				.sort()
 				.join(",");
-			const expires = section?.profiles[label]?.expires;
-			deps.io.out(
-				[label, label === activeLabel ? "active" : "-", typeof expires === "number" ? String(expires) : "-", akas || "-"].join("\t"),
-			);
+			const credential = section?.profiles[label];
+			// An API key never expires (REQ-013).
+			const expires = credential?.type === "oauth" ? String(credential.expires) : "-";
+			deps.io.out([label, label === activeLabel ? "active" : "-", expires, akas || "-"].join("\t"));
 		}
 		return EXIT_OK;
 	}
@@ -363,7 +433,8 @@ function cmdStatus(rest: string[], deps: CliDeps): number {
 			const akas = Object.keys(section?.aliases ?? {})
 				.filter((a) => section?.aliases[a] === label)
 				.sort();
-			deps.io.out(`  ${label}${akas.length > 0 ? ` (${akas.join(", ")})` : ""}`);
+			const kind = section?.profiles[label]?.type === "api_key" ? " [API key]" : "";
+			deps.io.out(`  ${label}${akas.length > 0 ? ` (${akas.join(", ")})` : ""}${kind}`);
 		}
 	}
 	return EXIT_OK;

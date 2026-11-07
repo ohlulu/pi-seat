@@ -21,12 +21,12 @@
 
 import type { ApiKeyAuth, ModelAuth, OAuthAuth, OAuthCredential, Provider } from "@earendil-works/pi-ai";
 import { PROVIDER_IDS, type ProviderId } from "../store/schema.ts";
-import { SEAT_SENTINEL_API_KEY } from "./runtime-auth.ts";
+import { SEAT_SENTINEL_API_KEY, type SeatOwnership } from "./runtime-auth.ts";
 
 /** What the registered provider asks seat on every request. */
 export interface SeatAuthSource {
-	/** True when seat owns the provider's auth. Throws seat's error when it cannot decide. */
-	owns(provider: ProviderId): Promise<boolean>;
+	/** What seat owns the provider's auth with; undefined when it does not. Throws seat's error when it cannot decide. */
+	owns(provider: ProviderId): Promise<SeatOwnership | undefined>;
 	/** Seat request auth; undefined when Pi's built-in login owns the provider. Throws to fail closed. */
 	requestAuth(provider: ProviderId): Promise<ModelAuth | undefined>;
 }
@@ -105,7 +105,9 @@ export function wrapProvider(
 			// store, which may be the very thing that failed (AC-031/032); the
 			// request itself still fails closed in resolve.
 			if (input.credential?.key === SEAT_SENTINEL_API_KEY) return { type: "api_key", source: SEAT_AUTH_SOURCE };
-			if (await source.owns(id)) return { type: "oauth", source: SEAT_AUTH_SOURCE };
+			// Pi reads this type to tell subscription from API billing (REQ-013).
+			const owned = await source.owns(id);
+			if (owned) return { type: owned === "api_key" ? "api_key" : "oauth", source: SEAT_AUTH_SOURCE };
 			if (!baseApiKey) return input.credential?.key ? { type: "api_key", source: "stored credential" } : undefined;
 			if (baseApiKey.check) return baseApiKey.check(input);
 			const resolved = await baseApiKey.resolve(input);
