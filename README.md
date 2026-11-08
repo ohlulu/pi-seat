@@ -98,7 +98,7 @@ PI_SEAT=console pi                    # pin one session to the key
 
 The key is refused if it is a Claude OAuth token (`sk-ant-oat…`) or an Admin key, or if Anthropic answers the check with anything but success. An API-key profile has no plan meters: the usage view and `seat` list it with a one-line note, and `x` has no reset to spend. Pi labels the session as API billing, not a subscription. Only `anthropic` takes API keys.
 
-If `~/.pi/agent/models.json` overrides the `anthropic` `user-agent` header, that header is also sent on API-key requests, and seat cannot strip it. Anthropic excludes interactive Claude Code from the monthly credit, so check your Console billing after the first turn.
+Do not override the `anthropic` `user-agent` header in `~/.pi/agent/models.json`. The header is also sent on API-key requests, and seat cannot strip it. With a `claude-cli/…` value, Anthropic bills the request as Claude Code, which the monthly credit does not cover, so it fails with `Your credit balance is too low` once the organization has no purchased credit. Pi's OAuth requests already send that user-agent on their own, so the override does nothing for them.
 
 A store holding an API-key profile cannot be read by pi-seat 0.5.0 or older. Remove the profile before downgrading.
 

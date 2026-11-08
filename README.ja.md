@@ -98,7 +98,7 @@ PI_SEAT=console pi                    # 1 つのセッションをこのキー�
 
 キーが Claude の OAuth トークン（`sk-ant-oat…`）や Admin キーの場合、または Anthropic の検証が成功を返さない場合は保存しません。API キーのプロファイルにはプランのメーターがありません。usage ビューと `seat` には一行の説明付きで表示され、`x` で使えるリセットもありません。Pi はこのセッションをサブスクリプションではなく API 課金として表示します。API キーを受け付けるのは `anthropic` だけです。
 
-`~/.pi/agent/models.json` で `anthropic` の `user-agent` ヘッダーを上書きしている場合、そのヘッダーは API キーのリクエストにも付き、seat では外せません。毎月のクレジットはインタラクティブな Claude Code を対象外としているため、最初のターンの後に Console の請求ページを確認してください。
+`~/.pi/agent/models.json` で `anthropic` の `user-agent` ヘッダーを上書きしないでください。このヘッダーは API キーのリクエストにも付き、seat では外せません。値が `claude-cli/…` だと Anthropic はリクエストを Claude Code として課金し、毎月のクレジットの対象外になるため、組織に購入済みクレジットがなければ `Your credit balance is too low` で失敗します。Pi の OAuth リクエストはもともとこの user-agent を送っているので、上書きは OAuth には何の効果もありません。
 
 API キーのプロファイルを含むストアは pi-seat 0.5.0 以前では読み込めません。ダウングレードする前にそのプロファイルを削除してください。
 
