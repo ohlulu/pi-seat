@@ -44,11 +44,15 @@ export type UsageAccountResult =
 	| { ok: true; usage: ClaudeUsage | CodexUsage }
 	/** `failed` distinguishes "we could not read it" (CLI exit 1) from an
 	 * expected state like Pi's own token having expired. `unmetered` marks a
-	 * working credential that simply has no plan meters: an API key (REQ-013). */
-	| { ok: false; hint: string; failed: boolean; unmetered?: true };
+	 * working credential that simply has no plan meters: an API key (REQ-013).
+	 * `href` turns the hint into a link. */
+	| { ok: false; hint: string; failed: boolean; unmetered?: true; href?: string };
+
+/** Anthropic exposes no balance API (DEC-015); the Console billing page is where it lives. */
+export const CONSOLE_BILLING_URL = "https://platform.claude.com/settings/billing";
 
 /** What an API-key profile shows instead of meters (REQ-013). */
-export const API_KEY_USAGE_HINT = "API key — no plan meters; usage bills to its Console organization";
+export const API_KEY_USAGE_HINT = "API key — no plan meters · balance: platform.claude.com/settings/billing";
 
 export interface UsageAccount {
 	provider: ProviderId;
@@ -196,7 +200,7 @@ function apiKeyAccount(slot: Slot & { kind: "profile" }): UsageAccount {
 		label: slot.label,
 		aliases: slot.aliases,
 		note: "API key",
-		result: { ok: false, hint: API_KEY_USAGE_HINT, failed: false, unmetered: true },
+		result: { ok: false, hint: API_KEY_USAGE_HINT, failed: false, unmetered: true, href: CONSOLE_BILLING_URL },
 	};
 }
 
@@ -314,7 +318,7 @@ export function renderAccountBlock(layout: Layout, account: UsageAccount, option
 				: renderCodexUsage(layout, account.result.usage as CodexUsage, options)),
 		);
 	} else {
-		lines.push(hintLine(layout, account.result.hint, options));
+		lines.push(hintLine(layout, account.result.hint, options, account.result.href));
 	}
 	return lines;
 }

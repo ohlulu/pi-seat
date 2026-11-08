@@ -96,7 +96,7 @@ seat login console --api-key          # CLI : lit la clé sur stdin sans écho, 
 PI_SEAT=console pi                    # épingle une session sur la clé
 ```
 
-La clé est refusée si c'est un jeton OAuth Claude (`sk-ant-oat…`) ou une clé Admin, ou si Anthropic ne répond pas par un succès à la vérification. Un profil à clé API n'a pas de jauges de forfait : la vue d'usage et `seat` l'affichent avec une note d'une ligne, et `x` n'a aucun reset à dépenser. Pi indique la session comme facturée à l'API, pas comme un abonnement. Seul `anthropic` accepte les clés API.
+La clé est refusée si c'est un jeton OAuth Claude (`sk-ant-oat…`) ou une clé Admin, ou si Anthropic ne répond pas par un succès à la vérification. Un profil à clé API n'a pas de jauges de forfait : la vue d'usage et `seat` l'affichent avec un lien cliquable vers la page de facturation de la Console, où se trouve le solde (Anthropic n'a pas d'API pour le lire), et `x` n'a aucun reset à dépenser. Pi indique la session comme facturée à l'API, pas comme un abonnement. Seul `anthropic` accepte les clés API.
 
 Ne remplacez pas l'en-tête `user-agent` d'`anthropic` dans `~/.pi/agent/models.json` : il part aussi avec les requêtes à clé API et seat ne peut pas le retirer. Avec une valeur `claude-cli/…`, Anthropic facture la requête comme du Claude Code, que le crédit mensuel ne couvre pas, et elle échoue avec `Your credit balance is too low` si l'organisation n'a pas de crédit acheté. Les requêtes OAuth de Pi envoient déjà ce user-agent d'elles-mêmes : le remplacer ne leur apporte rien.
 

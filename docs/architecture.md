@@ -185,6 +185,7 @@ Ownership fencing——lock compromised 後禁止 commit，失鎖狀態下寫入
 - 前綴判斷：pi-ai 只以 `sk-ant-oat` 認定 OAuth（見 §Pi compatibility），所以 Console 新發的 `sk-ant-usr-…` key 也走 `x-api-key`。validation 拒絕 `sk-ant-oat` 是因為它在 runtime 會被當成 OAuth 送出，拒絕 `sk-ant-admin` 是因為它不能呼叫 Messages API；其餘 `sk-ant-` 形狀交給 live check，不維護白名單。
 - Header 優先序：`models.json` 的 provider-level `headers` 在 Pi 的 composer 裡蓋在 request auth 之上（Pi 1.5.0 `provider-composer.js` 的 `withConfiguredAuth`），所以 seat 無法替 API-key request 換掉使用者設定的 `user-agent`。實測（2026-11）：同一把 key、同一個請求，不覆寫 UA 回 200，帶 `user-agent: claude-cli/2.1.280` 回 400 `Your credit balance is too low`——Anthropic 以 UA 把請求歸為 Claude Code，月 credit 不涵蓋，改扣 organization 自購的餘額。所以使用 API-key profile 時 `models.json` 不得覆寫 `anthropic` 的 `user-agent`；pi-ai 的 OAuth 路徑本來就自帶 `claude-cli/<version>`，覆寫它對 OAuth 沒有作用。這是 config 層的事，seat 拿不掉。
 - Auth 狀態：Pi 的 `isUsingSubscription` 讀的是 `apiKey.check` 回傳的 type。Seat 原本只要擁有 provider 就回 `oauth`，對 API-key profile 會讓 Pi 把 API 計費誤標成 subscription，所以 coordinator 的 `owns` 改為回傳被選中 profile 的 credential type。
+- 餘額：Anthropic 沒有回傳 credit 餘額的 API。Usage and Cost API（legacy `/v1/organizations/cost_report` 與 `/v1/organizations/analytics/cost`）只給扣 credit 前的歷史花費，且需要 Admin credential；實測 workspace 範圍的 `sk-ant-usr-` key 回 401 `The Admin API requires an Admin API key or an organization-scoped API key`。為一個不準的估算多存一把能管理整個 organization 的 Admin key 不划算，所以 API-key 列只給 Console billing 頁面的連結（OSC 8，跟著 `color` 開關）。
 - Satisfies: REQ-013, REQ-001, REQ-004, REQ-007。
 
 ## Related

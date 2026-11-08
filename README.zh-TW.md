@@ -96,7 +96,7 @@ seat login console --api-key          # CLI：從 stdin 讀 key 並關閉 echo�
 PI_SEAT=console pi                    # 把單一 session pin 在這把 key 上
 ```
 
-以下情況會拒絕存入：key 是 Claude OAuth token（`sk-ant-oat…`）或 Admin key，或 Anthropic 的驗證沒有回成功。API-key profile 沒有方案用量 meter：usage view 與 `seat` 只列出它並附一行說明，`x` 也沒有 reset 可用。Pi 會把這個 session 標成 API 計費，而不是 subscription。只有 `anthropic` 接受 API key。
+以下情況會拒絕存入：key 是 Claude OAuth token（`sk-ant-oat…`）或 Admin key，或 Anthropic 的驗證沒有回成功。API-key profile 沒有方案用量 meter：usage view 與 `seat` 只列出它，並附一條可點擊的 Console billing 頁面連結，餘額要到那裡看（Anthropic 沒有查餘額的 API），`x` 也沒有 reset 可用。Pi 會把這個 session 標成 API 計費，而不是 subscription。只有 `anthropic` 接受 API key。
 
 不要在 `~/.pi/agent/models.json` 覆寫 `anthropic` 的 `user-agent` header：API-key 請求也會帶上它，seat 拿不掉。值是 `claude-cli/…` 時，Anthropic 會把請求當成 Claude Code 計費，月 credit 不涵蓋，organization 沒有自購餘額就會回 `Your credit balance is too low`。Pi 的 OAuth 請求本來就會自帶這個 user-agent，覆寫它對 OAuth 沒有作用。
 

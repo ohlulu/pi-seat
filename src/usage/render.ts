@@ -35,22 +35,27 @@ export interface RenderOptions {
 	timeZone?: string;
 }
 
-export type Segment = readonly [text: string, code: string | undefined];
+/** `href` makes the segment an OSC 8 hyperlink; like color, only when `color` is on. */
+export type Segment = readonly [text: string, code: string | undefined, href?: string];
 
 function colorize(code: string | undefined, text: string, color: boolean): string {
 	return code !== undefined && color ? `${code}${text}${RESET}` : text;
 }
 
-/** One line of (text, color) segments, clipped so it cannot wrap. Color is
- * applied after clipping: escapes have no display width. */
+function hyperlink(href: string | undefined, text: string, color: boolean): string {
+	return href !== undefined && color ? `\x1b]8;;${href}\x07${text}\x1b]8;;\x07` : text;
+}
+
+/** One line of (text, color) segments, clipped so it cannot wrap. Color and
+ * links are applied after clipping: escapes have no display width. */
 export function emitLine(segments: readonly Segment[], width: number, color: boolean): string {
 	const parts: string[] = [];
 	let used = 0;
-	for (const [text, code] of segments) {
+	for (const [text, code, href] of segments) {
 		const room = width - used;
 		if (room <= 0) break;
 		const clipped = cellClip(text, room);
-		parts.push(colorize(code, clipped, color));
+		parts.push(hyperlink(href, colorize(code, clipped, color), color));
 		used += cellWidth(clipped);
 	}
 	return parts.join("").trimEnd();
@@ -236,11 +241,11 @@ export function detailLine(layout: Layout, label: string, value: string, options
 	);
 }
 
-export function hintLine(layout: Layout, text: string, options: RenderOptions): string {
+export function hintLine(layout: Layout, text: string, options: RenderOptions, href?: string): string {
 	return emitLine(
 		[
 			[" ".repeat(INDENT), undefined],
-			[text, DIM],
+			href !== undefined ? [text, DIM, href] : [text, DIM],
 		],
 		layout.width - 1,
 		options.color,

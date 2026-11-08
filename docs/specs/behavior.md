@@ -60,7 +60,7 @@ The store SHALL also hold named `anthropic` profiles whose credential is an Anth
 - Login：`/seat login <selector> --api-key [-a <alias>]…`（CLI `seat login <selector> --api-key …` 同義）不走 OAuth flow，改為讀一把 key。Extension 以 masked input 讀取（每字元顯示 `•`，key 永不出現在畫面上）；CLI 從 stdin 讀一行，stdin 是 TTY 時關閉 echo，所以 key 不會進 argv 或 shell history。既有 label 的覆蓋確認同 AC-013。
 - Validation：key SHALL start with `sk-ant-`，and SHALL NOT be an OAuth token（`sk-ant-oat…`，pi-ai 會把它當 OAuth 送出）or an Admin key（`sk-ant-admin…`，不能呼叫 Messages API）。Console 目前發 `sk-ant-api03-…` 與 `sk-ant-usr-…` 兩種形狀；其他 `sk-ant-` 形狀交給 live check 判斷。通過 prefix 後送一個 `GET /v1/models`（不產生 token 用量）；非 2xx 或網路失敗即拒絕儲存。
 - Runtime：API-key profile 沒有 refresh、沒有 expiry，[REQ-005](#req-005-single-flight-refresh) 的 refresh 與 [REQ-004](#req-004-fail-closed-runtime-application) 的 invalid_grant block 都不適用。Selection、overlay、sentinel 與 per-request provider（AC-034）跟 OAuth profile 相同，request 走 `x-api-key`。Seat 回報給 Pi 的 auth 狀態 SHALL be `api_key`, not OAuth，所以 Pi 不會把它當成 subscription。
-- Usage：API-key profile 沒有 plan meter。CLI 與 view 照樣列出該帳號，下方一行說明 `API key — no plan meters; usage bills to its Console organization`。這不算 failure（CLI exit code 不受影響），active 時照樣亮點。`--json` 不在 `profiles` 裡列它，`active` 照樣指名它。View 上對它按 `x` 只回報它沒有 banked reset，不發 request。`seat status --plain` 的 expires 欄是 `-`。
+- Usage：API-key profile 沒有 plan meter。CLI 與 view 照樣列出該帳號，下方一行說明 `API key — no plan meters · balance: platform.claude.com/settings/billing`；有色彩輸出時這行是指向 Console billing 頁面的 OSC 8 連結，因為 Anthropic 沒有可查餘額的 API（[DEC-015](../architecture.md#dec-015-api-key-profile-是-schema-v1-的第二種-credential)）。這不算 failure（CLI exit code 不受影響），active 時照樣亮點。`--json` 不在 `profiles` 裡列它，`active` 照樣指名它。View 上對它按 `x` 只回報它沒有 banked reset，不發 request。`seat status --plain` 的 expires 欄是 `-`。
 - Secrets：key 與 OAuth token 同一等級：存在 0600 的 store、所有錯誤訊息都經 redaction、永不印出。
 - Downgrade：store 仍是 version 1，只是多了一種 credential type。0.5.0 以前的 pi-seat 讀到含 API-key profile 的 store 會整份拒絕（全部 provider fail closed），刪掉該 profile 或升級即恢復；沒有 API-key profile 的 store 不受影響。
 
@@ -70,7 +70,7 @@ The store SHALL also hold named `anthropic` profiles whose credential is an Anth
 | AC-041 | `/seat login console --api-key` 或 `seat login console --api-key` | 輸入合法 key | live check 通過後 store 新增 `{ type: "api_key", key }` profile；key 不出現在畫面、stdout、stderr 或 argv；`auth.json` 未變 |
 | AC-042 | 輸入 `sk-ant-oat…`、`sk-ant-admin…`、非 `sk-ant-` 開頭的字串，或 live check 回非 2xx | login | 拒絕、store 未變、錯誤訊息不含 key |
 | AC-043 | pin 或 default 指向 API-key profile | turn 與 subagent child 的 request | request auth 是該 key、零 refresh request；Pi 的 auth check 回報 `api_key` |
-| AC-044 | API-key profile 存在 | `seat`、`/seat` view、在該列按 `x` | 該列顯示 no-plan-meters 說明，active 時亮點；CLI exit 0；`x` 零 request |
+| AC-044 | API-key profile 存在 | `seat`、`/seat` view、在該列按 `x` | 該列顯示 no-plan-meters 說明，有色彩時是 billing 頁面的連結、無色彩時是純文字網址，active 時亮點；CLI exit 0；`x` 零 request |
 
 ## Selection & runtime
 
