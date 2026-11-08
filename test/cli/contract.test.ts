@@ -123,6 +123,7 @@ function makeCli(
 			},
 			input: async () => undefined,
 			secret: async () => undefined,
+			interactive: true,
 		},
 		termWidth: 80,
 		color: false,
@@ -470,6 +471,49 @@ describe("REQ-013: API-key profiles via CLI", () => {
 		expect(await cli.run("login", "console", "--api-key")).toBe(1);
 		expect(prompted).toBe(1);
 		expect(cli.errs.some((e) => e.includes("login cancelled"))).toBe(true);
+	});
+
+	test("a piped key cannot replace an existing profile: the confirmation would eat it", async () => {
+		const cli = makeCli();
+		cli.deps.io.interactive = false; // `pbpaste | seat login …`
+		let prompted = 0;
+		cli.deps.io.secret = async () => {
+			prompted += 1;
+			return KEY;
+		};
+		const before = cli.backend.read((c) => c);
+
+		expect(await cli.run("login", "work", "--api-key")).toBe(1);
+		expect(prompted).toBe(0);
+		expect(cli.confirms).toEqual([]);
+		expect(cli.errs.join("\n")).toContain("needs a terminal for the confirmation");
+		expect(cli.backend.read((c) => c)).toBe(before);
+
+		// A new label has nothing to confirm, so a pipe is fine there.
+		withModelsEndpoint(cli, 200);
+		expect(await cli.run("login", "console", "-k")).toBe(0);
+		expect(prompted).toBe(1);
+		expect(cli.backend.read((c) => decodeStore(c)).providers.anthropic?.profiles["console"]).toEqual({ type: "api_key", key: KEY });
+	});
+
+	test("a key on the command line is refused for every command, never echoed", async () => {
+		for (const argv of [
+			["login", "console", "--api-key", KEY],
+			["login", "console", KEY],
+			["use", KEY],
+			[KEY],
+		]) {
+			const cli = makeCli();
+			let prompted = 0;
+			cli.deps.io.secret = async () => {
+				prompted += 1;
+				return undefined;
+			};
+			expect(await cli.run(...argv)).toBe(1);
+			expect(prompted).toBe(0);
+			expect(cli.errs.join("\n")).toContain("never takes a key as an argument");
+			expect([...cli.out, ...cli.errs].join("\n")).not.toContain(KEY);
+		}
 	});
 
 	test("AC-044: status marks the key profile; usage shows its row and still exits 0", async () => {

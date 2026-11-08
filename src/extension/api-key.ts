@@ -21,6 +21,34 @@ import { redactTokenText } from "../store/redact.ts";
 import { CommandError } from "./commands.ts";
 
 export const ANTHROPIC_MODELS_URL = "https://api.anthropic.com/v1/models?limit=1";
+
+/** `login` switches to the key flow on either spelling. */
+export const API_KEY_FLAGS: readonly string[] = ["--api-key", "-k"];
+
+/** Strip the key-flow flag from a `login` argument list. */
+export function takeApiKeyFlag(tokens: readonly string[]): { apiKey: boolean; rest: string[] } {
+	return {
+		apiKey: tokens.some((token) => API_KEY_FLAGS.includes(token)),
+		rest: tokens.filter((token) => !API_KEY_FLAGS.includes(token)),
+	};
+}
+
+/** A token shaped like a provider secret (Anthropic `sk-ant-…`, or any long `sk-…`). */
+export function looksLikeSecret(token: string): boolean {
+	return token.startsWith("sk-ant-") || /^sk-[A-Za-z0-9_-]{20,}$/.test(token);
+}
+
+/**
+ * Refuse a command line carrying a key, without echoing it. Every later error
+ * path (usage text, "no profile or alias …") would otherwise print it back,
+ * and by now it is already in the shell or Pi input history.
+ */
+export function assertNoSecretArguments(tokens: readonly string[]): void {
+	if (!tokens.some(looksLikeSecret)) return;
+	throw new CommandError(
+		"a key was given on the command line; seat never takes a key as an argument. It may be in your shell or Pi input history now: revoke it in the Console, then run `login <label> --api-key` and paste the new key at the prompt",
+	);
+}
 export const ANTHROPIC_API_VERSION = "2023-06-01";
 export const API_KEY_VERIFY_TIMEOUT_MS = 10_000;
 

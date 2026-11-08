@@ -42,6 +42,7 @@ Per-request provider（[DEC-013](#dec-013-seat-auth-rides-a-registered-provider)
 - `CredentialStore.modify` 的 callback 回傳 `undefined` 表示「不改變 entry」（`AuthStorage.modify` 實證不寫檔）。Seat 擁有 provider 時，`oauth.refresh` 就回傳 `undefined`。這違反 `OAuthAuth.refresh` 宣告的回傳型別，是整個設計最脆弱的一點：Pi 若改成「空值即登出」，seat-owned provider 會變成未設定，表現是 fail-closed 而非退回 `auth.json`。
 - 私有：`ModelRuntime.builtins`（structural cast 讀取）。Seat 包的是 Pi 自己會用的那個 instance，remote-catalog wrapper 在內、`models.json` override 尚未套用，所以 override 仍只在 seat 之上 compose 一次。缺少這個 slice 時不註冊，parent 仍由 overlay 保護，child 退回修正前的行為。
 - Pi 在 `/reload` 時不清除已註冊的 provider，所以 seat 在 `session_shutdown` 歸還。
+- 私有：pi-tui `Input` 的 `cursor` 欄位（masked API-key 輸入用來畫游標，`src/extension/secret-input.ts`）。`Input` 沒有公開的 cursor accessor；欄位不存在時退回「游標在尾端」，只影響游標顯示，不影響輸入的值。
 - pi-ai 的 Anthropic transport 只看 key 的前綴決定 auth 形式（Pi 1.5.0 `anthropic-messages.js` `isOAuthToken = apiKey.includes("sk-ant-oat")`）：OAuth token 走 Bearer + Claude Code identity，其他字串走 `x-api-key`。API-key profile（[DEC-015](#dec-015-api-key-profile-是-schema-v1-的第二種-credential)）靠的就是這一點，seat 不需要也無法告訴 transport credential 的種類。
 
 ## Decisions

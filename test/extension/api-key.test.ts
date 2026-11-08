@@ -10,11 +10,13 @@ import {
 	apiKeyCredential,
 	apiKeyShapeProblem,
 	assertApiKeyProvider,
+	looksLikeSecret,
+	takeApiKeyFlag,
 	verifyApiKey,
 } from "../../src/extension/api-key.ts";
 import { SECRET_INPUT_LEGEND, SecretInput } from "../../src/extension/secret-input.ts";
 import { redactTokenText } from "../../src/store/redact.ts";
-import { visibleCellWidth } from "../../src/usage/cells.ts";
+import { stripAnsi, visibleCellWidth } from "../../src/usage/cells.ts";
 
 const KEY = "sk-ant-api03-FAKE-test-key-0000";
 
@@ -54,6 +56,23 @@ describe("REQ-013: key shape", () => {
 	test("only anthropic takes an API key", () => {
 		expect(() => assertApiKeyProvider("anthropic")).not.toThrow();
 		expect(() => assertApiKeyProvider("openai-codex")).toThrow("OAuth only");
+	});
+});
+
+describe("REQ-013: command-line guards", () => {
+	test("secret-shaped tokens are recognised; labels and flags are not", () => {
+		expect(looksLikeSecret("sk-ant-api03-abc")).toBe(true);
+		expect(looksLikeSecret("sk-ant-usr-abc")).toBe(true);
+		expect(looksLikeSecret("sk-proj-0123456789abcdefghijkl")).toBe(true);
+		for (const token of ["sk", "sk-test", "work", "api-ohlulu", "-k", "--api-key", "anthropic:console"]) {
+			expect(looksLikeSecret(token)).toBe(false);
+		}
+	});
+
+	test("--api-key and -k both select the key flow and are stripped", () => {
+		expect(takeApiKeyFlag(["console", "-k", "-a", "c"])).toEqual({ apiKey: true, rest: ["console", "-a", "c"] });
+		expect(takeApiKeyFlag(["console", "--api-key"])).toEqual({ apiKey: true, rest: ["console"] });
+		expect(takeApiKeyFlag(["console"])).toEqual({ apiKey: false, rest: ["console"] });
 	});
 });
 
@@ -116,9 +135,10 @@ describe("REQ-013: masked input", () => {
 		view.handleInput("s");
 		view.handleInput("k");
 		view.handleInput(`\x1b[200~${KEY.slice(2)}\x1b[201~`);
-		const rows = view.render(80);
+		const rows = view.render(200);
 		expect(rows.join("\n")).not.toContain("sk-");
-		expect(rows[1]).toBe(`> ${"•".repeat(KEY.length)}`);
+		expect(stripAnsi(rows[1]!)).toBe(`> ${"•".repeat(KEY.length)} `); // the trailing cell is the cursor
+		expect(rows[1]!.endsWith("\x1b[7m \x1b[27m")).toBe(true);
 		expect(rows[2]).toBe(SECRET_INPUT_LEGEND);
 
 		view.handleInput("\r");
@@ -129,10 +149,26 @@ describe("REQ-013: masked input", () => {
 		const { view, result } = open();
 		for (const char of "abc") view.handleInput(char);
 		view.handleInput("\x7f");
-		expect(view.render(80)[1]).toBe("> ••");
+		expect(stripAnsi(view.render(80)[1]!)).toBe("> •• ");
 		view.handleInput("\x1b");
 		expect(result.cancelled).toBe(true);
 		expect(result.submitted).toBeUndefined();
+	});
+
+	test("the cursor is drawn where Input will edit, and a long key scrolls to keep it in view", () => {
+		const { view } = open();
+		for (const char of "abcd") view.handleInput(char);
+		view.handleInput("\x1b[D"); // left
+		view.handleInput("\x1b[D");
+		expect(view.render(80)[1]).toBe("> ••\x1b[7m•\x1b[27m• ");
+
+		const long = open().view;
+		long.handleInput(`\x1b[200~${KEY.repeat(4)}\x1b[201~`);
+		const end = long.render(20)[1]!;
+		expect(visibleCellWidth(end)).toBe(20);
+		expect(end.endsWith("\x1b[7m \x1b[27m")).toBe(true); // cursor at the end, in view
+		long.handleInput("\x01"); // ctrl+a: line start
+		expect(long.render(20)[1]!.startsWith("> \x1b[7m•\x1b[27m")).toBe(true);
 	});
 
 	test("no row overflows at any width", () => {

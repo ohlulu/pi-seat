@@ -96,6 +96,8 @@ seat login console --api-key          # CLI: reads the key from stdin with echo 
 PI_SEAT=console pi                    # pin one session to the key
 ```
 
+`-k` is short for `--api-key`. Never put the key on the command line: seat refuses any argument shaped like a key, because it is already in your shell or Pi input history by then. Revoke that key and paste a new one at the prompt. To replace a profile's key from a pipe, `seat rm` it first; the overwrite confirmation needs a terminal.
+
 The key is refused if it is a Claude OAuth token (`sk-ant-oat…`) or an Admin key, or if Anthropic answers the check with anything but success. An API-key profile has no plan meters: the usage view and `seat` list it with a clickable link to the Console billing page, where the balance is (Anthropic has no API for it), and `x` has no reset to spend. Pi labels the session as API billing, not a subscription. Only `anthropic` takes API keys.
 
 Do not override the `anthropic` `user-agent` header in `~/.pi/agent/models.json`. The header is also sent on API-key requests, and seat cannot strip it. With a `claude-cli/…` value, Anthropic bills the request as Claude Code, which the monthly credit does not cover, so it fails with `Your credit balance is too low` once the organization has no purchased credit. Pi's OAuth requests already send that user-agent on their own, so the override does nothing for them.

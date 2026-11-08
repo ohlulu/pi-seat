@@ -341,6 +341,27 @@ describe("AC-041 / AC-042: /seat login --api-key (REQ-013)", () => {
 		expect(f.notices.some((n) => n.includes("login cancelled"))).toBe(true);
 	});
 
+	test("-k is --api-key", async () => {
+		const backend = seededBackend();
+		const f = fakeCtx("tui");
+		await loginWithKey(f, "login console -k", deps(backend, { fetchOptions: { fetchImpl: modelsEndpoint(200).fetchImpl } }), [KEY, "\r"]);
+		expect(backend.read((c) => decodeStore(c)).providers.anthropic?.profiles["console"]).toEqual({ type: "api_key", key: KEY });
+	});
+
+	test("a key typed into the command itself is refused and never echoed", async () => {
+		for (const args of [`login console --api-key ${KEY}`, `use ${KEY}`, KEY]) {
+			const backend = seededBackend();
+			const before = backend.read((c) => c);
+			const f = fakeCtx("tui");
+			await runSeatCommand(args, f.ctx, deps(backend));
+
+			expect(f.customs).toHaveLength(0);
+			expect(backend.read((c) => c)).toBe(before);
+			expect(f.notices.some((n) => n.includes("never takes a key as an argument"))).toBe(true);
+			for (const notice of f.notices) expect(notice).not.toContain(KEY);
+		}
+	});
+
 	test("openai-codex and non-TUI sessions are refused before any key is read", async () => {
 		const backend = seededBackend();
 		const tui = fakeCtx("tui");

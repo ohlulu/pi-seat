@@ -16,7 +16,7 @@ import { parseSelector, resolveSelection } from "../store/selector.ts";
 import type { UsageFetchOptions } from "../usage/fetch.ts";
 import { selectionSummary } from "../usage/report.ts";
 import { adapterFor, toRefreshCallback, type SeatProviderAdapter } from "./oauth.ts";
-import { apiKeyCredential, assertApiKeyProvider } from "./api-key.ts";
+import { apiKeyCredential, assertApiKeyProvider, assertNoSecretArguments, takeApiKeyFlag } from "./api-key.ts";
 import { SecretInput } from "./secret-input.ts";
 import { openBrowser, type BrowserOpener } from "./open-browser.ts";
 import { UsageView } from "./usage-view.ts";
@@ -55,6 +55,7 @@ export const SEAT_COMMAND_DESCRIPTION = "Manage seat account profiles (use/login
 export async function runSeatCommand(args: string, ctx: ExtensionCommandContext, deps: SeatCommandDeps): Promise<void> {
 	const tokens = args.trim().split(/\s+/).filter((t) => t.length > 0);
 	try {
+		assertNoSecretArguments(tokens);
 		// REQ-010: bare /seat, /seat status and /seat usage open the view in a TUI;
 		// everywhere else they stay text. /seat whoami is offline by contract and
 		// never opens anything.
@@ -70,7 +71,7 @@ export async function runSeatCommand(args: string, ctx: ExtensionCommandContext,
 		switch (head) {
 			case "help":
 				ctx.ui.notify(
-					"usage: /seat [use] <selector> [-a <alias>]… | login <selector> [--api-key] [-a <alias>]… | rm <selector> | rename <old> <new> | status",
+					"usage: /seat [use] <selector> [-a <alias>]… | login <selector> [--api-key|-k] [-a <alias>]… | rm <selector> | rename <old> <new> | status",
 					"info",
 				);
 				return;
@@ -146,14 +147,9 @@ async function handleUse(rest: string[], ctx: ExtensionCommandContext, deps: Sea
 	ctx.ui.notify(`seat: ${describeUseResult(result, deps.pins)}`, "info");
 }
 
-const API_KEY_FLAG = "--api-key";
-
 async function handleLogin(rest: string[], ctx: ExtensionCommandContext, deps: SeatCommandDeps): Promise<void> {
-	const apiKey = rest.includes(API_KEY_FLAG);
-	const { selector, aliases } = parseSelectorWithAliases(
-		rest.filter((token) => token !== API_KEY_FLAG),
-		"usage: /seat login <selector> [--api-key] [-a <alias>]…",
-	);
+	const { apiKey, rest: args } = takeApiKeyFlag(rest);
+	const { selector, aliases } = parseSelectorWithAliases(args, "usage: /seat login <selector> [--api-key|-k] [-a <alias>]…");
 	// Validate grammar and charset, then run the overwrite check, all BEFORE the
 	// OAuth flow or the key prompt — neither is wasted on a login the user then
 	// declines to store (AC-013). The check is a pure read; the final locked

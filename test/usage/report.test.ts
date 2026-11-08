@@ -21,7 +21,7 @@ import { emptyStore, type SeatOAuthCredential } from "../../src/store/schema.ts"
 import { FileSeatStorageBackend, decodeStore, encodeStore } from "../../src/store/storage.ts";
 import type { RefreshCallback } from "../../src/store/refresh.ts";
 import { createStoreSchedule } from "../../src/store/scheduler.ts";
-import { API_KEY_USAGE_HINT, CONSOLE_BILLING_URL, collectUsage, isLive, renderAccountBlock, usageSections } from "../../src/usage/report.ts";
+import { API_KEY_BALANCE_LINK, API_KEY_USAGE_HINT, CONSOLE_BILLING_URL, collectUsage, isLive, renderAccountBlock, usageSections } from "../../src/usage/report.ts";
 import { planLayout } from "../../src/usage/layout.ts";
 import { visibleCellWidth } from "../../src/usage/cells.ts";
 import { asOAuth } from "../helpers/credentials.ts";
@@ -219,7 +219,7 @@ describe("AC-044: an API-key profile in the walk (REQ-013)", () => {
 		expect(anthropic.map((a) => a.name)).toEqual(["console", "work"]); // the selection leads
 		expect(anthropic[0]).toMatchObject({
 			note: "API key",
-			result: { ok: false, hint: API_KEY_USAGE_HINT, failed: false, unmetered: true, href: CONSOLE_BILLING_URL },
+			result: { ok: false, hint: API_KEY_USAGE_HINT, failed: false, unmetered: true, link: { text: API_KEY_BALANCE_LINK.text, href: CONSOLE_BILLING_URL } },
 		});
 		expect(fetched).toEqual(["Bearer at-work"]); // only the OAuth profile hit the endpoint
 		expect(refreshed).toEqual([]);
@@ -227,13 +227,19 @@ describe("AC-044: an API-key profile in the walk (REQ-013)", () => {
 		const sections = usageSections(store, {});
 		const block = renderAccountBlock(planLayout(80), anthropic[0]!, { color: false, now: () => new Date() }, isLive(sections, anthropic[0]!));
 		expect(block[0]).toContain("● console");
-		expect(block.join("\n")).toContain("no plan meters");
+		expect(block[1]).toContain("no plan meters");
+		expect(block[2]?.trim()).toBe("balance: platform.claude.com/settings/billing");
 		expect(block.join("\n")).not.toContain("sk-ant-");
 		expect(block.join("\n")).not.toContain("\x1b]8;"); // no color, no link escapes
 
 		// With color, the hint is an OSC 8 link to the billing page and still fits its row.
 		const linked = renderAccountBlock(planLayout(80), anthropic[0]!, { color: true, now: () => new Date() }, true);
-		expect(linked[1]).toContain(`\x1b]8;;${CONSOLE_BILLING_URL}\x07`);
+		expect(linked[1]).not.toContain("\x1b]8;");
+		expect(linked[2]).toContain(`\x1b]8;;${CONSOLE_BILLING_URL}\x07`);
+
+		// AC-044: the plain URL survives a narrow terminal on its own row.
+		const narrow = renderAccountBlock(planLayout(50), anthropic[0]!, { color: false, now: () => new Date() }, true);
+		expect(narrow[2]).toContain("platform.claude.com/settings/billing");
 		for (const width of [8, 20, 40, 80, 120]) {
 			const rows = renderAccountBlock(planLayout(width), anthropic[0]!, { color: true, now: () => new Date() }, true);
 			for (const row of rows) expect(visibleCellWidth(row)).toBeLessThanOrEqual(width);

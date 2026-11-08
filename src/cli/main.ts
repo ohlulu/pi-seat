@@ -8,7 +8,7 @@
  *   seat status [--plain]               --plain: Anthropic-only 4-col TSV
  *   seat whoami [--plain]               offline: default + pin per provider
  *   seat use <selector> [-a|--alias <alias>]… | seat <selector> [-a …]
- *   seat login <selector> [--api-key] [-a|--alias <alias>]…
+ *   seat login <selector> [--api-key|-k] [-a|--alias <alias>]…
  *   seat rm <selector> [--force|--no-input]
  *   seat rename <old-selector> <new-label>
  *
@@ -31,7 +31,7 @@ import {
 	useSelection,
 } from "../extension/commands.ts";
 import { adapterFor, createSeatProviderAdapters, toRefreshCallback, type SeatProviderAdapter } from "../extension/oauth.ts";
-import { apiKeyCredential, assertApiKeyProvider } from "../extension/api-key.ts";
+import { apiKeyCredential, assertApiKeyProvider, assertNoSecretArguments, takeApiKeyFlag } from "../extension/api-key.ts";
 import type { UsageFetchOptions } from "../usage/fetch.ts";
 import { UsageReportRows, collectUsage, selectionSummary, usageSections } from "../usage/report.ts";
 import type { RenderOptions } from "../usage/render.ts";
@@ -55,6 +55,8 @@ export interface CliIo {
 	input(question: string): Promise<string | undefined>;
 	/** Secret prompt (REQ-013): never echoed, never taken from argv. */
 	secret(question: string): Promise<string | undefined>;
+	/** stdin is a terminal: a confirmation and a piped key cannot share one stdin. */
+	interactive: boolean;
 }
 
 export interface CliDeps {
@@ -95,6 +97,7 @@ export function defaultDeps(): CliDeps {
 				process.stderr.write(`${question}: `);
 				return readSecretLine();
 			},
+			interactive: Boolean(process.stdin.isTTY),
 		},
 		termWidth: process.stdout.columns || Number(process.env["COLUMNS"]) || 80,
 		color: Boolean(process.stdout.isTTY) && process.env["NO_COLOR"] === undefined,
@@ -147,6 +150,7 @@ async function readSecretLine(): Promise<string | undefined> {
 export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
 	const [head, ...rest] = argv;
 	try {
+		assertNoSecretArguments(argv);
 		if (head === undefined) return await cmdUsage([], deps);
 		switch (head) {
 			case "-h":
@@ -232,7 +236,7 @@ function printHelp(io: CliIo): void {
 			"  seat                                   usage (shorthand)",
 			"  seat <selector> [-a <alias>]…          switch default (shorthand)",
 			"  seat use <selector> [-a <alias>]…",
-			"  seat login <selector> [--api-key] [-a <alias>]…",
+			"  seat login <selector> [--api-key|-k] [-a <alias>]…",
 			"  seat rm <selector> [--force|--no-input]",
 			"  seat rename <old-selector> <new-label>",
 			"  seat usage [--json]",
@@ -321,11 +325,8 @@ async function cmdRm(rest: string[], deps: CliDeps): Promise<number> {
 }
 
 async function cmdLogin(rest: string[], deps: CliDeps): Promise<number> {
-	const apiKey = rest.includes("--api-key");
-	const { selector, aliases } = parseSelectorWithAliases(
-		rest.filter((token) => token !== "--api-key"),
-		"usage: seat login <selector> [--api-key] [-a <alias>]…",
-	);
+	const { apiKey, rest: args } = takeApiKeyFlag(rest);
+	const { selector, aliases } = parseSelectorWithAliases(args, "usage: seat login <selector> [--api-key|-k] [-a <alias>]…");
 	const parsed = parseSelector(selector);
 	if (apiKey) assertApiKeyProvider(parsed.provider);
 	const exists = deps.backend.read((current) => {
@@ -334,6 +335,12 @@ async function cmdLogin(rest: string[], deps: CliDeps): Promise<number> {
 	});
 	let confirmedOverwrite = false;
 	if (exists) {
+		// A piped key would be read as the answer to this prompt.
+		if (apiKey && !deps.io.interactive) {
+			throw new CommandError(
+				`profile "${parsed.name}" already exists; replacing its key needs a terminal for the confirmation. Run it without a pipe, or \`seat rm ${selector}\` first`,
+			);
+		}
 		const ok = await deps.io.confirm(`Profile "${parsed.name}" already exists. Overwrite its credential?`);
 		if (!ok) {
 			deps.io.err("seat: login cancelled; existing profile kept");
