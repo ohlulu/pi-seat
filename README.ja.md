@@ -104,6 +104,25 @@ PI_SEAT=console pi                    # 1 つのセッションをこのキー�
 
 API キーのプロファイルを含むストアは pi-seat 0.5.0 以前では読み込めません。ダウングレードする前にそのプロファイルを削除してください。
 
+### API キーの使用額
+
+Anthropic には残高を返す API はありませんが、Admin API はキーごとの使用額を返します。API キーのプロファイルに月次サイクルと、そのキーが属する Console organization の Admin key を設定すると、usage view と `seat` は billing リンクの代わりに今のサイクルの使用額を表示します。
+
+```sh
+seat since console 11/27/2026         # 2026-11-27 でも可。毎月 27 日に新しいサイクルが始まる
+seat admin-key console                # Admin key を echo なしの stdin から読み、保存前に検証
+```
+
+```
+● console · API key
+  spent $23.47 since 2026-11-27
+  resets 2026-12-27 · data as of 14:05
+```
+
+サイクルは `since` を実行したマシンのタイムゾーンで 00:00 に始まります。その日がない月は月末日に次のサイクルが始まります。Admin key は 1 つの Console organization に属するため、API キーのプロファイルごとに設定します。2 つの organization のキーには Admin key が 2 本必要です。Console の Settings → Admin keys で作成してください。Admin API は organization アカウントだけが使え、個人アカウントでは使えません。ほかの認証情報と同じく `seat.json` に保存され、表示されることはなく、organization のキー一覧と使用額の取得にだけ使われます。`seat admin-key console --rm` で削除できます。Anthropic の使用額データは最大 24 時間（通常 4 時間以内）遅れるため、データ時刻を表示します。Pi の中では `/seat since` と `/seat admin-key` が同じ働きをします。
+
+サイクルか Admin key を設定した store は pi-seat 0.6.0 以前では読めません。ダウングレード前に各プロファイルで `seat since <label> --clear` と `seat admin-key <label> --rm` を実行してください。
+
 ## 安全設計
 
 プロファイルは `~/.pi/agent/seat.json`（0600、ファイルロック、アトミック書き込み）に保存されます。API キーもここに保存され、表示されることはありません。各 OAuth プロファイルはグラントを専有し、Pi の `auth.json` との間でクレデンシャルを複製することはありません。Anthropic のリフレッシュトークンはシングルユースであり、グラントを共有すると二重消費が必ず発生するためです。トークンのリフレッシュはプロセスをまたいでシングルフライトです。

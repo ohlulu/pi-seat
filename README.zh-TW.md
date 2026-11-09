@@ -104,6 +104,25 @@ PI_SEAT=console pi                    # 把單一 session pin 在這把 key 上
 
 含 API-key profile 的 store 無法被 pi-seat 0.5.0 以前的版本讀取，降版前請先移除該 profile。
 
+### API key 已花費
+
+Anthropic 沒有查詢剩餘餘額的 API，但 Admin API 會回報一把 key 花了多少。替 API-key profile 設定每月週期，再加上它所屬 Console organization 的 Admin key，usage view 和 `seat` 就會顯示本週期開始以來的花費，取代 billing 連結。
+
+```sh
+seat since console 11/27/2026         # 或 2026-11-27；每月 27 日開始新週期
+seat admin-key console                # 從 stdin 讀 Admin key 並關閉 echo，存入前先驗證
+```
+
+```
+● console · API key
+  spent $23.47 since 2026-11-27
+  resets 2026-12-27 · data as of 14:05
+```
+
+週期從執行 `since` 那台機器所在時區的 00:00 開始；當月沒有那一天時，下個週期從當月最後一天開始。Admin key 屬於單一 Console organization，所以每個 API-key profile 各自綁一把：分屬兩個 organization 的 API key 需要兩把 Admin key。到 Console 的 Settings → Admin keys 建立；Admin API 只開放給 organization 帳號，個人帳號不能用。它和其他 credential 一起存在 `seat.json`，永不印出，只用來列出 organization 的 key 和讀取花費，`seat admin-key console --rm` 即可刪除。Anthropic 的花費資料最多延遲 24 小時（通常 4 小時內），所以畫面會顯示資料時間。在 Pi 裡用 `/seat since` 與 `/seat admin-key` 效果相同。
+
+設定過週期或 Admin key 的 store，pi-seat 0.6.0 以前的版本無法讀取：降版前請對每個 profile 執行 `seat since <label> --clear` 與 `seat admin-key <label> --rm`。
+
 ## 安全設計
 
 Profile 存於 `~/.pi/agent/seat.json`（0600、file lock、atomic write）。API key 也存在這裡，永不印出。每個 OAuth profile 獨佔一份 grant——credential 永不與 Pi 的 `auth.json` 互相複製，因為 Anthropic refresh token 是 single-use，共享 grant 必然導致 double-spend。跨 process 的 token refresh 為 single-flight。

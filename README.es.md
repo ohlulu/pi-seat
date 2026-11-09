@@ -104,6 +104,25 @@ No sobrescribas el header `user-agent` de `anthropic` en `~/.pi/agent/models.jso
 
 pi-seat 0.5.0 o anterior no puede leer un almacén que contenga un perfil con API key. Elimina ese perfil antes de bajar de versión.
 
+### Gasto de las API keys
+
+Anthropic no tiene una API para el saldo restante, pero su Admin API informa cuánto ha gastado cada key. Asigna a un perfil con API key un ciclo mensual y la Admin key de su organización de Console, y la vista de uso y `seat` mostrarán el gasto desde el inicio del ciclo en lugar del enlace de facturación.
+
+```sh
+seat since console 11/27/2026         # o 2026-11-27; cada mes empieza un ciclo nuevo el día 27
+seat admin-key console                # Admin key desde stdin sin eco, verificada antes de guardarla
+```
+
+```
+● console · API key
+  spent $23.47 since 2026-11-27
+  resets 2026-12-27 · data as of 14:05
+```
+
+El ciclo empieza a las 00:00 en la zona horaria de la máquina que ejecutó `since`, y en un mes sin ese día el siguiente ciclo empieza el último día. Una Admin key pertenece a una sola organización de Console, así que cada perfil con API key lleva la suya: dos API keys de dos organizaciones necesitan dos Admin keys. Créala en Console, en Settings → Admin keys; la Admin API solo está disponible para cuentas de organización, no individuales. Se guarda en `seat.json` junto a las demás credenciales, nunca se imprime, solo sirve para listar las keys de la organización y leer el gasto, y se elimina con `seat admin-key console --rm`. Los datos de gasto de Anthropic llegan con hasta 24 horas de retraso (normalmente menos de 4), por eso se muestra la hora de los datos. Dentro de Pi, `/seat since` y `/seat admin-key` hacen lo mismo.
+
+pi-seat 0.6.0 o anterior no puede leer un store con un ciclo o una Admin key: antes de bajar de versión, ejecuta `seat since <label> --clear` y `seat admin-key <label> --rm` para cada perfil.
+
 ## Diseño de seguridad
 
 Los perfiles viven en `~/.pi/agent/seat.json` (0600, bloqueo de archivo, escrituras atómicas). Las API keys también se guardan ahí y nunca se imprimen. Cada perfil OAuth posee un grant exclusivo: las credenciales nunca se copian desde ni hacia el `auth.json` de Pi, porque los refresh tokens de Anthropic son de un solo uso y un grant compartido provocaría un doble gasto. Los refrescos de token son single-flight entre procesos.

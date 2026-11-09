@@ -104,6 +104,25 @@ Do not override the `anthropic` `user-agent` header in `~/.pi/agent/models.json`
 
 A store holding an API-key profile cannot be read by pi-seat 0.5.0 or older. Remove the profile before downgrading.
 
+### API-key spend
+
+Anthropic has no API for the remaining balance, but its Admin API reports what a key has spent. Give an API-key profile a monthly cycle and the Admin key of its Console organization, and the usage view and `seat` show its spend since the cycle started instead of the billing link.
+
+```sh
+seat since console 11/27/2026         # or 2026-11-27; a new cycle starts on the 27th of every month
+seat admin-key console                # Admin key from stdin with echo off, checked before it is stored
+```
+
+```
+● console · API key
+  spent $23.47 since 2026-11-27
+  resets 2026-12-27 · data as of 14:05
+```
+
+The cycle starts at 00:00 in the time zone of the machine that ran `since`, and a month without the anchor day starts the next cycle on its last day. An Admin key belongs to one Console organization, so each API-key profile carries its own: API keys in two organizations need two Admin keys. Create one in the Console under Settings → Admin keys; the Admin API is only available to organization accounts, not individual ones. It is stored in `seat.json` beside the other credentials, never printed, used only to list the organization's keys and read cost, and removed with `seat admin-key console --rm`. Anthropic's cost data lags by up to 24 hours (usually under 4), which is why the data time is shown. `/seat since` and `/seat admin-key` do the same inside Pi.
+
+A store with a cycle or an Admin key cannot be read by pi-seat 0.6.0 or older: run `seat since <label> --clear` and `seat admin-key <label> --rm` for each profile before downgrading.
+
 ## How it stays safe
 
 Profiles live in `~/.pi/agent/seat.json` (0600, file-locked, atomic writes). API keys are stored there too and are never printed. Every OAuth profile owns an exclusive grant — credentials are never copied from or into Pi's `auth.json`, because Anthropic refresh tokens are single-use and a shared grant would double-spend. Token refreshes are single-flight across processes.

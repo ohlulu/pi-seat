@@ -104,6 +104,25 @@ Ne remplacez pas l'en-tête `user-agent` d'`anthropic` dans `~/.pi/agent/models.
 
 pi-seat 0.5.0 ou antérieur ne sait pas lire un store contenant un profil à clé API. Supprimez ce profil avant de revenir à une version antérieure.
 
+### Dépenses des clés API
+
+Anthropic n'a pas d'API pour le solde restant, mais son Admin API indique ce qu'une clé a dépensé. Donnez à un profil à clé API un cycle mensuel et l'Admin key de son organisation Console : la vue d'usage et `seat` affichent alors la dépense depuis le début du cycle à la place du lien de facturation.
+
+```sh
+seat since console 11/27/2026         # ou 2026-11-27 ; un nouveau cycle commence le 27 de chaque mois
+seat admin-key console                # Admin key lue sur stdin sans écho, vérifiée avant d'être enregistrée
+```
+
+```
+● console · API key
+  spent $23.47 since 2026-11-27
+  resets 2026-12-27 · data as of 14:05
+```
+
+Le cycle commence à 00:00 dans le fuseau horaire de la machine qui a lancé `since`, et un mois sans ce jour commence le cycle suivant à son dernier jour. Une Admin key appartient à une seule organisation Console, donc chaque profil à clé API porte la sienne : deux clés API dans deux organisations demandent deux Admin keys. Créez-la dans la Console, sous Settings → Admin keys ; l'Admin API n'est disponible que pour les comptes d'organisation, pas pour les comptes individuels. Elle est enregistrée dans `seat.json` avec les autres identifiants, jamais affichée, utilisée seulement pour lister les clés de l'organisation et lire les dépenses, et se supprime avec `seat admin-key console --rm`. Les données de coût d'Anthropic ont jusqu'à 24 heures de retard (en général moins de 4), d'où l'heure des données affichée. Dans Pi, `/seat since` et `/seat admin-key` font la même chose.
+
+pi-seat 0.6.0 ou antérieur ne peut pas lire un store contenant un cycle ou une Admin key : avant de rétrograder, lancez `seat since <label> --clear` et `seat admin-key <label> --rm` pour chaque profil.
+
 ## Conception de sécurité
 
 Les profils vivent dans `~/.pi/agent/seat.json` (0600, verrou de fichier, écritures atomiques). Les clés API y sont aussi stockées et ne sont jamais affichées. Chaque profil OAuth possède un grant exclusif : les credentials ne sont jamais copiées depuis ou vers le `auth.json` de Pi, car les refresh tokens Anthropic sont à usage unique et un grant partagé provoquerait une double dépense. Les rafraîchissements de token sont single-flight entre processus.

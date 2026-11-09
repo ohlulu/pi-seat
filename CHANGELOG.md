@@ -1,5 +1,15 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- API-key profiles can show what the key has spent in the current monthly cycle, in place of the Console billing link. Anthropic has no API for the remaining balance, but its Admin API reports cost per key. `seat since <label> 11/27/2026` (or `2026-11-27`, and `/seat since` inside Pi) sets the cycle: it starts at 00:00 that day in the machine's time zone, which is recorded so the window never follows another machine, and restarts on that day every month, or on the last day of a shorter month. `seat since <label> --clear` removes it. `seat admin-key <label>` stores the Admin key of the organization the key belongs to, read from stdin with echo off (a masked prompt in `/seat admin-key`), and refuses anything that is not `sk-ant-admin…` or that cannot list the organization's keys. Each profile carries its own Admin key, so API keys in different organizations each read their own spend; `--rm` removes it, `rename` carries it and a `login` overwrite drops it. The row then reads `spent $23.47 since 2026-11-27` over `resets 2026-12-27 · data as of 14:05`; the data time is there because Anthropic's cost data can lag by up to 24 hours. Seat finds the key's id by matching its `partial_key_hint` against the full key on every lookup, then totals the cost since the cycle start. A missing Admin key, a key not found in the organization, or a rejected request is printed on the row and makes `seat` exit 1; a cycle that has not started yet shows its start date and sends nothing. The store stays `version: 1`; pi-seat 0.6.0 or older cannot read a store that holds a cycle or an Admin key, so clear both before downgrading (REQ-014, DEC-016).
+
+### Changed
+
+- Pasting an Admin key into `login --api-key` now says to store it with `admin-key <label>` instead.
+
 ## [0.6.0] - 2026-11-08
 
 ### Added
