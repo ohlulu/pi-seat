@@ -124,6 +124,7 @@ function deps(backend: InMemorySeatStorageBackend, overrides: Partial<SeatComman
 		fetchOptions: overrides.fetchOptions ?? { fetchImpl: (async () => Response.json(CLAUDE_PAYLOAD)) as unknown as typeof fetch },
 		// No test may ever launch a real browser.
 		openBrowser: overrides.openBrowser ?? (() => {}),
+		...(overrides.timeZone !== undefined ? { timeZone: overrides.timeZone } : {}),
 	};
 }
 
@@ -506,5 +507,77 @@ describe("AC-021: login opens the browser and reports completion", () => {
 			}),
 		);
 		expect(f.notices.some((n) => n.includes('stored anthropic profile "work"'))).toBe(true);
+	});
+});
+
+describe("REQ-014: /seat since and /seat admin-key", () => {
+	const KEY = "sk-ant-api03-FAKE-command-key";
+	const ADMIN = "sk-ant-admin01-FAKE-command-admin";
+
+	function withApiKey(): InMemorySeatStorageBackend {
+		const backend = seededBackend();
+		backend.withLock((current) => {
+			const store = decodeStore(current);
+			store.providers.anthropic!.profiles["console"] = { type: "api_key", key: KEY };
+			return { result: undefined, next: encodeStore(store) };
+		});
+		return backend;
+	}
+
+	function consoleProfile(backend: InMemorySeatStorageBackend): Record<string, unknown> {
+		return backend.read((c) => decodeStore(c)).providers.anthropic!.profiles["console"] as never;
+	}
+
+	test("AC-045: since stores the cycle in the recorded zone; a bad date or an OAuth profile is refused", async () => {
+		const backend = withApiKey();
+		const f = fakeCtx();
+		await runSeatCommand("since console 11/27/2026", f.ctx, deps(backend, { timeZone: "Asia/Taipei" }));
+		expect(consoleProfile(backend)["cycle"]).toEqual({ anchor: "2026-11-27", timeZone: "Asia/Taipei" });
+
+		const before = backend.read((c) => c);
+		await runSeatCommand("since console 2/30/2026", f.ctx, deps(backend));
+		await runSeatCommand("since work 11/27/2026", f.ctx, deps(backend));
+		expect(backend.read((c) => c)).toBe(before);
+		expect(f.notices.some((n) => n.includes("is not a date"))).toBe(true);
+		expect(f.notices.some((n) => n.includes("is an OAuth profile"))).toBe(true);
+
+		await runSeatCommand("since console --clear", f.ctx, deps(backend));
+		expect(consoleProfile(backend)["cycle"]).toBeUndefined();
+	});
+
+	test("AC-047: admin-key reads the key masked, verifies it, and binds it to the profile", async () => {
+		const backend = withApiKey();
+		const sent: string[] = [];
+		const fetchImpl = (async (url: string, init?: RequestInit) => {
+			sent.push(`${url} ${(init?.headers as Record<string, string>)["x-api-key"]}`);
+			return Response.json({ data: [] });
+		}) as unknown as typeof fetch;
+		const f = fakeCtx("tui");
+		const running = runSeatCommand("admin-key console", f.ctx, deps(backend, { fetchOptions: { fetchImpl } }));
+		for (let i = 0; i < 200 && f.customs.length === 0; i += 1) await Bun.sleep(1);
+		f.customs[0]!.handleInput!(`\x1b[200~${ADMIN}\x1b[201~`);
+		f.customs[0]!.handleInput!("\r");
+		await running;
+
+		expect(sent).toEqual([`https://api.anthropic.com/v1/organizations/api_keys?limit=1 ${ADMIN}`]);
+		expect(consoleProfile(backend)["adminKey"]).toBe(ADMIN);
+		expect(f.customs[0]!.render(120).join("\n")).not.toContain(ADMIN);
+		for (const notice of f.notices) expect(notice).not.toContain(ADMIN);
+
+		await runSeatCommand("admin-key console --rm", f.ctx, deps(backend));
+		expect(consoleProfile(backend)["adminKey"]).toBeUndefined();
+	});
+
+	test("admin-key refuses an OAuth profile and a non-TUI session before opening any input", async () => {
+		const backend = withApiKey();
+		const tui = fakeCtx("tui");
+		await runSeatCommand("admin-key work", tui.ctx, deps(backend));
+		expect(tui.customs).toHaveLength(0);
+		expect(tui.notices.some((n) => n.includes("is an OAuth profile"))).toBe(true);
+
+		const rpc = fakeCtx("rpc");
+		await runSeatCommand("admin-key console", rpc.ctx, deps(backend));
+		expect(rpc.customs).toHaveLength(0);
+		expect(rpc.notices.some((n) => n.includes("needs the interactive TUI"))).toBe(true);
 	});
 });

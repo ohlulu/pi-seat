@@ -11,6 +11,8 @@
  *   seat login <selector> [--api-key|-k] [-a|--alias <alias>]…
  *   seat rm <selector> [--force|--no-input]
  *   seat rename <old-selector> <new-label>
+ *   seat since <selector> <date> | seat since <selector> --clear
+ *   seat admin-key <selector> [--rm]
  *
  * I/O contract: primary output on stdout only; diagnostics and prompts on
  * stderr only. Exit codes: 0 ok, 1 operation failure, 2 bad invocation.
@@ -27,11 +29,21 @@ import {
 	loginProfile,
 	removeSelection,
 	renameProfile,
+	resolveApiKeyProfile,
 	runMutation,
+	setAdminKey,
+	setCycle,
 	useSelection,
 } from "../extension/commands.ts";
 import { adapterFor, createSeatProviderAdapters, toRefreshCallback, type SeatProviderAdapter } from "../extension/oauth.ts";
-import { apiKeyCredential, assertApiKeyProvider, assertNoSecretArguments, takeApiKeyFlag } from "../extension/api-key.ts";
+import {
+	apiKeyCredential,
+	assertApiKeyProvider,
+	assertNoSecretArguments,
+	takeApiKeyFlag,
+	verifiedAdminKey,
+} from "../extension/api-key.ts";
+import { parseCycleDate } from "../usage/cycle.ts";
 import type { UsageFetchOptions } from "../usage/fetch.ts";
 import { UsageReportRows, collectUsage, selectionSummary, usageSections } from "../usage/report.ts";
 import type { RenderOptions } from "../usage/render.ts";
@@ -69,6 +81,10 @@ export interface CliDeps {
 	color: boolean;
 	fetchOptions?: UsageFetchOptions;
 	now?: () => Date;
+	/** Zone recorded by `since` (REQ-014); defaults to the system zone. */
+	timeZone?: string;
+	/** Admin-key live-check URL override, for tests. */
+	adminVerifyUrl?: string;
 }
 
 export function defaultDeps(): CliDeps {
@@ -175,6 +191,10 @@ export async function runCli(argv: string[], deps: CliDeps): Promise<number> {
 				return await cmdRm(rest, deps);
 			case "rename":
 				return requireArgs(rest, 2, "usage: seat rename <old-selector> <new-label>", deps) ?? cmdRename(rest[0]!, rest[1]!, deps);
+			case "since":
+				return cmdSince(rest, deps);
+			case "admin-key":
+				return await cmdAdminKey(rest, deps);
 			default:
 				if (head.startsWith("-")) return usageError(`unknown option "${head}"`, deps);
 				// bare shorthand ≡ use, aliases included
@@ -239,6 +259,9 @@ function printHelp(io: CliIo): void {
 			"  seat login <selector> [--api-key|-k] [-a <alias>]…",
 			"  seat rm <selector> [--force|--no-input]",
 			"  seat rename <old-selector> <new-label>",
+			"  seat since <selector> <MM/DD/YYYY|YYYY-MM-DD>   monthly spend cycle of an API-key profile",
+			"  seat since <selector> --clear",
+			"  seat admin-key <selector> [--rm]       Admin key that reads the profile's spend",
 			"  seat usage [--json]",
 			"  seat status [--plain]",
 			"  seat whoami [--plain]",
@@ -402,6 +425,56 @@ async function oauthLogin(provider: ProviderId, deps: CliDeps): Promise<SeatCred
 	return credential as SeatCredential;
 }
 
+// --- since / admin-key (REQ-014) ----------------------------------------------
+
+const SINCE_USAGE = "usage: seat since <selector> <MM/DD/YYYY|YYYY-MM-DD> | seat since <selector> --clear";
+
+function cmdSince(rest: string[], deps: CliDeps): number {
+	if (rest.length !== 2) throw new UsageInvocationError(SINCE_USAGE);
+	const [selector, value] = rest as [string, string];
+	if (value === "--clear") {
+		const result = runMutation(deps.backend, (store) => setCycle(store, selector, undefined));
+		deps.io.err(`seat: cleared the billing cycle of "${result.label}"`);
+		return EXIT_OK;
+	}
+	const anchor = parseCycleDate(value);
+	if (anchor === undefined) throw new UsageInvocationError(`"${value}" is not a date; use MM/DD/YYYY or YYYY-MM-DD`);
+	const timeZone = deps.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
+	const result = runMutation(deps.backend, (store) => setCycle(store, selector, { anchor, timeZone }));
+	deps.io.err(`seat: "${result.label}" spend counts from ${anchor} 00:00 ${timeZone}, resetting monthly on that day`);
+	return EXIT_OK;
+}
+
+async function cmdAdminKey(rest: string[], deps: CliDeps): Promise<number> {
+	const remove = rest.includes("--rm");
+	const positional = rest.filter((t) => t !== "--rm");
+	if (positional.length !== 1 || positional[0]!.startsWith("-")) {
+		throw new UsageInvocationError("usage: seat admin-key <selector> [--rm]");
+	}
+	const selector = positional[0]!;
+	if (remove) {
+		const result = runMutation(deps.backend, (store) => setAdminKey(store, selector, undefined));
+		deps.io.err(result.changed ? `seat: removed the Admin key of "${result.label}"` : `seat: "${result.label}" has no Admin key`);
+		return EXIT_OK;
+	}
+	// Refuse an OAuth or unknown profile before asking for a secret.
+	deps.backend.read((current) => resolveApiKeyProfile(decodeStore(current), selector));
+	const input = await deps.io.secret(`Anthropic Admin key for "${selector}" (input hidden)`);
+	if (input === undefined) {
+		deps.io.err("seat: cancelled; nothing stored");
+		return EXIT_FAIL;
+	}
+	const fetchImpl = deps.fetchOptions?.fetchImpl;
+	const adminKey = await verifiedAdminKey(input, {
+		...(fetchImpl !== undefined ? { fetchImpl } : {}),
+		...(deps.adminVerifyUrl !== undefined ? { url: deps.adminVerifyUrl } : {}),
+		onVerifying: () => deps.io.err("seat: verifying the Admin key with Anthropic…"),
+	});
+	const result = runMutation(deps.backend, (store) => setAdminKey(store, selector, adminKey));
+	deps.io.err(`seat: stored the Admin key of "${result.label}"${result.replaced ? " (replaced the previous one)" : ""}`);
+	return EXIT_OK;
+}
+
 // --- status / whoami ---------------------------------------------------------
 
 function cmdStatus(rest: string[], deps: CliDeps): number {
@@ -495,6 +568,7 @@ async function cmdUsage(rest: string[], deps: CliDeps): Promise<number> {
 			pins,
 			refreshFor: (provider) => toRefreshCallback(adapterFor(deps.adapters, provider)),
 			...(deps.fetchOptions !== undefined ? { fetchOptions: deps.fetchOptions } : {}),
+			...(deps.now !== undefined ? { now: deps.now } : {}),
 		},
 		(account) => {
 			if (!account.result.ok && account.result.failed) {

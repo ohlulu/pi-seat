@@ -21,7 +21,9 @@ import {
 	type ProfileUsageResult,
 	type UsageFetchOptions,
 } from "./fetch.ts";
+import { currentCycle, formatWallClock } from "./cycle.ts";
 import { planLayout, type Layout } from "./layout.ts";
+import { fetchKeySpend, formatDollars } from "./spend.ts";
 import {
 	accountLine,
 	hintLine,
@@ -45,8 +47,9 @@ export type UsageAccountResult =
 	/** `failed` distinguishes "we could not read it" (CLI exit 1) from an
 	 * expected state like Pi's own token having expired. `unmetered` marks a
 	 * working credential that simply has no plan meters: an API key (REQ-013).
-	 * `link` adds a second hint row that is a hyperlink. */
-	| { ok: false; hint: string; failed: boolean; unmetered?: true; link?: { text: string; href: string } };
+	 * `detail` adds a second plain hint row; `link` adds a hint row that is a
+	 * hyperlink. */
+	| { ok: false; hint: string; failed: boolean; unmetered?: true; detail?: string; link?: { text: string; href: string } };
 
 /** Anthropic exposes no balance API (DEC-015); the Console billing page is where it lives. */
 export const CONSOLE_BILLING_URL = "https://platform.claude.com/settings/billing";
@@ -89,6 +92,8 @@ export interface UsageCollectDeps {
 	 * (DEC-013); the CLI walks alone and runs Phase 1 directly.
 	 */
 	schedule?: StoreSchedule;
+	/** Clock for API-key billing cycles (REQ-014). */
+	now?: () => Date;
 }
 
 /** Codex carries its plan on the header row; Claude has nothing to add. */
@@ -193,16 +198,43 @@ function planSlots(deps: UsageCollectDeps): Slot[] {
 	return slots;
 }
 
-/** An API-key profile: nothing to prepare, nothing to fetch. */
-function apiKeyAccount(slot: Slot & { kind: "profile" }): UsageAccount {
+/**
+ * An API-key profile: nothing to prepare. Without a billing cycle there is
+ * nothing to fetch either (REQ-013); with one, its spend since the cycle
+ * started (REQ-014).
+ */
+async function apiKeyAccount(slot: Slot & { kind: "profile" }, deps: UsageCollectDeps): Promise<UsageAccount> {
+	const common = { provider: slot.provider, kind: "profile", name: slot.label, label: slot.label, aliases: slot.aliases, note: "API key" } as const;
+	const credential = deps.store.providers[slot.provider]?.profiles[slot.label];
+	if (credential?.type !== "api_key" || credential.cycle === undefined) {
+		return { ...common, result: { ok: false, hint: API_KEY_USAGE_HINT, failed: false, unmetered: true, link: { ...API_KEY_BALANCE_LINK } } };
+	}
+	const cycle = credential.cycle;
+	const now = (deps.now ?? (() => new Date()))();
+	const window = currentCycle(cycle, now);
+	if (window.state === "pending") {
+		return { ...common, result: { ok: false, hint: `cycle starts ${window.startDate}`, failed: false, unmetered: true } };
+	}
+	if (credential.adminKey === undefined) {
+		return { ...common, result: { ok: false, hint: `spend needs an Admin key — run seat admin-key ${slot.label}`, failed: true } };
+	}
+	const fetchOptions = deps.fetchOptions ?? {};
+	const spend = await fetchKeySpend(credential.key, credential.adminKey, window.start, {
+		...(fetchOptions.fetchImpl !== undefined ? { fetchImpl: fetchOptions.fetchImpl } : {}),
+		...(fetchOptions.adminApiBase !== undefined ? { apiBase: fetchOptions.adminApiBase } : {}),
+		...(fetchOptions.timeoutMs !== undefined ? { timeoutMs: fetchOptions.timeoutMs } : {}),
+	});
+	if (!spend.ok) return { ...common, result: { ok: false, hint: `spend unavailable — ${spend.error}`, failed: true } };
+	const asOf = spend.dataRefreshedAt === undefined ? "" : ` · data as of ${formatWallClock(spend.dataRefreshedAt, now, cycle.timeZone)}`;
 	return {
-		provider: slot.provider,
-		kind: "profile",
-		name: slot.label,
-		label: slot.label,
-		aliases: slot.aliases,
-		note: "API key",
-		result: { ok: false, hint: API_KEY_USAGE_HINT, failed: false, unmetered: true, link: { ...API_KEY_BALANCE_LINK } },
+		...common,
+		result: {
+			ok: false,
+			hint: `spent ${formatDollars(spend.cents)} since ${window.startDate}`,
+			failed: false,
+			unmetered: true,
+			detail: `resets ${window.resetDate}${asOf}`,
+		},
 	};
 }
 
@@ -280,7 +312,7 @@ export async function collectUsage(
 		if (slot.kind === "builtin") {
 			return settleAccount(builtinUsage(deps.authPath, slot.provider, fetchOptions).then((b) => builtinAccount(slot.provider, b)));
 		}
-		if (slot.credential === "api_key") return settleAccount(Promise.resolve(apiKeyAccount(slot)));
+		if (slot.credential === "api_key") return settleAccount(apiKeyAccount(slot, deps));
 		const result = prepared[index];
 		if (result === undefined || !result.ok) {
 			// Preparation already failed; nothing to fetch, but the account still
@@ -321,6 +353,7 @@ export function renderAccountBlock(layout: Layout, account: UsageAccount, option
 		);
 	} else {
 		lines.push(hintLine(layout, account.result.hint, options));
+		if (account.result.detail !== undefined) lines.push(hintLine(layout, account.result.detail, options));
 		const link = account.result.link;
 		if (link !== undefined) lines.push(hintLine(layout, link.text, options, link.href));
 	}

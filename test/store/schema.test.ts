@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
 	SchemaError,
+	credentialSecrets,
 	emptyStore,
 	isValidLabel,
 	parseStore,
@@ -196,5 +197,47 @@ describe("REQ-013: api_key credentials", () => {
 
 	test("an unknown credential type names both accepted types", () => {
 		expect(() => parseStore(docWith("anthropic", { type: "bearer", key: KEY }))).toThrow('must be "oauth" or "api_key"');
+	});
+});
+
+describe("REQ-014: cycle and adminKey on an api_key credential", () => {
+	const KEY = "sk-ant-api03-FAKE-test-key";
+	const ADMIN = "sk-ant-admin01-FAKE-admin";
+
+	function docWith(credential: unknown): unknown {
+		return { version: 1, providers: { anthropic: { profiles: { console: credential }, aliases: {} } } };
+	}
+
+	test("both fields parse and round-trip byte-identical", () => {
+		const credential = { type: "api_key", key: KEY, cycle: { anchor: "2026-11-27", timeZone: "Asia/Taipei" }, adminKey: ADMIN };
+		const store = parseStore(docWith(credential));
+		expect(store.providers.anthropic?.profiles["console"]).toEqual(credential as never);
+		const text = serializeStore(store);
+		expect(serializeStore(parseStore(JSON.parse(text)))).toBe(text);
+	});
+
+	test("an api_key credential without them stays exactly as before", () => {
+		expect(serializeStore(parseStore(docWith({ type: "api_key", key: KEY })))).not.toContain("cycle");
+	});
+
+	test("malformed values are refused", () => {
+		for (const extra of [
+			{ cycle: { anchor: "2026-02-30", timeZone: "Asia/Taipei" } },
+			{ cycle: { anchor: "11/27/2026", timeZone: "Asia/Taipei" } },
+			{ cycle: { anchor: "2026-11-27", timeZone: "Mars/Olympus" } },
+			{ cycle: { anchor: "2026-11-27" } },
+			{ cycle: { anchor: "2026-11-27", timeZone: "UTC", day: 27 } },
+			{ cycle: "2026-11-27" },
+			{ adminKey: "" },
+			{ adminKey: "sk-ant-admin01 space" },
+			{ adminKey: 1 },
+		]) {
+			expect(() => parseStore(docWith({ type: "api_key", key: KEY, ...extra }))).toThrow(SchemaError);
+		}
+	});
+
+	test("the Admin key is a secret for redaction", () => {
+		expect(credentialSecrets({ type: "api_key", key: KEY, adminKey: ADMIN })).toEqual([KEY, ADMIN]);
+		expect(credentialSecrets({ type: "api_key", key: KEY })).toEqual([KEY]);
 	});
 });

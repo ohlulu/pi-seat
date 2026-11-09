@@ -28,10 +28,28 @@ export interface SeatOAuthCredential {
 	[key: string]: unknown;
 }
 
-/** An Anthropic Console API key (REQ-013): no refresh, no expiry. */
+/**
+ * Monthly spend window of an API-key profile (REQ-014): starts at 00:00 of
+ * `anchor` in `timeZone`, then on the anchor's day of every later month.
+ */
+export interface BillingCycle {
+	/** YYYY-MM-DD, a real calendar date. */
+	anchor: string;
+	/** IANA zone recorded when the cycle was set, so the window never follows the machine. */
+	timeZone: string;
+}
+
+/**
+ * An Anthropic Console API key (REQ-013): no refresh, no expiry. `cycle` and
+ * `adminKey` (REQ-014, DEC-016) live on the credential so rename, rm and a
+ * login overwrite carry or drop them with the key they describe.
+ */
 export interface SeatApiKeyCredential {
 	type: "api_key";
 	key: string;
+	cycle?: BillingCycle;
+	/** Admin key of the organization the key belongs to; only ever reads spend. */
+	adminKey?: string;
 }
 
 export type SeatCredential = SeatOAuthCredential | SeatApiKeyCredential;
@@ -53,7 +71,28 @@ export function credentialFingerprint(credential: SeatCredential): string {
 
 /** Every secret a credential carries, for exact-match redaction. */
 export function credentialSecrets(credential: SeatCredential): string[] {
-	return credential.type === "oauth" ? [credential.access, credential.refresh] : [credential.key];
+	if (credential.type === "oauth") return [credential.access, credential.refresh];
+	return credential.adminKey === undefined ? [credential.key] : [credential.key, credential.adminKey];
+}
+
+/** A real calendar date written YYYY-MM-DD. */
+export function isIsoDate(value: string): boolean {
+	const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+	if (match === null) return false;
+	const [year, month, day] = [Number(match[1]), Number(match[2]), Number(match[3])];
+	const date = new Date(Date.UTC(year, month - 1, day));
+	return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
+}
+
+/** An IANA zone this runtime can format in. */
+export function isTimeZone(value: string): boolean {
+	if (value.length === 0) return false;
+	try {
+		new Intl.DateTimeFormat("en-US", { timeZone: value });
+		return true;
+	} catch {
+		return false;
+	}
 }
 
 export interface ProviderSection {
@@ -136,13 +175,37 @@ export function isWellFormedApiKey(key: string): boolean {
 
 function parseApiKeyCredential(raw: Record<string, unknown>, where: string): SeatApiKeyCredential {
 	for (const key of ownKeys(raw)) {
-		if (key !== "type" && key !== "key") throw new SchemaError(`${where}: unknown api_key credential key "${key}"`);
+		if (key !== "type" && key !== "key" && key !== "cycle" && key !== "adminKey") {
+			throw new SchemaError(`${where}: unknown api_key credential key "${key}"`);
+		}
 	}
 	const key = own(raw, "key");
 	if (typeof key !== "string" || !isWellFormedApiKey(key)) {
 		throw new SchemaError(`${where}: credential.key must be a non-empty string without whitespace`);
 	}
-	return nullProto<SeatApiKeyCredential>({ type: "api_key", key });
+	const credential = nullProto<SeatApiKeyCredential>({ type: "api_key", key });
+	const cycle = own(raw, "cycle");
+	if (cycle !== undefined) credential.cycle = parseBillingCycle(cycle, `${where}.cycle`);
+	const adminKey = own(raw, "adminKey");
+	if (adminKey !== undefined) {
+		if (typeof adminKey !== "string" || !isWellFormedApiKey(adminKey)) {
+			throw new SchemaError(`${where}: credential.adminKey must be a non-empty string without whitespace`);
+		}
+		credential.adminKey = adminKey;
+	}
+	return credential;
+}
+
+function parseBillingCycle(raw: unknown, where: string): BillingCycle {
+	if (!isPlainObject(raw)) throw new SchemaError(`${where} must be an object`);
+	for (const key of ownKeys(raw)) {
+		if (key !== "anchor" && key !== "timeZone") throw new SchemaError(`${where}: unknown key "${key}"`);
+	}
+	const anchor = own(raw, "anchor");
+	const timeZone = own(raw, "timeZone");
+	if (typeof anchor !== "string" || !isIsoDate(anchor)) throw new SchemaError(`${where}.anchor must be a YYYY-MM-DD date`);
+	if (typeof timeZone !== "string" || !isTimeZone(timeZone)) throw new SchemaError(`${where}.timeZone must be an IANA time zone`);
+	return nullProto<BillingCycle>({ anchor, timeZone });
 }
 
 function parseProviderSection(raw: unknown, provider: ProviderId): ProviderSection {

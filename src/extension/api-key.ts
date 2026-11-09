@@ -18,6 +18,7 @@
 
 import { acceptsApiKey, isWellFormedApiKey, type ProviderId, type SeatApiKeyCredential } from "../store/schema.ts";
 import { redactTokenText } from "../store/redact.ts";
+import { ANTHROPIC_API_VERSION, adminHeaders, apiKeysUrl } from "../usage/spend.ts";
 import { CommandError } from "./commands.ts";
 
 export const ANTHROPIC_MODELS_URL = "https://api.anthropic.com/v1/models?limit=1";
@@ -49,7 +50,6 @@ export function assertNoSecretArguments(tokens: readonly string[]): void {
 		"a key was given on the command line; seat never takes a key as an argument. It may be in your shell or Pi input history now: revoke it in the Console, then run `login <label> --api-key` and paste the new key at the prompt",
 	);
 }
-export const ANTHROPIC_API_VERSION = "2023-06-01";
 export const API_KEY_VERIFY_TIMEOUT_MS = 10_000;
 
 export interface ApiKeyVerifyOptions {
@@ -65,7 +65,9 @@ export function apiKeyShapeProblem(key: string): string | undefined {
 	if (!isWellFormedApiKey(key)) return "the key is empty or contains whitespace";
 	if (!key.startsWith("sk-ant-")) return 'an Anthropic API key starts with "sk-ant-"';
 	if (key.includes("sk-ant-oat")) return "that is a Claude OAuth token, not a Console API key; use /seat login without --api-key";
-	if (key.startsWith("sk-ant-admin")) return "that is an Admin API key, which cannot call the Messages API";
+	if (key.startsWith("sk-ant-admin")) {
+		return "that is an Admin API key, which cannot call the Messages API; store it with `admin-key <label>` to read the key's spend";
+	}
 	return undefined;
 }
 
@@ -112,4 +114,34 @@ export async function apiKeyCredential(input: string, options: ApiKeyVerifyOptio
 	options.onVerifying?.();
 	await verifyApiKey(key, options);
 	return { type: "api_key", key };
+}
+
+/**
+ * REQ-014: an Admin key for one API-key profile's spend. Shape, then one
+ * `GET /v1/organizations/api_keys?limit=1` — the exact permission the spend
+ * lookup needs, so a key that passes here can do the lookup.
+ */
+export async function verifiedAdminKey(input: string, options: ApiKeyVerifyOptions = {}): Promise<string> {
+	const key = input.trim();
+	if (!isWellFormedApiKey(key)) throw new CommandError("the key is empty or contains whitespace; nothing stored");
+	if (!key.startsWith("sk-ant-admin")) throw new CommandError('an Anthropic Admin key starts with "sk-ant-admin"; nothing stored');
+	options.onVerifying?.();
+	let response: Response;
+	try {
+		response = await (options.fetchImpl ?? fetch)(options.url ?? `${apiKeysUrl()}?limit=1`, {
+			headers: adminHeaders(key),
+			signal: AbortSignal.timeout(options.timeoutMs ?? API_KEY_VERIFY_TIMEOUT_MS),
+		});
+	} catch (error) {
+		const reason = redactTokenText(error instanceof Error ? error.message : String(error), [key]);
+		throw new CommandError(`could not reach Anthropic to verify the Admin key (${reason}); nothing stored`);
+	}
+	if (response.ok) return key;
+	const why =
+		response.status === 401
+			? "invalid or revoked"
+			: response.status === 403
+				? "not allowed to list the organization's API keys"
+				: response.statusText || "unexpected response";
+	throw new CommandError(`Anthropic rejected the Admin key (HTTP ${response.status}, ${why}); nothing stored`);
 }

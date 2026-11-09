@@ -16,7 +16,7 @@ import { parseSelector, resolveSelection } from "../store/selector.ts";
 import type { UsageFetchOptions } from "../usage/fetch.ts";
 import { selectionSummary } from "../usage/report.ts";
 import { adapterFor, toRefreshCallback, type SeatProviderAdapter } from "./oauth.ts";
-import { apiKeyCredential, assertApiKeyProvider, assertNoSecretArguments, takeApiKeyFlag } from "./api-key.ts";
+import { apiKeyCredential, assertApiKeyProvider, assertNoSecretArguments, takeApiKeyFlag, verifiedAdminKey } from "./api-key.ts";
 import { SecretInput } from "./secret-input.ts";
 import { openBrowser, type BrowserOpener } from "./open-browser.ts";
 import { UsageView } from "./usage-view.ts";
@@ -27,9 +27,13 @@ import {
 	loginProfile,
 	removeSelection,
 	renameProfile,
+	resolveApiKeyProfile,
 	runMutation,
+	setAdminKey,
+	setCycle,
 	useSelection,
 } from "./commands.ts";
+import { parseCycleDate } from "../usage/cycle.ts";
 
 export interface SeatCommandDeps {
 	backend: SeatStorageBackend;
@@ -46,9 +50,11 @@ export interface SeatCommandDeps {
 	fetchOptions?: UsageFetchOptions;
 	/** Injectable for AC-021 tests; defaults to the platform launcher. */
 	openBrowser?: BrowserOpener;
+	/** Zone recorded by `since` (REQ-014); defaults to the system zone. */
+	timeZone?: string;
 }
 
-const SUBCOMMANDS = new Set(["use", "login", "rm", "rename", "status", "whoami", "usage", "help"]);
+const SUBCOMMANDS = new Set(["use", "login", "rm", "rename", "since", "admin-key", "status", "whoami", "usage", "help"]);
 
 export const SEAT_COMMAND_DESCRIPTION = "Manage seat account profiles (use/login/rm/rename/status)";
 
@@ -71,7 +77,7 @@ export async function runSeatCommand(args: string, ctx: ExtensionCommandContext,
 		switch (head) {
 			case "help":
 				ctx.ui.notify(
-					"usage: /seat [use] <selector> [-a <alias>]… | login <selector> [--api-key|-k] [-a <alias>]… | rm <selector> | rename <old> <new> | status",
+					"usage: /seat [use] <selector> [-a <alias>]… | login <selector> [--api-key|-k] [-a <alias>]… | rm <selector> | rename <old> <new> | since <selector> <date>|--clear | admin-key <selector> [--rm] | status",
 					"info",
 				);
 				return;
@@ -86,6 +92,12 @@ export async function runSeatCommand(args: string, ctx: ExtensionCommandContext,
 				return;
 			case "rename":
 				await handleRename(rest, ctx, deps);
+				return;
+			case "since":
+				await handleSince(rest, ctx, deps);
+				return;
+			case "admin-key":
+				await handleAdminKey(rest, ctx, deps);
 				return;
 			default:
 				if (SUBCOMMANDS.has(head)) throw new CommandError(`unhandled subcommand "${head}"`);
@@ -219,8 +231,19 @@ async function readApiKey(
 	label: string,
 	deps: SeatCommandDeps,
 ): Promise<SeatCredential | undefined> {
-	const input = await ctx.ui.custom<string | undefined>((tui, _theme, _keybindings, done) => {
-		const view = new SecretInput(`Anthropic Console API key for "${label}"`, {
+	const input = await readSecret(ctx, `Anthropic Console API key for "${label}"`);
+	if (input === undefined) return undefined;
+	const fetchImpl = deps.fetchOptions?.fetchImpl;
+	return apiKeyCredential(input, {
+		...(fetchImpl !== undefined ? { fetchImpl } : {}),
+		onVerifying: () => ctx.ui.notify("seat: verifying the key with Anthropic…", "info"),
+	});
+}
+
+/** One secret through the masked input (REQ-013); undefined when the user cancels. */
+function readSecret(ctx: ExtensionCommandContext, prompt: string): Promise<string | undefined> {
+	return ctx.ui.custom<string | undefined>((tui, _theme, _keybindings, done) => {
+		const view = new SecretInput(prompt, {
 			onSubmit: (value) => done(value),
 			onCancel: () => done(undefined),
 		});
@@ -233,12 +256,52 @@ async function readApiKey(
 			invalidate: () => view.invalidate(),
 		};
 	});
-	if (input === undefined) return undefined;
+}
+
+// --- since / admin-key (REQ-014) ----------------------------------------------
+
+async function handleSince(rest: string[], ctx: ExtensionCommandContext, deps: SeatCommandDeps): Promise<void> {
+	if (rest.length !== 2) throw new CommandError("usage: /seat since <selector> <MM/DD/YYYY|YYYY-MM-DD> | /seat since <selector> --clear");
+	const [selector, value] = rest as [string, string];
+	if (value === "--clear") {
+		const result = await deps.schedule(() => runMutation(deps.backend, (store) => setCycle(store, selector, undefined)));
+		ctx.ui.notify(`seat: cleared the billing cycle of "${result.label}"`, "info");
+		return;
+	}
+	const anchor = parseCycleDate(value);
+	if (anchor === undefined) throw new CommandError(`"${value}" is not a date; use MM/DD/YYYY or YYYY-MM-DD`);
+	const timeZone = deps.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
+	const result = await deps.schedule(() => runMutation(deps.backend, (store) => setCycle(store, selector, { anchor, timeZone })));
+	ctx.ui.notify(`seat: "${result.label}" spend counts from ${anchor} 00:00 ${timeZone}, resetting monthly on that day`, "info");
+}
+
+async function handleAdminKey(rest: string[], ctx: ExtensionCommandContext, deps: SeatCommandDeps): Promise<void> {
+	const remove = rest.includes("--rm");
+	const positional = rest.filter((t) => t !== "--rm");
+	if (positional.length !== 1 || positional[0]!.startsWith("-")) throw new CommandError("usage: /seat admin-key <selector> [--rm]");
+	const selector = positional[0]!;
+	if (remove) {
+		const result = await deps.schedule(() => runMutation(deps.backend, (store) => setAdminKey(store, selector, undefined)));
+		ctx.ui.notify(result.changed ? `seat: removed the Admin key of "${result.label}"` : `seat: "${result.label}" has no Admin key`, "info");
+		return;
+	}
+	// Refuse an OAuth or unknown profile before asking for a secret.
+	await deps.schedule(() => deps.backend.read((current) => resolveApiKeyProfile(decodeStore(current), selector)));
+	if (ctx.mode !== "tui") {
+		throw new CommandError("admin-key needs the interactive TUI; from a terminal, run `seat admin-key <label>`");
+	}
+	const input = await readSecret(ctx, `Anthropic Admin key for "${selector}"`);
+	if (input === undefined) {
+		ctx.ui.notify("seat: cancelled; nothing stored", "info");
+		return;
+	}
 	const fetchImpl = deps.fetchOptions?.fetchImpl;
-	return apiKeyCredential(input, {
+	const adminKey = await verifiedAdminKey(input, {
 		...(fetchImpl !== undefined ? { fetchImpl } : {}),
-		onVerifying: () => ctx.ui.notify("seat: verifying the key with Anthropic…", "info"),
+		onVerifying: () => ctx.ui.notify("seat: verifying the Admin key with Anthropic…", "info"),
 	});
+	const result = await deps.schedule(() => runMutation(deps.backend, (store) => setAdminKey(store, selector, adminKey)));
+	ctx.ui.notify(`seat: stored the Admin key of "${result.label}"${result.replaced ? " (replaced the previous one)" : ""}`, "info");
 }
 
 async function handleRm(rest: string[], ctx: ExtensionCommandContext, deps: SeatCommandDeps): Promise<void> {

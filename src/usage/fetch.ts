@@ -35,6 +35,8 @@ export interface UsageFetchOptions {
 	fetchImpl?: typeof fetch;
 	claudeUrl?: string;
 	codexUrl?: string;
+	/** Admin API base for API-key spend (REQ-014); tests point it at a loopback server. */
+	adminApiBase?: string;
 	timeoutMs?: number;
 	now?: () => number;
 }

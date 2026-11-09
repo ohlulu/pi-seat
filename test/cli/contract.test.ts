@@ -607,3 +607,167 @@ describe("stream separation", () => {
 		expect(cli.errs).toEqual([]);
 	});
 });
+
+describe("REQ-014: API-key spend via CLI", () => {
+	const KEY = "sk-ant-api03-FAKE-spend-key-wxyz";
+	const OTHER_KEY = "sk-ant-api03-FAKE-other-key-abcd";
+	const ADMIN = "sk-ant-admin01-FAKE-admin-key";
+	const NOW = new Date("2026-11-30T08:00:00Z"); // 16:00 in Taipei
+
+	function withApiKeys(cli: Cli, credentials: Record<string, Record<string, unknown>>): void {
+		cli.backend.withLock((current) => {
+			const store = decodeStore(current);
+			for (const [label, extra] of Object.entries(credentials)) {
+				store.providers.anthropic!.profiles[label] = { type: "api_key", ...extra } as never;
+			}
+			return { result: undefined, next: encodeStore(store) };
+		});
+		cli.deps.now = () => NOW;
+		cli.deps.timeZone = "Asia/Taipei";
+	}
+
+	function profile(cli: Cli, label: string): Record<string, unknown> {
+		return cli.backend.read((c) => decodeStore(c)).providers.anthropic!.profiles[label] as never;
+	}
+
+	/** Admin API on a fake host; every other request goes to the loopback usage server. */
+	function withAdminApi(cli: Cli, options: { status?: number; cost?: string[] } = {}): string[] {
+		const adminKeysSeen: string[] = [];
+		cli.deps.fetchOptions = {
+			...cli.deps.fetchOptions,
+			adminApiBase: "http://admin.test",
+			fetchImpl: (async (input: string | URL | Request, init?: RequestInit) => {
+				const url = new URL(String(input));
+				if (url.host !== "admin.test") return fetch(input, init);
+				adminKeysSeen.push((init?.headers as Record<string, string>)["x-api-key"] ?? "");
+				if (options.status !== undefined) return new Response("{}", { status: options.status });
+				if (url.pathname.endsWith("/api_keys")) {
+					return Response.json({ data: [{ id: "apikey_me", status: "active", partial_key_hint: "sk-ant-api03-FAK...wxyz" }], has_more: false });
+				}
+				return Response.json({
+					data: (options.cost ?? []).map((amount) => ({ cost: { amount } })),
+					has_more: false,
+					data_refreshed_at: "2026-11-30T06:05:00Z",
+				});
+			}) as unknown as typeof fetch,
+		};
+		cli.deps.adminVerifyUrl = "http://admin.test/v1/organizations/api_keys?limit=1";
+		return adminKeysSeen;
+	}
+
+	test("AC-045: both date spellings store one cycle; bad dates and OAuth profiles change nothing", async () => {
+		const cli = makeCli();
+		withApiKeys(cli, { console: { key: KEY } });
+
+		expect(await cli.run("since", "console", "11/27/2026")).toBe(0);
+		expect(profile(cli, "console")["cycle"]).toEqual({ anchor: "2026-11-27", timeZone: "Asia/Taipei" });
+		expect(await cli.run("since", "console", "2026-11-27")).toBe(0);
+		expect(profile(cli, "console")["cycle"]).toEqual({ anchor: "2026-11-27", timeZone: "Asia/Taipei" });
+
+		const before = cli.backend.read((c) => c);
+		expect(await cli.run("since", "console", "2/30/2026")).toBe(2);
+		expect(await cli.run("since", "work", "11/27/2026")).toBe(1);
+		expect(await cli.run("since", "nosuch", "11/27/2026")).toBe(1);
+		expect(await cli.run("since", "console")).toBe(2);
+		expect(cli.backend.read((c) => c)).toBe(before);
+
+		expect(await cli.run("since", "console", "--clear")).toBe(0);
+		expect(profile(cli, "console")["cycle"]).toBeUndefined();
+	});
+
+	test("AC-047: the Admin key is verified, bound to one profile, and never echoed", async () => {
+		const cli = makeCli();
+		withApiKeys(cli, { a: { key: KEY }, b: { key: OTHER_KEY } });
+		const seen = withAdminApi(cli);
+		cli.deps.io.secret = async () => `${ADMIN}\n`;
+
+		expect(await cli.run("admin-key", "a")).toBe(0);
+		expect(seen).toEqual([ADMIN]);
+		expect(profile(cli, "a")["adminKey"]).toBe(ADMIN);
+		expect(profile(cli, "b")["adminKey"]).toBeUndefined();
+		expect([...cli.out, ...cli.errs].join("\n")).not.toContain(ADMIN);
+
+		expect(await cli.run("admin-key", "a", "--rm")).toBe(0);
+		expect(profile(cli, "a")["adminKey"]).toBeUndefined();
+	});
+
+	test("AC-047: a bad shape, a rejected key, an argv key and an OAuth profile all store nothing", async () => {
+		const cli = makeCli();
+		withApiKeys(cli, { a: { key: KEY } });
+		withAdminApi(cli, { status: 403 });
+		const before = cli.backend.read((c) => c);
+		let prompted = 0;
+		let answer = KEY;
+		cli.deps.io.secret = async () => {
+			prompted += 1;
+			return answer;
+		};
+
+		expect(await cli.run("admin-key", "a")).toBe(1); // a Console key, not an Admin key
+		answer = ADMIN;
+		expect(await cli.run("admin-key", "a")).toBe(1); // HTTP 403
+		expect(cli.errs.join("\n")).toContain("HTTP 403");
+		expect(prompted).toBe(2);
+
+		expect(await cli.run("admin-key", "work")).toBe(1); // OAuth profile: refused before the prompt
+		expect(await cli.run("admin-key", "a", ADMIN)).toBe(1); // a key on argv
+		expect(prompted).toBe(2);
+		expect(cli.backend.read((c) => c)).toBe(before);
+		expect([...cli.out, ...cli.errs].join("\n")).not.toContain(ADMIN);
+	});
+
+	test("AC-048: usage shows the cycle's spend, reset day and data time instead of the billing link", async () => {
+		const cli = makeCli();
+		withApiKeys(cli, { console: { key: KEY, adminKey: ADMIN, cycle: { anchor: "2026-11-27", timeZone: "Asia/Taipei" } } });
+		withAdminApi(cli, { cost: ["1234.000000", "1000.000000"] });
+
+		expect(await cli.run()).toBe(0);
+		const text = cli.out.join("\n");
+		expect(text).toContain("spent $22.34 since 2026-11-27");
+		expect(text).toContain("resets 2026-12-27 · data as of 14:05");
+		expect(text).not.toContain("settings/billing");
+		expect(text).toContain("work"); // the other accounts still render
+		expect(text).not.toContain(ADMIN);
+	});
+
+	test("AC-049: a missing Admin key or a rejected one fails the run; an unset cycle stays quiet", async () => {
+		const missing = makeCli();
+		withApiKeys(missing, { console: { key: KEY, cycle: { anchor: "2026-11-27", timeZone: "Asia/Taipei" } } });
+		const missingSeen = withAdminApi(missing);
+		expect(await missing.run()).toBe(1);
+		expect(missing.out.join("\n")).toContain("spend needs an Admin key — run seat admin-key console");
+		expect(missingSeen).toEqual([]);
+
+		const rejected = makeCli();
+		withApiKeys(rejected, { console: { key: KEY, adminKey: ADMIN, cycle: { anchor: "2026-11-27", timeZone: "Asia/Taipei" } } });
+		withAdminApi(rejected, { status: 401 });
+		expect(await rejected.run()).toBe(1);
+		expect(rejected.out.join("\n")).toContain("spend unavailable — Admin key rejected (HTTP 401)");
+		expect(rejected.out.join("\n")).not.toContain(ADMIN);
+
+		const unset = makeCli();
+		withApiKeys(unset, { console: { key: KEY, adminKey: ADMIN } });
+		const unsetSeen = withAdminApi(unset);
+		expect(await unset.run()).toBe(0);
+		expect(unset.out.join("\n")).toContain("no plan meters");
+		expect(unsetSeen).toEqual([]);
+	});
+
+	test("a cycle that has not started yet sends nothing and shows no $0.00", async () => {
+		const cli = makeCli();
+		withApiKeys(cli, { console: { key: KEY, adminKey: ADMIN, cycle: { anchor: "2026-12-05", timeZone: "Asia/Taipei" } } });
+		const seen = withAdminApi(cli);
+		expect(await cli.run()).toBe(0);
+		expect(cli.out.join("\n")).toContain("cycle starts 2026-12-05");
+		expect(cli.out.join("\n")).not.toContain("$0.00");
+		expect(seen).toEqual([]);
+	});
+
+	test("rename carries the cycle and the Admin key with the profile", async () => {
+		const cli = makeCli();
+		const extra = { key: KEY, adminKey: ADMIN, cycle: { anchor: "2026-11-27", timeZone: "Asia/Taipei" } };
+		withApiKeys(cli, { console: extra });
+		expect(await cli.run("rename", "console", "console2")).toBe(0);
+		expect(profile(cli, "console2")).toEqual({ type: "api_key", ...extra });
+	});
+});

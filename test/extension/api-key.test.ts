@@ -4,8 +4,8 @@
  * process.
  */
 import { describe, expect, test } from "bun:test";
+import { ANTHROPIC_API_VERSION } from "../../src/usage/spend.ts";
 import {
-	ANTHROPIC_API_VERSION,
 	ANTHROPIC_MODELS_URL,
 	apiKeyCredential,
 	apiKeyShapeProblem,

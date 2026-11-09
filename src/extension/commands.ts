@@ -16,7 +16,9 @@ import {
 	credentialFingerprint,
 	isValidLabel,
 	type ProviderId,
+	type BillingCycle,
 	type ProviderSection,
+	type SeatApiKeyCredential,
 	type SeatCredential,
 	type SeatStore,
 } from "../store/schema.ts";
@@ -311,4 +313,41 @@ export function renameProfile(store: SeatStore, oldSelectorInput: string, newLab
 		retargetedDefault = true;
 	}
 	return { changed: true, action: "renamed", provider: selector.provider, from, to: newLabel, retargetedAliases: retargetedAliases.sort(), retargetedDefault };
+}
+
+// --- since / admin-key (REQ-014) ---------------------------------------------
+
+/** The API-key profile a spend setting applies to; OAuth profiles have no spend to read. */
+export function resolveApiKeyProfile(store: SeatStore, selectorInput: string): { label: string; credential: SeatApiKeyCredential } {
+	const selector = parseSelector(selectorInput);
+	const label = resolveName(section(store, selector.provider), selector.name);
+	if (label === undefined) throw new CommandError(`no profile or alias "${selector.name}" for provider "${selector.provider}"`);
+	const credential = own(section(store, selector.provider)!.profiles, label)!;
+	if (credential.type !== "api_key") {
+		throw new CommandError(`"${label}" is an OAuth profile; spend is read only for API-key profiles`);
+	}
+	return { label, credential };
+}
+
+export type CycleResult = MutationOutcome & { label: string; cycle: BillingCycle | undefined };
+
+/** Set or clear an API-key profile's billing cycle (REQ-014). */
+export function setCycle(store: SeatStore, selectorInput: string, cycle: BillingCycle | undefined): CycleResult {
+	const { label, credential } = resolveApiKeyProfile(store, selectorInput);
+	const changed = cycle === undefined ? credential.cycle !== undefined : credential.cycle?.anchor !== cycle.anchor || credential.cycle.timeZone !== cycle.timeZone;
+	if (cycle === undefined) delete credential.cycle;
+	else credential.cycle = cycle;
+	return { changed, label, cycle };
+}
+
+export type AdminKeyResult = MutationOutcome & { label: string; replaced: boolean };
+
+/** Set or remove an API-key profile's Admin key (REQ-014). */
+export function setAdminKey(store: SeatStore, selectorInput: string, adminKey: string | undefined): AdminKeyResult {
+	const { label, credential } = resolveApiKeyProfile(store, selectorInput);
+	const replaced = credential.adminKey !== undefined;
+	const changed = credential.adminKey !== adminKey;
+	if (adminKey === undefined) delete credential.adminKey;
+	else credential.adminKey = adminKey;
+	return { changed, label, replaced };
 }
