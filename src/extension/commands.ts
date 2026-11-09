@@ -14,6 +14,7 @@
 import {
 	acceptsApiKey,
 	credentialFingerprint,
+	isTimeZone,
 	isValidLabel,
 	type ProviderId,
 	type BillingCycle,
@@ -333,6 +334,12 @@ export type CycleResult = MutationOutcome & { label: string; cycle: BillingCycle
 
 /** Set or clear an API-key profile's billing cycle (REQ-014). */
 export function setCycle(store: SeatStore, selectorInput: string, cycle: BillingCycle | undefined): CycleResult {
+	// A zone the schema refuses would make the whole store unreadable on the next load.
+	if (cycle !== undefined && (typeof cycle.timeZone !== "string" || !isTimeZone(cycle.timeZone))) {
+		throw new CommandError(
+			`the system time zone (${String(cycle.timeZone)}) is not an IANA zone; set TZ to one such as Asia/Taipei and run since again`,
+		);
+	}
 	const { label, credential } = resolveApiKeyProfile(store, selectorInput);
 	const changed = cycle === undefined ? credential.cycle !== undefined : credential.cycle?.anchor !== cycle.anchor || credential.cycle.timeZone !== cycle.timeZone;
 	if (cycle === undefined) delete credential.cycle;

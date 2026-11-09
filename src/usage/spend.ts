@@ -87,9 +87,14 @@ async function findApiKeyId(key: string, adminKey: string, options: SpendOptions
 				matches.push(entry["id"]);
 			}
 		}
-		if (body["has_more"] !== true || typeof body["last_id"] !== "string") break;
+		if (body["has_more"] !== true) return onlyMatch(matches);
+		if (typeof body["last_id"] !== "string") throw new SpendError("API key list ended without a cursor");
 		afterId = body["last_id"];
 	}
+	throw new SpendError("API key list too long to search");
+}
+
+function onlyMatch(matches: string[]): string {
 	if (matches.length === 0) throw new SpendError("key not found among the active keys of this Admin key's organization");
 	if (matches.length > 1) throw new SpendError("several keys in the organization match this key's hint");
 	return matches[0]!;
@@ -115,10 +120,11 @@ async function sumCost(apiKeyId: string, adminKey: string, start: Date, options:
 		}
 		const refreshed = body["data_refreshed_at"];
 		if (typeof refreshed === "string" && !Number.isNaN(Date.parse(refreshed))) dataRefreshedAt = new Date(refreshed);
-		if (body["has_more"] !== true || typeof body["next_page"] !== "string") break;
+		if (body["has_more"] !== true) return dataRefreshedAt === undefined ? { ok: true, cents } : { ok: true, cents, dataRefreshedAt };
+		if (typeof body["next_page"] !== "string") throw new SpendError("cost report ended without a cursor");
 		page = body["next_page"];
 	}
-	return dataRefreshedAt === undefined ? { ok: true, cents } : { ok: true, cents, dataRefreshedAt };
+	throw new SpendError("cost report too long to total");
 }
 
 async function getAdminJson(url: string, adminKey: string, options: SpendOptions): Promise<Record<string, unknown>> {

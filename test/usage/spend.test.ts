@@ -135,4 +135,21 @@ describe("fetchKeySpend", () => {
 			error: "unreadable cost amount",
 		});
 	});
+
+	test("a page that says there is more but gives no cursor fails instead of returning a partial answer", async () => {
+		const keys = fakeAdminApi({ keys: [{ data: [keyEntry("apikey_me", "sk-ant-api03-FAK...wxyz")], has_more: true }] });
+		expect(await fetchKeySpend(KEY, ADMIN, START, { fetchImpl: keys.fetchImpl, apiBase: "http://admin.test" })).toEqual({
+			ok: false,
+			error: "API key list ended without a cursor",
+		});
+
+		const cost = fakeAdminApi({
+			keys: [{ data: [keyEntry("apikey_me", "sk-ant-api03-FAK...wxyz")], has_more: false }],
+			cost: [{ data: [costRow("100.000000")], has_more: true }],
+		});
+		expect(await fetchKeySpend(KEY, ADMIN, START, { fetchImpl: cost.fetchImpl, apiBase: "http://admin.test" })).toEqual({
+			ok: false,
+			error: "cost report ended without a cursor",
+		});
+	});
 });

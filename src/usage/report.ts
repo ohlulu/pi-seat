@@ -225,7 +225,8 @@ async function apiKeyAccount(slot: Slot & { kind: "profile" }, deps: UsageCollec
 		...(fetchOptions.timeoutMs !== undefined ? { timeoutMs: fetchOptions.timeoutMs } : {}),
 	});
 	if (!spend.ok) return { ...common, result: { ok: false, hint: `spend unavailable — ${spend.error}`, failed: true } };
-	const asOf = spend.dataRefreshedAt === undefined ? "" : ` · data as of ${formatWallClock(spend.dataRefreshedAt, now, cycle.timeZone)}`;
+	const asOf =
+		spend.dataRefreshedAt === undefined ? " · data time unknown" : ` · data as of ${formatWallClock(spend.dataRefreshedAt, now, cycle.timeZone)}`;
 	return {
 		...common,
 		result: {

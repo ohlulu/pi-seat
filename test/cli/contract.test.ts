@@ -770,4 +770,32 @@ describe("REQ-014: API-key spend via CLI", () => {
 		expect(await cli.run("rename", "console", "console2")).toBe(0);
 		expect(profile(cli, "console2")).toEqual({ type: "api_key", ...extra });
 	});
+
+	test("a reply without data_refreshed_at says the data time is unknown", async () => {
+		const cli = makeCli();
+		withApiKeys(cli, { console: { key: KEY, adminKey: ADMIN, cycle: { anchor: "2026-11-27", timeZone: "Asia/Taipei" } } });
+		withAdminApi(cli, { cost: ["100.000000"] });
+		const fetchImpl = cli.deps.fetchOptions!.fetchImpl!;
+		cli.deps.fetchOptions!.fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+			const response = await fetchImpl(input, init);
+			if (!String(input).includes("/cost")) return response;
+			const { data_refreshed_at: _dropped, ...body } = (await response.json()) as Record<string, unknown>;
+			return Response.json(body);
+		}) as unknown as typeof fetch;
+
+		expect(await cli.run()).toBe(0);
+		expect(cli.out.join("\n")).toContain("resets 2026-12-27 · data time unknown");
+	});
+
+	test("since refuses a system zone that is not IANA, so the store stays readable", async () => {
+		const cli = makeCli();
+		withApiKeys(cli, { console: { key: KEY } });
+		const before = cli.backend.read((c) => c);
+		for (const zone of ["CST-8", "Mars/Olympus"]) {
+			cli.deps.timeZone = zone;
+			expect(await cli.run("since", "console", "11/27/2026")).toBe(1);
+		}
+		expect(cli.backend.read((c) => c)).toBe(before);
+		expect(cli.errs.join("\n")).toContain("not an IANA zone");
+	});
 });
