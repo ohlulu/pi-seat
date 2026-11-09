@@ -189,6 +189,15 @@ Ownership fencing——lock compromised 後禁止 commit，失鎖狀態下寫入
 - 餘額：Anthropic 沒有回傳 credit 餘額的 API。Usage and Cost API（legacy `/v1/organizations/cost_report` 與 `/v1/organizations/analytics/cost`）只給扣 credit 前的歷史花費，且需要 Admin credential；實測 workspace 範圍的 `sk-ant-usr-` key 回 401 `The Admin API requires an Admin API key or an organization-scoped API key`。為一個不準的估算多存一把能管理整個 organization 的 Admin key 不划算，所以 API-key 列只給 Console billing 頁面的連結（OSC 8，跟著 `color` 開關）。
 - Satisfies: REQ-013, REQ-001, REQ-004, REQ-007。
 
+### DEC-016: API-key spend 以 Admin key 查 Cost Analytics API
+
+- Choice: [REQ-014](./specs/behavior.md#req-014-api-key-spend-per-billing-cycle) 的花費來自 `GET /v1/organizations/analytics/cost`（beta header `analytics-usage-cost-2026-08-24`），以 store 裡唯一一把 Admin key 驗證。Profile 的 key 以 `GET /v1/organizations/api_keys` 的 `partial_key_hint` 對應到 `api_key_id`，每次查詢重新比對，不快取 id。Schema 仍是 version 1：`SeatApiKeyCredential` 加上可選的 `cycle: { anchor: "YYYY-MM-DD", timeZone: <IANA> }`，`anthropic` 的 provider section 加上可選的 `adminKey`。週期計算放在新的純模組 `src/usage/cycle.ts`（clock-injected、無 I/O），transport 放 `src/usage/spend.ts`，與 `fetch.ts`、`resets.ts` 一樣不依賴 Pi。
+- Alternatives: (a) Pi 本地累計每個 response 的 `usage` 再乘價格；(b) Admin key 走環境變數或 1Password；(c) 讓使用者手動提供 `api_key_id`；(d) 快取比對到的 `api_key_id`；(e) 每把 profile 各存一把 Admin key；(f) 固定起點，不自動進入下一個月。
+- Rationale: (a) 只看得到 Pi 自己送出的 request，同一把 key 的其他用途、Pi 外的工具與未記錄的歷史都會漏算，而且要維護價格表。(b) 使用者選擇存進 `seat.json`，與其他 credential 同一套 0600 與 redaction；代價是能管理整個 organization 的 key 與一般 credential 同檔。(c) Console 的 key 頁面才看得到 id，多一個容易貼錯的欄位；hint 比對讓使用者只需設定日期。(d) 省一個 request，但 key 被撤銷重發後快取會靜默指向舊 key；list 呼叫便宜，不值得多一種失效狀態。(e) 目前只有一個 Console organization；不在同一 organization 的 profile 會清楚報 `not in the Admin key's organization`，真的需要多個 organization 時再擴充。(f) 使用者選擇每月自動 reset；月底日期 clamp 到當月最後一天，與 Stripe billing anchor 的做法一致。
+- API 限制：`starting_at` 必須在 365 天內、單次最多 31 天，月週期剛好一次查完；省略 `ending_at` 即查到現在。`time_bucket_width` 省略時整段只回一列，起點可以是任意帶 offset 的時間，所以台灣午夜不需要對齊 UTC bucket。資料通常 4 小時內更新、最多 24 小時，畫面因此附上 `data_refreshed_at`。
+- 實作前要實測的假設：`sk-ant-usr-…` key 的 `partial_key_hint` 形狀與 `sk-ant-api03-…` 相同（`<前綴>...<後綴>`）；不帶 bucket 時非 UTC 午夜的 `starting_at` 被接受；Admin key 的 live check 用 `api_keys?limit=1`，因為那正是 lookup 需要的權限。任一假設不成立就回到這條 DEC 修改。
+- Satisfies: REQ-014, REQ-001, REQ-013。
+
 ## Related
 
 - [specs/behavior.md §Store](./specs/behavior.md#store) ← store、refresh、login 的行為契約（DEC-001/003/005 的 Satisfies 對象）

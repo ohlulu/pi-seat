@@ -17,7 +17,7 @@ Id policy：`REQ-###` 與 `AC-###` 是被 `src/`、`test/`、`scripts/` 直接�
 
 ### REQ-001: Exclusive credential store
 
-The system SHALL store named profiles for `anthropic` and `openai-codex` in an exclusive store file: OAuth grants for both providers, plus Anthropic Console API keys for `anthropic` ([REQ-013](#req-013-anthropic-api-key-profiles)). The system SHALL never mutate `auth.json`, and SHALL never copy an `auth.json` credential into the store. Read-only access to `auth.json` is limited to exactly two enumerated uses: the built-in usage snapshot ([REQ-006](#req-006-usage-meters-in-the-cli)), and redeeming that login's banked reset ([REQ-012](#req-012-banked-reset-from-the-usage-view)), which sends the snapshot's access token and never refreshes it; the snapshot content SHALL never be persisted into `seat.json`.
+The system SHALL store named profiles for `anthropic` and `openai-codex` in an exclusive store file: OAuth grants for both providers, plus Anthropic Console API keys for `anthropic` ([REQ-013](#req-013-anthropic-api-key-profiles)), and at most one Anthropic Admin key used only to read API-key spend ([REQ-014](#req-014-api-key-spend-per-billing-cycle)). The system SHALL never mutate `auth.json`, and SHALL never copy an `auth.json` credential into the store. Read-only access to `auth.json` is limited to exactly two enumerated uses: the built-in usage snapshot ([REQ-006](#req-006-usage-meters-in-the-cli)), and redeeming that login's banked reset ([REQ-012](#req-012-banked-reset-from-the-usage-view)), which sends the snapshot's access token and never refreshes it; the snapshot content SHALL never be persisted into `seat.json`.
 
 store 路徑：`$PI_CODING_AGENT_DIR/seat.json`（未設 env 時為 `~/.pi/agent/seat.json`），權限 0600，atomic write，cross-process file lock。每個 named profile 持有獨立的 OAuth grant——credential 永不與 auth.json 複製共享，因為 Anthropic refresh token 是 single-use，共享 grant 必然導致 double-spend。
 
@@ -61,7 +61,7 @@ The store SHALL also hold named `anthropic` profiles whose credential is an Anth
 - Command line：任何 `/seat` 或 `seat` 指令的參數中，只要有形似 secret 的 token（`sk-ant-…`，或 `sk-` 後接 20 個以上字元），指令 SHALL 在做任何事之前拒絕，訊息不回顯該 token，並提醒到 Console 撤銷——它此時已在 shell 或 Pi 的輸入歷史裡，而後續任何錯誤路徑（usage 說明、`no profile or alias "…"`）都會把它印回來。
 - Validation：key SHALL start with `sk-ant-`，and SHALL NOT be an OAuth token（`sk-ant-oat…`，pi-ai 會把它當 OAuth 送出）or an Admin key（`sk-ant-admin…`，不能呼叫 Messages API）。Console 目前發 `sk-ant-api03-…` 與 `sk-ant-usr-…` 兩種形狀；其他 `sk-ant-` 形狀交給 live check 判斷。通過 prefix 後送一個 `GET /v1/models`（不產生 token 用量）；非 2xx 或網路失敗即拒絕儲存。
 - Runtime：API-key profile 沒有 refresh、沒有 expiry，[REQ-005](#req-005-single-flight-refresh) 的 refresh 與 [REQ-004](#req-004-fail-closed-runtime-application) 的 invalid_grant block 都不適用。Selection、overlay、sentinel 與 per-request provider（AC-034）跟 OAuth profile 相同，request 走 `x-api-key`。Seat 回報給 Pi 的 auth 狀態 SHALL be `api_key`, not OAuth，所以 Pi 不會把它當成 subscription。
-- Usage：API-key profile 沒有 plan meter。CLI 與 view 照樣列出該帳號，下方兩行說明：`API key — no plan meters`，以及獨立一行的 `balance: platform.claude.com/settings/billing`——分行是為了讓純文字網址在窄終端機也完整；有色彩輸出時第二行是指向 Console billing 頁面的 OSC 8 連結，因為 Anthropic 沒有可查餘額的 API（[DEC-015](../architecture.md#dec-015-api-key-profile-是-schema-v1-的第二種-credential)）。這不算 failure（CLI exit code 不受影響），active 時照樣亮點。`--json` 不在 `profiles` 裡列它，`active` 照樣指名它。View 上對它按 `x` 只回報它沒有 banked reset，不發 request。`seat status --plain` 的 expires 欄是 `-`。
+- Usage：API-key profile 沒有 plan meter；設定了計算週期時改顯示該週期的已花費，見 [REQ-014](#req-014-api-key-spend-per-billing-cycle)。未設定時，CLI 與 view 照樣列出該帳號，下方兩行說明：`API key — no plan meters`，以及獨立一行的 `balance: platform.claude.com/settings/billing`——分行是為了讓純文字網址在窄終端機也完整；有色彩輸出時第二行是指向 Console billing 頁面的 OSC 8 連結，因為 Anthropic 沒有可查餘額的 API（[DEC-015](../architecture.md#dec-015-api-key-profile-是-schema-v1-的第二種-credential)）。這不算 failure（CLI exit code 不受影響），active 時照樣亮點。`--json` 不在 `profiles` 裡列它，`active` 照樣指名它。View 上對它按 `x` 只回報它沒有 banked reset，不發 request。`seat status --plain` 的 expires 欄是 `-`。
 - Secrets：key 與 OAuth token 同一等級：存在 0600 的 store、所有錯誤訊息都經 redaction、永不印出。
 - Downgrade：store 仍是 version 1，只是多了一種 credential type。0.5.0 以前的 pi-seat 讀到含 API-key profile 的 store 會整份拒絕（全部 provider fail closed），刪掉該 profile 或升級即恢復；沒有 API-key profile 的 store 不受影響。
 
@@ -159,6 +159,8 @@ CLI synopsis 與 I/O 契約（與 Python 版一致）：
 | `seat whoami [--plain]` | 離線：報告 store default 與（pi session 內）當前 pin |
 | `seat use <selector> [-a\|--alias <alias>]…` / `seat <selector> [-a …]` | 寫 global default（shorthand 同義）；`-a` 同時把 alias 指向目標 profile（沿用 Python seat 的 use 語意） |
 | `seat login <selector> [--api-key\|-k] [-a\|--alias <alias>]…` | named login，alias repeatable；`--api-key`（`-k`）從 stdin 讀 Console API key（[REQ-013](#req-013-anthropic-api-key-profiles)） |
+| `seat since <selector> <date>` / `seat since <selector> --clear` | 設定或清除 API-key profile 的每月計算週期（[REQ-014](#req-014-api-key-spend-per-billing-cycle)） |
+| `seat admin-key` / `seat admin-key --rm` | 從 stdin 讀入或刪除 Anthropic Admin key（[REQ-014](#req-014-api-key-spend-per-billing-cycle)） |
 | `seat rm <selector> [--force\|--no-input]` | 刪除 profile |
 | `seat rename <old-selector> <new-label>` | 改名；old selector 決定 provider |
 
@@ -245,6 +247,26 @@ Scope：只有 view 能 redeem，沒有 `/seat reset` 指令、也沒有 CLI 指
 | AC-037 | 已按 `y` | server 回 `reset`、明確拒絕、或曖昧的失敗 | `reset`：usage 被 refetch，狀態列說 reset used；拒絕：零 refetch，狀態列說這次沒有消耗並照實說明原因（券保留、券已被用掉、或沒有券）；曖昧：說 `not confirmed`，絕不說 `nothing was used` |
 | AC-038 | 游標在 built-in login | redeem；或快照已過期 | 使用 `auth.json` 快照的 access token，`auth.json` byte-identical；快照過期時只提示，不 refresh、不發 request |
 | AC-039 | 任何 Claude request | 送出 | 帶 `claude-cli/<version> (external, cli)` UA 與 `x-app: cli`；usage URL 帶 `cedar_ember=1`、不帶 `skip_spend` |
+
+### REQ-014: API-key spend per billing cycle
+
+WHERE an API-key profile ([REQ-013](#req-013-anthropic-api-key-profiles)) has a billing cycle and the store holds an Admin key, the CLI and the usage view SHALL show that key's spend since the current cycle started, in place of the billing link. 動機：Anthropic 沒有查餘額的 API（[DEC-015](../architecture.md#dec-015-api-key-profile-是-schema-v1-的第二種-credential)），但 Usage and Cost Analytics API 能依 API key 回報指定期間的花費；已花費加上使用者自己知道的月額度，就足以判斷還能用多少。Seat 不推算餘額。
+
+- Cycle：`seat since <selector> <date>`（`/seat since` 同義）。`<date>` 接受 `MM/DD/YYYY` 與 `YYYY-MM-DD`，其他寫法與不存在的日期一律拒絕（exit 2）。日期是第一個週期的起點，日期中的「日」是之後每月的 reset 日；某月沒有該日時，reset 落在當月最後一天（31 → 2 月 28/29 日）。起點是該日 `00:00`，時區是執行 `since` 時系統的 IANA 時區，存進 store、之後不隨機器改變。只接受 API-key profile，OAuth profile 拒絕（exit 1）。`--clear` 移除週期，回到 billing 連結。改週期不刪任何資料，因為 seat 不存花費。
+- Admin key：`seat admin-key` 從 stdin 讀一行（TTY 時關 echo），`/seat admin-key` 用 [REQ-013](#req-013-anthropic-api-key-profiles) 的 masked input；`--rm` 刪除。Key SHALL start with `sk-ant-admin`；儲存前送一個 `GET /v1/organizations/api_keys?limit=1`，非 2xx 或網路失敗即拒絕。只存一把，屬於 `anthropic`；它能管理整個 organization，所以與 profile credential 同等級：0600、redaction、永不印出，[REQ-013](#req-013-anthropic-api-key-profiles) 的 argv secret 拒絕同樣涵蓋它。Admin key 永不用來送 model request。
+- Lookup：以 Admin key 列出 organization 的 API key，用 `partial_key_hint`（`<前綴>...<後綴>`）比對 profile 的完整 key，恰好一個 active key 符合才算找到；再以 `GET /v1/organizations/analytics/cost` 查 `api_key_ids[]=<id>`、`starting_at=<週期起點>`、不分 bucket 的總額。`cost.amount` 是扣 credit 前的花費（cents 字串），加總後顯示為美元。查詢走 usage walk 的 endpoint 階段，與其他帳號併發。
+- Display：`spent $23.47 since 2026-11-27` 一行，下一行 `resets 2026-12-27 · data as of 14:05`。資料時間取 response 的 `data_refreshed_at`，以週期時區顯示，因為官方資料最多延遲 24 小時，沒有它的話剛用掉的花費會像沒算到。今天早於第一個週期起點時顯示 `cycle starts 2026-11-27`，不送 cost request，也不顯示 `$0.00`。
+- Failure：缺 Admin key、key 不在 Admin key 的 organization、比對到多個 key、HTTP 錯誤，都在該列以一行說明取代花費，並計為 failure（CLI exit 1），因為使用者已明確要求這個數字。說明不含任何 key。沒有設定週期的 API-key profile 維持 REQ-013 的行為：不是 failure、零 request。
+- Scope：只限 `anthropic` 的 API-key profile。`--json` 本輪不加 spend 欄位。View 的 `x` 行為不變。
+- Downgrade：store 仍是 version 1，多出 profile 上的 `cycle` 與 provider 上的 `adminKey`。0.6.0 以前的 pi-seat 讀到任一欄位會整份拒絕 store；`seat since … --clear` 與 `seat admin-key --rm` 之後即可降級。
+
+| AC | Given | When | Then |
+|---|---|---|---|
+| AC-045 | API-key profile `console` | `seat since console 11/27/2026`、`seat since console 2026-11-27`、`seat since console 2/30/2026`、對 OAuth profile 執行 | 前兩者在 store 寫入同一個 `{ anchor: "2026-11-27", timeZone }`；不存在的日期 exit 2、OAuth profile exit 1，store 皆未變 |
+| AC-046 | anchor `2026-01-31`、時區 `Asia/Taipei` | 計算 2026-02-15、2026-03-05、2026-01-20 的週期 | 依序為 `2026-01-31`→`2026-02-28`、`2026-02-28`→`2026-03-31`、尚未開始；起點是當地 00:00 換算成 UTC |
+| AC-047 | `seat admin-key` | 輸入非 `sk-ant-admin` 開頭的字串、live check 非 2xx，或 key 寫在參數上 | 拒絕、store 未變、輸出不含 key；合法 key 通過 live check 後存入，`auth.json` 未變 |
+| AC-048 | 週期已開始，Admin key 存在，cost API 回兩列 `"1234.000000"` 與 `"1000.000000"` | `seat`、`/seat` | 該列顯示 `spent $22.34 since …` 與 reset 日、資料時間；沒有 billing 連結；其他帳號照常渲染 |
+| AC-049 | 缺 Admin key、hint 比對到零個或多個 key、cost API 401 | `seat` | 該列顯示對應說明，exit 1，輸出不含任何 key；未設週期的 API-key profile 照舊零 request、exit 0 |
 
 ## Non-functional
 
