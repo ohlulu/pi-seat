@@ -119,7 +119,7 @@ seat admin-key console                # Admin key を echo なしの stdin か�
   resets 2026-12-27 · data as of 14:05
 ```
 
-サイクルは `since` を実行したマシンのタイムゾーンで 00:00 に始まります。その日がない月は月末日に次のサイクルが始まります。Admin key は 1 つの Console organization に属するため、API キーのプロファイルごとに設定します。2 つの organization のキーには Admin key が 2 本必要です。Console の Settings → Admin keys で作成してください。Admin API は organization アカウントだけが使え、個人アカウントでは使えません。ほかの認証情報と同じく `seat.json` に保存され、表示されることはなく、organization のキー一覧と使用額の取得にだけ使われます。`seat admin-key console --rm` で削除できます。Anthropic の使用額データは最大 24 時間（通常 4 時間以内）遅れるため、データ時刻を表示します。Pi の中では `/seat since` と `/seat admin-key` が同じ働きをします。
+日付はリセット日を指定するだけで、過去でも未来でも同じ意味です。11/9 に `11/27/2026` を指定すると 10/27〜11/27 を集計します。各サイクルは `since` を実行したマシンのタイムゾーンで 00:00 に始まり、その日がない月は月末日にリセットされます。Admin key は 1 つの Console organization に属するため、API キーのプロファイルごとに設定します。2 つの organization のキーには Admin key が 2 本必要です。Console の Settings → Admin keys で作成してください。Admin API は organization アカウントだけが使え、個人アカウントでは使えません。ほかの認証情報と同じく `seat.json` に保存され、表示されることはなく、organization のキー一覧と使用額の取得にだけ使われます。`seat admin-key console --rm` で削除できます。Anthropic の使用額データは最大 24 時間（通常 4 時間以内）遅れるため、データ時刻を表示します。Pi の中では `/seat since` と `/seat admin-key` が同じ働きをします。
 
 サイクルか Admin key を設定した store は pi-seat 0.6.0 以前では読めません。ダウングレード前に各プロファイルで `seat since <label> --clear` と `seat admin-key <label> --rm` を実行してください。
 

@@ -23,40 +23,39 @@ describe("AC-046: currentCycle", () => {
 	const cycle = { anchor: "2026-01-31", timeZone: "Asia/Taipei" };
 
 	test("a short month resets on its last day", () => {
-		const feb = currentCycle(cycle, new Date("2026-02-15T04:00:00Z"));
-		expect(feb).toMatchObject({ state: "active", startDate: "2026-01-31", resetDate: "2026-02-28" });
-		const mar = currentCycle(cycle, new Date("2026-03-05T04:00:00Z"));
-		expect(mar).toMatchObject({ state: "active", startDate: "2026-02-28", resetDate: "2026-03-31" });
+		expect(currentCycle(cycle, new Date("2026-02-15T04:00:00Z"))).toMatchObject({ startDate: "2026-01-31", resetDate: "2026-02-28" });
+		expect(currentCycle(cycle, new Date("2026-03-05T04:00:00Z"))).toMatchObject({ startDate: "2026-02-28", resetDate: "2026-03-31" });
 	});
 
-	test("before the anchor there is no window", () => {
-		expect(currentCycle(cycle, new Date("2026-01-20T04:00:00Z"))).toEqual({ state: "pending", startDate: "2026-01-31" });
+	test("a future date only names the reset day: the current window ends on it", () => {
+		const reset = { anchor: "2026-11-27", timeZone: "Asia/Taipei" };
+		expect(currentCycle(reset, new Date("2026-11-09T14:43:00Z"))).toMatchObject({ startDate: "2026-10-27", resetDate: "2026-11-27" });
+		expect(currentCycle(cycle, new Date("2026-01-20T04:00:00Z"))).toMatchObject({ startDate: "2025-12-31", resetDate: "2026-01-31" });
 	});
 
 	test("the start is local midnight converted to UTC", () => {
 		const window = currentCycle({ anchor: "2026-11-27", timeZone: "Asia/Taipei" }, new Date("2026-12-01T00:00:00Z"));
-		expect(window.state).toBe("active");
-		if (window.state === "active") expect(window.start.toISOString()).toBe("2026-11-26T16:00:00.000Z");
+		expect(window.start.toISOString()).toBe("2026-11-26T16:00:00.000Z");
 	});
 
-	test("the day is judged in the cycle's zone, not UTC", () => {
-		// 2026-11-26T17:00Z is already 11-27 01:00 in Taipei: the cycle has begun.
-		const window = currentCycle({ anchor: "2026-11-27", timeZone: "Asia/Taipei" }, new Date("2026-11-26T17:00:00Z"));
-		expect(window).toMatchObject({ state: "active", startDate: "2026-11-27", resetDate: "2026-12-27" });
-		const before = currentCycle({ anchor: "2026-11-27", timeZone: "Asia/Taipei" }, new Date("2026-11-26T15:00:00Z"));
-		expect(before.state).toBe("pending");
+	test("the reset day is judged in the cycle's zone, not UTC", () => {
+		// 2026-11-26T17:00Z is already 11-27 01:00 in Taipei: the new window has begun.
+		const zone = { anchor: "2026-11-27", timeZone: "Asia/Taipei" };
+		expect(currentCycle(zone, new Date("2026-11-26T17:00:00Z"))).toMatchObject({ startDate: "2026-11-27", resetDate: "2026-12-27" });
+		expect(currentCycle(zone, new Date("2026-11-26T15:00:00Z"))).toMatchObject({ startDate: "2026-10-27", resetDate: "2026-11-27" });
 	});
 
 	test("midnight survives a DST change", () => {
 		// New York leaves DST on 2026-11-01: midnight on 11-15 is UTC-5.
 		const window = currentCycle({ anchor: "2026-10-15", timeZone: "America/New_York" }, new Date("2026-11-20T12:00:00Z"));
-		expect(window.state).toBe("active");
-		if (window.state === "active") expect(window.start.toISOString()).toBe("2026-11-15T05:00:00.000Z");
+		expect(window.start.toISOString()).toBe("2026-11-15T05:00:00.000Z");
 	});
 
 	test("December rolls into January", () => {
-		const window = currentCycle({ anchor: "2026-10-31", timeZone: "UTC" }, new Date("2027-01-10T00:00:00Z"));
-		expect(window).toMatchObject({ state: "active", startDate: "2026-12-31", resetDate: "2027-01-31" });
+		expect(currentCycle({ anchor: "2026-10-31", timeZone: "UTC" }, new Date("2027-01-10T00:00:00Z"))).toMatchObject({
+			startDate: "2026-12-31",
+			resetDate: "2027-01-31",
+		});
 	});
 });
 

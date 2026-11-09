@@ -119,7 +119,7 @@ seat admin-key console                # 從 stdin 讀 Admin key 並關閉 echo�
   resets 2026-12-27 · data as of 14:05
 ```
 
-週期從執行 `since` 那台機器所在時區的 00:00 開始；當月沒有那一天時，下個週期從當月最後一天開始。Admin key 屬於單一 Console organization，所以每個 API-key profile 各自綁一把：分屬兩個 organization 的 API key 需要兩把 Admin key。到 Console 的 Settings → Admin keys 建立；Admin API 只開放給 organization 帳號，個人帳號不能用。它和其他 credential 一起存在 `seat.json`，永不印出，只用來列出 organization 的 key 和讀取花費，`seat admin-key console --rm` 即可刪除。Anthropic 的花費資料最多延遲 24 小時（通常 4 小時內），所以畫面會顯示資料時間。在 Pi 裡用 `/seat since` 與 `/seat admin-key` 效果相同。
+日期只用來指定每月幾號 reset，過去或未來的日期都一樣：11/9 輸入 `11/27/2026`，算的是 10/27 到 11/27。每期從執行 `since` 那台機器所在時區的 00:00 開始；當月沒有那一天時，在當月最後一天 reset。Admin key 屬於單一 Console organization，所以每個 API-key profile 各自綁一把：分屬兩個 organization 的 API key 需要兩把 Admin key。到 Console 的 Settings → Admin keys 建立；Admin API 只開放給 organization 帳號，個人帳號不能用。它和其他 credential 一起存在 `seat.json`，永不印出，只用來列出 organization 的 key 和讀取花費，`seat admin-key console --rm` 即可刪除。Anthropic 的花費資料最多延遲 24 小時（通常 4 小時內），所以畫面會顯示資料時間。在 Pi 裡用 `/seat since` 與 `/seat admin-key` 效果相同。
 
 設定過週期或 Admin key 的 store，pi-seat 0.6.0 以前的版本無法讀取：降版前請對每個 profile 執行 `seat since <label> --clear` 與 `seat admin-key <label> --rm`。
 

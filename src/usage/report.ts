@@ -212,9 +212,6 @@ async function apiKeyAccount(slot: Slot & { kind: "profile" }, deps: UsageCollec
 	const cycle = credential.cycle;
 	const now = (deps.now ?? (() => new Date()))();
 	const window = currentCycle(cycle, now);
-	if (window.state === "pending") {
-		return { ...common, result: { ok: false, hint: `cycle starts ${window.startDate}`, failed: false, unmetered: true } };
-	}
 	if (credential.adminKey === undefined) {
 		return { ...common, result: { ok: false, hint: `spend needs an Admin key — run seat admin-key ${slot.label}`, failed: true } };
 	}

@@ -3,10 +3,10 @@
  * clock-injected: the caller passes `now`, nothing here reads the time or does
  * I/O.
  *
- * A cycle starts at 00:00 of its anchor date in the cycle's own time zone and
- * restarts on the anchor's day of every later month. A month too short for that
- * day restarts on its last day (31 → Feb 28/29), the way a Stripe billing
- * anchor behaves.
+ * The anchor date only names the monthly reset day: past or future, it means
+ * the same thing. Every window runs from 00:00 of one reset day to 00:00 of the
+ * next, in the cycle's own time zone. A month too short for the day resets on
+ * its last day (31 → Feb 28/29), the way a Stripe billing anchor behaves.
  */
 
 import { isIsoDate, type BillingCycle } from "../store/schema.ts";
@@ -18,18 +18,14 @@ interface CalendarDate {
 	day: number;
 }
 
-export type CycleWindow =
-	/** Today is before the anchor: there is no window to measure yet. */
-	| { state: "pending"; startDate: string }
-	| {
-			state: "active";
-			/** The window's first day, YYYY-MM-DD in the cycle's zone. */
-			startDate: string;
-			/** The day the next window starts, YYYY-MM-DD in the cycle's zone. */
-			resetDate: string;
-			/** 00:00 of `startDate` in the cycle's zone. */
-			start: Date;
-	  };
+export interface CycleWindow {
+	/** The window's first day, YYYY-MM-DD in the cycle's zone. */
+	startDate: string;
+	/** The day the next window starts, YYYY-MM-DD in the cycle's zone. */
+	resetDate: string;
+	/** 00:00 of `startDate` in the cycle's zone. */
+	start: Date;
+}
 
 /**
  * The date a user typed, as YYYY-MM-DD: `MM/DD/YYYY` or `YYYY-MM-DD`, nothing
@@ -43,15 +39,12 @@ export function parseCycleDate(input: string): string | undefined {
 
 /** The window `now` falls in. */
 export function currentCycle(cycle: BillingCycle, now: Date): CycleWindow {
-	const anchor = fromIso(cycle.anchor);
+	const resetDay = fromIso(cycle.anchor).day;
 	const today = calendarDateIn(now, cycle.timeZone);
-	if (compare(today, anchor) < 0) return { state: "pending", startDate: cycle.anchor };
-
-	let start = cycleDay(today.year, today.month, anchor.day);
-	if (compare(today, start) < 0) start = cycleDay(...previousMonth(today.year, today.month), anchor.day);
-	const reset = cycleDay(...nextMonth(start.year, start.month), anchor.day);
+	let start = cycleDay(today.year, today.month, resetDay);
+	if (compare(today, start) < 0) start = cycleDay(...previousMonth(today.year, today.month), resetDay);
+	const reset = cycleDay(...nextMonth(start.year, start.month), resetDay);
 	return {
-		state: "active",
 		startDate: toIso(start),
 		resetDate: toIso(reset),
 		start: midnightIn(start, cycle.timeZone),

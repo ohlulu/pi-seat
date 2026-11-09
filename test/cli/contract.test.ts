@@ -753,14 +753,13 @@ describe("REQ-014: API-key spend via CLI", () => {
 		expect(unsetSeen).toEqual([]);
 	});
 
-	test("a cycle that has not started yet sends nothing and shows no $0.00", async () => {
+	test("a future reset date counts the window that ends on it", async () => {
 		const cli = makeCli();
 		withApiKeys(cli, { console: { key: KEY, adminKey: ADMIN, cycle: { anchor: "2026-12-05", timeZone: "Asia/Taipei" } } });
-		const seen = withAdminApi(cli);
+		withAdminApi(cli, { cost: ["500.000000"] });
 		expect(await cli.run()).toBe(0);
-		expect(cli.out.join("\n")).toContain("cycle starts 2026-12-05");
-		expect(cli.out.join("\n")).not.toContain("$0.00");
-		expect(seen).toEqual([]);
+		expect(cli.out.join("\n")).toContain("spent $5.00 since 2026-11-05");
+		expect(cli.out.join("\n")).toContain("resets 2026-12-05");
 	});
 
 	test("rename carries the cycle and the Admin key with the profile", async () => {
