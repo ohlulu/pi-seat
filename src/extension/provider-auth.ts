@@ -16,11 +16,14 @@
  * `auth.oauth.toAuth`; without one, `auth.apiKey.resolve` runs. The wrapper
  * hooks all three, so seat's credential wins on every path and Pi's
  * `auth.json` grant is never refreshed or written while seat owns the
- * provider. Unowned providers delegate untouched (AC-006).
+ * provider. Unowned providers delegate their credential choice untouched
+ * (AC-006); Anthropic OAuth auth on every path still gets seat's Claude Code
+ * version (REQ-015).
  */
 
 import type { ApiKeyAuth, ModelAuth, OAuthAuth, OAuthCredential, Provider } from "@earendil-works/pi-ai";
 import { PROVIDER_IDS, type ProviderId } from "../store/schema.ts";
+import { CLAUDE_CLI_USER_AGENT } from "../usage/fetch.ts";
 import { SEAT_SENTINEL_API_KEY, type SeatOwnership } from "./runtime-auth.ts";
 
 /** What the registered provider asks seat on every request. */
@@ -35,6 +38,20 @@ export interface SeatAuthSource {
 export const SEAT_AUTH_SOURCE = "pi-seat";
 
 const WRAPPED = Symbol.for("pi-seat.wrapped-provider");
+
+/**
+ * Anthropic OAuth request auth carries seat's Claude Code version (REQ-015).
+ * pi-ai merges `ModelAuth.headers` over its own OAuth defaults, so this
+ * replaces the `claude-cli/<version>` Pi pins. pi-ai merges by exact key, so
+ * the name stays lowercase like Pi's own entry.
+ */
+export function withClaudeCodeIdentity(auth: ModelAuth): ModelAuth {
+	// pi-ai's own OAuth test; any other key is sent as x-api-key with Pi's client identity.
+	if (!auth.apiKey?.includes("sk-ant-oat")) return auth;
+	return { ...auth, headers: { ...auth.headers, "user-agent": CLAUDE_CLI_USER_AGENT } };
+}
+
+const asIs = (auth: ModelAuth): ModelAuth => auth;
 
 interface WrapInfo {
 	base: Provider;
@@ -55,6 +72,7 @@ export function wrapProvider(
 ): Provider {
 	const baseOAuth = base.auth.oauth;
 	const baseApiKey = base.auth.apiKey;
+	const decorate = id === "anthropic" ? withClaudeCodeIdentity : asIs;
 
 	// Stored grants whose refresh seat skipped. Pi hands toAuth the same object
 	// (AuthStorage.modify returns the untouched entry), and seat may have let go
@@ -79,7 +97,7 @@ export function wrapProvider(
 		toAuth: async (credential) => {
 			const auth = await source.requestAuth(id);
 			const refreshSkipped = skipped.delete(credential);
-			if (auth) return auth;
+			if (auth) return decorate(auth);
 			if (refreshSkipped) {
 				// Deriving it would send a token Pi meant to refresh first; refreshing
 				// here, outside Pi's lock, could lose a rotated grant.
@@ -87,7 +105,7 @@ export function wrapProvider(
 					`seat: ${id} was handed back to Pi's built-in login during this request, after seat skipped its token refresh; retry the request`,
 				);
 			}
-			return baseOAuth.toAuth(credential);
+			return decorate(await baseOAuth.toAuth(credential));
 		},
 	};
 
@@ -115,12 +133,15 @@ export function wrapProvider(
 		},
 		resolve: async (input) => {
 			const auth = await source.requestAuth(id);
-			if (auth) return { auth, source: SEAT_AUTH_SOURCE };
-			if (baseApiKey) return baseApiKey.resolve(input);
+			if (auth) return { auth: decorate(auth), source: SEAT_AUTH_SOURCE };
+			if (baseApiKey) {
+				const resolved = await baseApiKey.resolve(input);
+				return resolved && { ...resolved, auth: decorate(resolved.auth) };
+			}
 			const credential = input.credential;
 			if (!credential?.key) return undefined;
 			return {
-				auth: { apiKey: credential.key },
+				auth: decorate({ apiKey: credential.key }),
 				...(credential.env ? { env: credential.env } : {}),
 				source: "stored credential",
 			};

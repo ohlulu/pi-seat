@@ -44,6 +44,7 @@ Per-request provider（[DEC-013](#dec-013-seat-auth-rides-a-registered-provider)
 - Pi 在 `/reload` 時不清除已註冊的 provider，所以 seat 在 `session_shutdown` 歸還。
 - 私有：pi-tui `Input` 的 `cursor` 欄位（masked API-key 輸入用來畫游標，`src/extension/secret-input.ts`）。`Input` 沒有公開的 cursor accessor；欄位不存在時退回「游標在尾端」，只影響游標顯示，不影響輸入的值。
 - pi-ai 的 Anthropic transport 只看 key 的前綴決定 auth 形式（Pi 1.5.0 `anthropic-messages.js` `isOAuthToken = apiKey.includes("sk-ant-oat")`）：OAuth token 走 Bearer + Claude Code identity，其他字串走 `x-api-key`。API-key profile（[DEC-015](#dec-015-api-key-profile-是-schema-v1-的第二種-credential)）靠的就是這一點，seat 不需要也無法告訴 transport credential 的種類。
+- pi-ai 的 Anthropic OAuth client 以 `mergeHeaders({…, "user-agent": "claude-cli/<pi 常數>", "x-app": "cli"}, model.headers, optionsHeaders)` 組 header（Pi 1.5.1 `anthropic-messages.js` `createClient`），`optionsHeaders` 來自 request auth 的 `headers`，所以 seat 的 `user-agent` 最後寫入。`mergeHeaders` 是 `Object.assign`，只認完全相同的 key，seat 因此用與 pi-ai 相同的小寫 `user-agent` 直接取代那個 entry（[DEC-017](#dec-017-anthropic-oauth-的-claude-code-版本由-seat-覆寫)）。
 
 ## Decisions
 
@@ -184,7 +185,7 @@ Ownership fencing——lock compromised 後禁止 commit，失鎖狀態下寫入
 - Alternatives: (a) 在 `models.json` 另立一個 `anthropic-console` provider；(b) store 升到 `version: 2` 並附 migration；(c) 只在有 API-key profile 時寫 v2；(d) key 走 Pi 內建 `ctx.ui.input`，或只在 CLI 輸入；(e) 只做 prefix 檢查。
 - Rationale: (a) 使用者否決：model id（`anthropic/claude-*`）與所有既有 model 設定會分裂成兩套，切換也不再是一個 seat 指令。(b) 任何一次 mutation（連 `/seat use` 都算）都會讓舊版 pi-seat 整份拒絕 store，即使使用者根本沒加 API key，還要多一段 migration。(c) 降級體驗最好，代價是兩種寫入格式要維護與測試；以這個套件的使用規模不值得。v1 additive 的代價是降級時錯誤訊息只說 `credential.type must be "oauth"`，而且只在真的有 API-key profile 時發生，REQ-013 已寫明。(d) Pi 自己的 `/login` API-key prompt 也不遮蔽，但 key 在畫面上就可能被錄影或截圖帶走；只開放 CLI 又逼使用者離開 Pi。包住 `Input` 讓 paste、Kitty 鍵盤協定與刪除鍵的行為都沿用 pi-tui，seat 只負責 render 遮蔽後的那一行。(e) 貼錯或撤銷的 key 要等到第一個 turn 才以 401 出現；`GET /v1/models` 不產生 token 用量，代價只是 login 需要網路。
 - 前綴判斷：pi-ai 只以 `sk-ant-oat` 認定 OAuth（見 §Pi compatibility），所以 Console 新發的 `sk-ant-usr-…` key 也走 `x-api-key`。validation 拒絕 `sk-ant-oat` 是因為它在 runtime 會被當成 OAuth 送出，拒絕 `sk-ant-admin` 是因為它不能呼叫 Messages API；其餘 `sk-ant-` 形狀交給 live check，不維護白名單。
-- Header 優先序：`models.json` 的 provider-level `headers` 在 Pi 的 composer 裡蓋在 request auth 之上（Pi 1.5.0 `provider-composer.js` 的 `withConfiguredAuth`），所以 seat 無法替 API-key request 換掉使用者設定的 `user-agent`。實測（2026-11）：同一把 key、同一個請求，不覆寫 UA 回 200，帶 `user-agent: claude-cli/2.1.280` 回 400 `Your credit balance is too low`——Anthropic 以 UA 把請求歸為 Claude Code，月 credit 不涵蓋，改扣 organization 自購的餘額。所以使用 API-key profile 時 `models.json` 不得覆寫 `anthropic` 的 `user-agent`；pi-ai 的 OAuth 路徑本來就自帶 `claude-cli/<version>`，覆寫它對 OAuth 沒有作用。這是 config 層的事，seat 拿不掉。
+- Header 優先序：`models.json` 的 provider-level `headers` 在 Pi 的 composer 裡蓋在 request auth 之上（Pi 1.5.0 `provider-composer.js` 的 `withConfiguredAuth`），所以 seat 無法替 API-key request 換掉使用者設定的 `user-agent`。實測（2026-11）：同一把 key、同一個請求，不覆寫 UA 回 200，帶 `user-agent: claude-cli/2.1.280` 回 400 `Your credit balance is too low`——Anthropic 以 UA 把請求歸為 Claude Code，月 credit 不涵蓋，改扣 organization 自購的餘額。所以使用 API-key profile 時 `models.json` 不得覆寫 `anthropic` 的 `user-agent`；OAuth 路徑由 seat 帶自己的 `claude-cli/<version>`（[DEC-017](#dec-017-anthropic-oauth-的-claude-code-版本由-seat-覆寫)），`models.json` 的覆寫一樣會蓋過它，把版本釘死在使用者寫的值。這是 config 層的事，seat 拿不掉。
 - Auth 狀態：Pi 的 `isUsingSubscription` 讀的是 `apiKey.check` 回傳的 type。Seat 原本只要擁有 provider 就回 `oauth`，對 API-key profile 會讓 Pi 把 API 計費誤標成 subscription，所以 coordinator 的 `owns` 改為回傳被選中 profile 的 credential type。
 - 餘額：Anthropic 沒有回傳 credit 餘額的 API。Usage and Cost API（legacy `/v1/organizations/cost_report` 與 `/v1/organizations/analytics/cost`）只給扣 credit 前的歷史花費，且需要 Admin credential；實測 workspace 範圍的 `sk-ant-usr-` key 回 401 `The Admin API requires an Admin API key or an organization-scoped API key`。所以沒有設定計算週期的 API-key 列只給 Console billing 頁面的連結；以 Admin key 查本週期已花費的做法見 [DEC-016](#dec-016-api-key-spend-以-admin-key-查-cost-analytics-api)。Billing 連結是 OSC 8，跟著 `color` 開關。
 - Satisfies: REQ-013, REQ-001, REQ-004, REQ-007。
@@ -197,6 +198,15 @@ Ownership fencing——lock compromised 後禁止 commit，失鎖狀態下寫入
 - API 限制：`starting_at` 必須在 365 天內、單次最多 31 天，月週期剛好一次查完；省略 `ending_at` 即查到現在。`time_bucket_width` 省略時整段只回一列，起點可以是任意帶 offset 的時間，所以台灣午夜不需要對齊 UTC bucket。資料通常 4 小時內更新、最多 24 小時，畫面因此附上 `data_refreshed_at`。
 - 實測（2026-11-09，一把 `sk-ant-usr-…` key 與其 organization 的 Admin key）：hint 比對找到唯一 key；不帶 bucket、`starting_at` 為台北午夜（`…T16:00:00Z`）被接受；`anthropic-version: 2023-06-01` 加 beta header 被 Admin API 接受；response 帶 `data_refreshed_at`。DST 跨越使單次範圍超過 31 天的情況尚未實測。
 - Satisfies: REQ-014, REQ-001, REQ-013。
+
+### DEC-017: Anthropic OAuth 的 Claude Code 版本由 seat 覆寫
+
+- Choice: [REQ-015](./specs/behavior.md#req-015-claude-code-version-on-anthropic-oauth-requests) 在 `wrapProvider` 實作：anthropic 的 wrapper 把 `oauth.toAuth` 與 `apiKey.resolve` 回傳的每個 `ModelAuth` 交給 `withClaudeCodeIdentity`，key 含 `sk-ant-oat`（pi-ai 自己的 OAuth 判斷）時加上 `headers["user-agent"] = CLAUDE_CLI_USER_AGENT`。Seat profile 與委派給 base 的 Pi 內建 login 都經過這裡，所以 per-turn overlay（存成 api_key override，落在 `apiKey.resolve`）與 subagent child 一併涵蓋。版本只有一個來源：`src/usage/fetch.ts` 的 `CLAUDE_CLI_USER_AGENT`，usage、profile、limit reset 也用它。
+- Alternatives: (a) 等 Pi bump 它的常數；(b) `models.json` 設 provider-level `user-agent`；(c) 以 Pi 公開的 `VERSION` 設閘門，Pi 超過已驗證版本就不覆寫；(d) 從 Pi 的 dist 檔 regex 出私有的 `claudeCodeVersion`，seat 的比較新才覆寫。
+- Rationale: (a) Pi 的常數落後是常態（0.84.3 是 2.1.75，1.5.x 是 2.1.280），新 model 一上線就壞。(b) 也會套到 API-key request，Anthropic 會把它當 Claude Code 計費（DEC-015），而且是使用者每台機器的手動 config。(c) 完全不會降版，但 Pi 升級後若常數仍舊，新 model 會立刻再壞，要等 pi-seat 調整閘門。(d) 兩個方向都自動，但依賴 Pi 安裝路徑探索與私有常數的 regex，Pi 換打包方式就默默退化。使用者選擇一律覆寫：最簡單，代價是 Pi 的常數超過 seat 之後，到下一次 pi-seat 更新前 UA 會被往下蓋。
+- 實測（2026-11-10，Pi 1.5.1）：兩個 seat OAuth profile 以 Pi 的 `claude-cli/2.1.280` 打 `claude-fable-5-2` 都回 400 `claude_code_version_too_old`，同 profile 打 `claude-opus-5` 正常；改帶 `claude-cli/2.1.322 (external, cli)` 後兩者都回應正常，API-key profile 不受影響，usage 端點的 limit-reset 區塊照樣回來。
+- Limits: 只在 seat 的 provider 有裝上時生效。缺少 `ProviderHost` slice，或另一個 extension 對 `anthropic` 註冊了 `ProviderConfig` 時（DEC-013 Limits），request 帶的是 Pi 自己的版本。
+- Satisfies: REQ-015, REQ-012。
 
 ## Related
 

@@ -100,7 +100,7 @@ PI_SEAT=console pi                    # fija una sesión a la key
 
 La key se rechaza si es un token OAuth de Claude (`sk-ant-oat…`) o una Admin key, o si Anthropic no responde con éxito a la verificación. Un perfil con API key no tiene medidores del plan: la vista de uso y `seat` lo muestran con un enlace clicable a la página de facturación de la Console, donde está el saldo (Anthropic no tiene API para consultarlo), y `x` no tiene ningún reset que gastar. Pi marca la sesión como facturación por API, no como suscripción. Solo `anthropic` acepta API keys.
 
-No sobrescribas el header `user-agent` de `anthropic` en `~/.pi/agent/models.json`: también viaja en las solicitudes con API key y seat no puede quitarlo. Con un valor `claude-cli/…`, Anthropic factura la solicitud como Claude Code, que el crédito mensual no cubre, y falla con `Your credit balance is too low` si la organización no tiene crédito comprado. Las solicitudes OAuth de Pi ya envían ese user-agent por sí mismas, así que la sobrescritura no les aporta nada.
+No sobrescribas el header `user-agent` de `anthropic` en `~/.pi/agent/models.json`: también viaja en las solicitudes con API key y seat no puede quitarlo. Con un valor `claude-cli/…`, Anthropic factura la solicitud como Claude Code, que el crédito mensual no cubre, y falla con `Your credit balance is too low` si la organización no tiene crédito comprado. En las solicitudes OAuth seat ya envía un user-agent `claude-cli/…` actualizado, y la sobrescritura lo reemplazaría por la versión que escribiste.
 
 pi-seat 0.5.0 o anterior no puede leer un almacén que contenga un perfil con API key. Elimina ese perfil antes de bajar de versión.
 

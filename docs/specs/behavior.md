@@ -143,6 +143,16 @@ WHEN the active openai-codex account changes, the extension SHALL invalidate liv
 |---|---|---|---|
 | AC-015 | codex 帳號切換 | 切換完成 | 既有 WebSocket 連線被關閉（close 完成後才回報切換成功），下一請求以新 credential 建立 |
 
+### REQ-015: Claude Code version on Anthropic OAuth requests
+
+Anthropic 以 Claude Code 的版本號決定 OAuth request 能用哪些 model：Pi 1.5.1 的 pi-ai 寫死 `claude-cli/2.1.280`，打 `claude-fable-5-2` 回 400 `claude_code_version_too_old`（「version 2.1.290 or newer is required」），同一個 grant 打 `claude-opus-5` 正常。Pi 的常數落後 Claude Code 是常態，所以 every Anthropic model request whose key is an OAuth token SHALL carry seat's `CLAUDE_CLI_USER_AGENT` as its `user-agent`, on every path through seat's registered provider：seat profile、Pi 內建 `auth.json` login、`ANTHROPIC_OAUTH_TOKEN`，以及繼承該 provider 的 subagent child。版本與 [REQ-012](#req-012-banked-reset-from-the-usage-view) 的 usage request 共用同一個常數。
+
+Seat 一律覆寫，不與 Pi 的版本比較（使用者決定）：Pi 沒有公開它的版本常數。代價是 Pi 的常數超過 seat 之後，到下一次 pi-seat 更新前 UA 會被往下蓋。API key 與以 header 自帶 auth 的 request 不受影響——前者帶 `claude-cli/…` 會被當成 Claude Code 計費（[REQ-013](#req-013-anthropic-api-key-profiles)），openai-codex 也不受影響。
+
+| AC | Given | When | Then |
+|---|---|---|---|
+| AC-050 | anthropic 的 request auth 是 `sk-ant-oat` token，來自 seat profile 或 Pi 內建 login（`oauth.toAuth` 或 `apiKey.resolve`） | 送出 model request | `user-agent` 是 seat 的 `CLAUDE_CLI_USER_AGENT`，蓋掉 pi-ai 的值，auth 原有的其他 header 保留；`sk-ant-api…` key、只有 header 的 auth 與 openai-codex 的 auth 原樣不動 |
+
 ## Usage
 
 ### REQ-006: Usage meters in the CLI

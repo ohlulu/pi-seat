@@ -7,11 +7,13 @@ import { join } from "node:path";
 import {
 	SeatProviderInstaller,
 	getProviderHost,
+	withClaudeCodeIdentity,
 	wrapProvider,
 	type ProviderHost,
 	type SeatAuthSource,
 } from "../../src/extension/provider-auth.ts";
 import type { ProviderId } from "../../src/store/schema.ts";
+import { CLAUDE_CLI_USER_AGENT } from "../../src/usage/fetch.ts";
 
 /**
  * AC-034 unit coverage for the registered provider and its installer. The
@@ -121,6 +123,53 @@ describe("AC-043: an API-key selection (REQ-013)", () => {
 		expect(await wrapper.auth.apiKey!.check!(input)).toEqual({ type: "api_key", source: "pi-seat" });
 		expect((await wrapper.auth.apiKey!.resolve(input))?.auth.apiKey).toBe("sk-ant-api03-FAKE");
 		expect(await wrapper.auth.oauth!.toAuth(stored)).toEqual({ apiKey: "sk-ant-api03-FAKE" });
+	});
+});
+
+describe("AC-050: Anthropic OAuth requests carry seat's Claude Code version (REQ-015)", () => {
+	const OAT = "sk-ant-oat01-FAKE";
+	const input = { ctx: { env: async () => undefined, fileExists: async () => false }, signal: new AbortController().signal };
+	const oatProvider = (id: string): Provider => {
+		const base = fakeProvider(id);
+		return {
+			...base,
+			auth: {
+				oauth: { ...base.auth.oauth!, toAuth: async () => ({ apiKey: OAT }) },
+				apiKey: { name: `${id} key`, resolve: async () => ({ auth: { apiKey: OAT }, source: "ANTHROPIC_OAUTH_TOKEN" }) },
+			},
+		};
+	};
+
+	test("a seat-owned OAuth profile overrides Pi's user-agent on both auth paths", async () => {
+		const wrapper = wrapProvider("anthropic", fakeProvider("anthropic"), source({ anthropic: OAT }));
+		const expected = { apiKey: OAT, headers: { "user-agent": CLAUDE_CLI_USER_AGENT } };
+
+		expect(await wrapper.auth.oauth!.toAuth(stored)).toEqual(expected);
+		expect((await wrapper.auth.apiKey!.resolve(input))?.auth).toEqual(expected);
+	});
+
+	test("Pi's own login, unowned by seat, gets the same version", async () => {
+		const wrapper = wrapProvider("anthropic", oatProvider("anthropic"), source({}));
+
+		expect((await wrapper.auth.oauth!.toAuth(stored)).headers).toEqual({ "user-agent": CLAUDE_CLI_USER_AGENT });
+		const resolved = await wrapper.auth.apiKey!.resolve(input);
+		expect(resolved?.auth.headers).toEqual({ "user-agent": CLAUDE_CLI_USER_AGENT });
+		expect(resolved?.source).toBe("ANTHROPIC_OAUTH_TOKEN");
+	});
+
+	test("headers already on the auth survive", () => {
+		expect(withClaudeCodeIdentity({ apiKey: OAT, headers: { "x-extra": "1" } }).headers).toEqual({
+			"x-extra": "1",
+			"user-agent": CLAUDE_CLI_USER_AGENT,
+		});
+	});
+
+	test("API keys, header-owned auth and other providers are left alone", async () => {
+		expect(withClaudeCodeIdentity({ apiKey: "sk-ant-api03-FAKE" })).toEqual({ apiKey: "sk-ant-api03-FAKE" });
+		expect(withClaudeCodeIdentity({ headers: { Authorization: "Bearer x" } })).toEqual({ headers: { Authorization: "Bearer x" } });
+
+		const codex = wrapProvider("openai-codex", oatProvider("openai-codex"), source({}));
+		expect(await codex.auth.oauth!.toAuth(stored)).toEqual({ apiKey: OAT });
 	});
 });
 
