@@ -1,6 +1,6 @@
 {
 	"name": "pi-seat",
-	"version": "0.7.0",
+	"version": "0.7.1",
 	"type": "module",
 	"description": "Named multi-account manager for Pi: exclusive profile store for OAuth grants and Anthropic API keys, per-session pinning via PI_SEAT, and terminal usage meters for Anthropic and OpenAI Codex",
 	"license": "MIT",
