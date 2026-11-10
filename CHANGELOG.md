@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+
+- Anthropic OAuth requests can use Claude Fable 5.2 again. Anthropic gates newer models on the Claude Code version in the `user-agent`, and Pi 1.5.1 still sends `claude-cli/2.1.280`, so every OAuth turn on `claude-fable-5-2` failed with `Claude Code 2.1.280 does not support this model; version 2.1.290 or newer is required`. Seat now sends its own `claude-cli/2.1.322 (external, cli)` on every Anthropic OAuth model request it resolves: seat profiles, Pi's built-in login, `ANTHROPIC_OAUTH_TOKEN`, and subagent children that inherit seat's provider. API-key requests keep Pi's own identity. The usage view and `seat usage` move to the same version. Seat always overrides and does not compare with Pi's version, so once Pi ships a newer one, seat sends its older value until pi-seat is updated (REQ-015, DEC-017).
+
 ## [0.7.0] - 2026-11-09
 
 ### Added

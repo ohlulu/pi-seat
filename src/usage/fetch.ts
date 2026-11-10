@@ -24,11 +24,13 @@ export const CLAUDE_USAGE_URL = `${CLAUDE_API_BASE}/api/oauth/usage?cedar_ember=
 export const CODEX_USAGE_URL = `${CODEX_API_BASE}/wham/usage`;
 
 /**
- * Anthropic decides limit-reset eligibility from the client identity: any
- * other User-Agent gets `ineligible_reason: "surface"`, and a stale version
- * gets `cli_version`. Bump this alongside Claude Code releases.
+ * The one Claude Code identity seat sends: usage, profile and limit reset here,
+ * and every Anthropic OAuth model request (REQ-015). Anthropic gates on it:
+ * another User-Agent gets limit-reset `ineligible_reason: "surface"`, and a
+ * stale version gets `cli_version` there and `claude_code_version_too_old` on
+ * newer models. Bump this alongside Claude Code releases.
  */
-export const CLAUDE_CLI_USER_AGENT = "claude-cli/2.1.280 (external, cli)";
+export const CLAUDE_CLI_USER_AGENT = "claude-cli/2.1.322 (external, cli)";
 export const USAGE_TIMEOUT_MS = 10_000;
 
 export interface UsageFetchOptions {
